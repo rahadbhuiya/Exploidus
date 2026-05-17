@@ -1,0 +1,361 @@
+#pragma once
+#include <stdint.h>
+#include "../../kernel/syscall/table.h"
+
+#define SYS_EXIT          0
+#define SYS_FORK          1
+#define SYS_EXEC          2
+#define SYS_WAITPID       3
+#define SYS_OPEN          4
+#define SYS_CLOSE         5
+#define SYS_READ          6
+#define SYS_WRITE         7
+#define SYS_MMAP          8
+#define SYS_MUNMAP        9
+#define SYS_CAP_CREATE   10
+#define SYS_CAP_DELEGATE 11
+#define SYS_CAP_REVOKE   12
+#define SYS_SET_INTENT   13
+#define SYS_AUDIT_READ   14
+#define SYS_YIELD        15
+#define SYS_GETPID       16
+#define SYS_SLEEP        17
+#define SYS_SOCKET       18
+#define SYS_BIND         19
+#define SYS_CONNECT      20
+#define SYS_LISTEN       21
+#define SYS_ACCEPT       22
+#define SYS_NET_SEND     23
+#define SYS_NET_RECV     24
+#define SYS_NET_CLOSE    25
+#define SYS_GETIFADDR    26
+#define SYS_AUDIT_DUMP   27
+#define SYS_GETPROCS     28
+#define SYS_UPTIME       40
+#define SYS_PING         41
+
+typedef uint64_t size_t;
+typedef int64_t  ssize_t;
+typedef uint32_t ip4_t;
+
+#define STDIN_FILENO  0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+
+#define SOCK_TCP  1
+#define SOCK_UDP  2
+
+#define IP4(a,b,c,d) \
+    (((uint32_t)(a)<<24)|((uint32_t)(b)<<16)|((uint32_t)(c)<<8)|(uint32_t)(d))
+
+
+
+/*  Raw syscall stubs  */
+
+static inline int64_t syscall0(uint64_t n)
+{
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r) : "a"(n) : "rcx","r11","memory");
+    return r;
+}
+static inline int64_t syscall1(uint64_t n, uint64_t a)
+{
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r) : "a"(n),"D"(a) : "rcx","r11","memory");
+    return r;
+}
+static inline int64_t syscall2(uint64_t n, uint64_t a, uint64_t b)
+{
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r) : "a"(n),"D"(a),"S"(b) : "rcx","r11","memory");
+    return r;
+}
+static inline int64_t syscall3(uint64_t n, uint64_t a, uint64_t b, uint64_t c)
+{
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r) : "a"(n),"D"(a),"S"(b),"d"(c) : "rcx","r11","memory");
+    return r;
+}
+static inline int64_t syscall6(uint64_t n,
+                                uint64_t a, uint64_t b, uint64_t c,
+                                uint64_t d, uint64_t e, uint64_t g)
+{
+    int64_t r;
+    register uint64_t r10 __asm__("r10") = d;
+    register uint64_t r8  __asm__("r8")  = e;
+    register uint64_t r9  __asm__("r9")  = g;
+    __asm__ volatile ("syscall"
+        : "=a"(r)
+        : "a"(n),"D"(a),"S"(b),"d"(c),"r"(r10),"r"(r8),"r"(r9)
+        : "rcx","r11","memory");
+    return r;
+}
+
+/*  Process  */
+static inline void exit(int code)
+{
+    syscall1(SYS_EXIT,(uint64_t)(int64_t)code); for(;;){}
+}
+static inline int64_t fork(void)          { return syscall0(SYS_FORK); }
+static inline int64_t getpid(void)        { return syscall0(SYS_GETPID); }
+static inline int64_t yield(void)         { return syscall0(SYS_YIELD); }
+static inline int64_t waitpid(int64_t p)  { return syscall1(SYS_WAITPID,(uint64_t)p); }
+static inline int64_t sleep_ticks(uint64_t t) { return syscall1(SYS_SLEEP,t); }
+
+/*  File I/O  */
+#define O_RDONLY  0
+#define O_WRONLY  1
+#define O_RDWR    2
+#define O_CREAT   0x40
+#define O_TRUNC   0x200
+
+static inline int open(const char *path, int flags)
+{
+    return (int)syscall2(SYS_OPEN,(uint64_t)(uintptr_t)path,(uint64_t)flags);
+}
+static inline int close(int fd) { return (int)syscall1(SYS_CLOSE,(uint64_t)(int64_t)fd); }
+
+/*  I/O  */
+static inline ssize_t write(int fd, const void *buf, size_t n)
+{
+    return (ssize_t)syscall3(SYS_WRITE,
+        (uint64_t)(int64_t)fd,(uint64_t)(uintptr_t)buf,(uint64_t)n);
+}
+static inline ssize_t read(int fd, void *buf, size_t n)
+{
+    return (ssize_t)syscall3(SYS_READ,
+        (uint64_t)(int64_t)fd,(uint64_t)(uintptr_t)buf,(uint64_t)n);
+}
+
+/*  Memory  */
+static inline void *mmap(size_t len)
+{
+    /* Anonymous mmap — MAP_ANON|MAP_PRIVATE equivalent */
+    int64_t r = syscall2(SYS_MMAP, 0, (uint64_t)len);
+    return (r < 0) ? (void *)0 : (void *)(uintptr_t)(uint64_t)r;
+}
+static inline int munmap(void *addr, size_t len)
+{
+    return (int)syscall2(SYS_MUNMAP,(uint64_t)(uintptr_t)addr,(uint64_t)len);
+}
+
+/*  Audit log  */
+typedef struct { uint64_t timestamp; uint32_t pid; uint32_t event;
+                 uint64_t arg0; uint64_t arg1; } audit_entry_user_t;
+
+static inline int64_t audit_dump(cap_token_t cap,
+                                  audit_entry_user_t *buf, uint64_t max)
+{
+    register uint64_t r10 __asm__("r10") = max;
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r)
+        : "a"((uint64_t)SYS_AUDIT_DUMP),
+          "D"(cap.upper),"S"(cap.lower),"d"((uint64_t)(uintptr_t)buf),
+          "r"(r10)
+        : "rcx","r11","memory");
+    return r;
+}
+
+/*  Process table  */
+typedef struct { uint32_t pid; uint32_t parent_pid;
+                 uint32_t state; uint32_t intent; uint64_t ticks_used; } proc_info_t;
+
+static inline int64_t getprocs(proc_info_t *buf, uint64_t max)
+{
+    return syscall2(SYS_GETPROCS,(uint64_t)(uintptr_t)buf,max);
+}
+
+/*  Network  */
+static inline int xsocket(cap_token_t cap, int type)
+{
+    return (int)syscall6(SYS_SOCKET,cap.upper,cap.lower,(uint64_t)type,0,0,0);
+}
+static inline int xbind(cap_token_t cap, int fd, uint16_t port)
+{
+    return (int)syscall6(SYS_BIND,cap.upper,cap.lower,(uint64_t)fd,(uint64_t)port,0,0);
+}
+static inline int xconnect(cap_token_t cap, int fd, ip4_t ip, uint16_t port)
+{
+    return (int)syscall6(SYS_CONNECT,cap.upper,cap.lower,(uint64_t)fd,(uint64_t)ip,(uint64_t)port,0);
+}
+static inline int xlisten(cap_token_t cap, int fd)
+{
+    return (int)syscall6(SYS_LISTEN,cap.upper,cap.lower,(uint64_t)fd,0,0,0);
+}
+static inline int xaccept(cap_token_t cap, int fd)
+{
+    return (int)syscall6(SYS_ACCEPT,cap.upper,cap.lower,(uint64_t)fd,0,0,0);
+}
+static inline int xsend(cap_token_t cap, int fd, const void *buf, uint16_t len)
+{
+    return (int)syscall6(SYS_NET_SEND,cap.upper,cap.lower,(uint64_t)fd,
+        (uint64_t)(uintptr_t)buf,(uint64_t)len,0);
+}
+static inline int xrecv(cap_token_t cap, int fd, void *buf, uint16_t len)
+{
+    return (int)syscall6(SYS_NET_RECV,cap.upper,cap.lower,(uint64_t)fd,
+        (uint64_t)(uintptr_t)buf,(uint64_t)len,0);
+}
+static inline void xclose(int fd)
+{
+    syscall3(SYS_NET_CLOSE,0,0,(uint64_t)fd);
+}
+static inline ip4_t getifaddr(void) { return (ip4_t)syscall0(SYS_GETIFADDR); }
+
+/*  String helpers  */
+static inline size_t strlen(const char *s)
+    { size_t n=0; while(*s++)n++; return n; }
+static inline void puts(const char *s)
+    { write(STDOUT_FILENO,s,strlen(s)); }
+static inline void putc(char c)
+    { write(STDOUT_FILENO,&c,1); }
+static inline void *memset_u(void *d,int v,size_t n)
+    { uint8_t *p=(uint8_t*)d; while(n--)*p++=(uint8_t)v; return d; }
+static inline int strcmp_u(const char *a,const char *b)
+    { while(*a&&*a==*b){a++;b++;} return (unsigned char)*a-(unsigned char)*b; }
+
+#define SYS_FB_PIXEL  29
+#define SYS_FB_RECT   30
+#define SYS_FB_CLEAR  31
+#define SYS_FB_INFO   34
+#define SYS_MOUSE_POS 37
+#define SYS_FB_STR    38
+#define SYS_READDIR   35
+#define SYS_CREATE    36
+
+
+typedef struct {
+    uint64_t inode;
+    uint8_t  type;
+    char     name[256];
+} dirent_t;
+
+static inline int64_t readdir(int fd, dirent_t *buf, uint64_t max)
+{
+    return syscall3(SYS_READDIR, (uint64_t)fd,
+                    (uint64_t)(uintptr_t)buf, max);
+}
+static inline int fs_create(const char *path, int type)
+{
+    return (int)syscall2(SYS_CREATE,
+                         (uint64_t)(uintptr_t)path, (uint64_t)type);
+}
+
+/*  Framebuffer  */
+static inline void fb_pixel(uint32_t x, uint32_t y, uint32_t color)
+{
+    syscall3(SYS_FB_PIXEL, (uint64_t)x, (uint64_t)y, (uint64_t)color);
+}
+static inline void fb_rect(uint32_t x, uint32_t y,
+                            uint32_t w, uint32_t h, uint32_t color)
+{
+    register uint64_t r10 __asm__("r10") = (uint64_t)h;
+    register uint64_t r8  __asm__("r8")  = (uint64_t)color;
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r)
+        : "a"((uint64_t)SYS_FB_RECT),
+          "D"((uint64_t)x), "S"((uint64_t)y),
+          "d"((uint64_t)w), "r"(r10), "r"(r8)
+        : "rcx","r11","memory");
+}
+static inline void fb_clear(uint32_t color)
+{
+    syscall1(SYS_FB_CLEAR, (uint64_t)color);
+}
+static inline int fb_info(uint32_t *w, uint32_t *h, uint32_t *active)
+{
+    uint32_t buf[4];
+    int64_t r = syscall1(SYS_FB_INFO, (uint64_t)(uintptr_t)buf);
+    *w = buf[0]; *h = buf[1]; *active = buf[2];
+    return (int)r;
+}
+static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+
+
+static inline void fb_str(uint32_t x, uint32_t y, const char *s,
+                           uint32_t fg, uint32_t bg)
+{
+    register uint64_t r10 __asm__("r10") = (uint64_t)fg;
+    register uint64_t r8  __asm__("r8")  = (uint64_t)bg;
+    int64_t r;
+    __asm__ volatile ("syscall"
+        : "=a"(r)
+        : "a"((uint64_t)SYS_FB_STR),
+          "D"((uint64_t)x), "S"((uint64_t)y),
+          "d"((uint64_t)(uintptr_t)s),
+          "r"(r10), "r"(r8)
+        : "rcx","r11","memory");
+}
+static inline void mouse_pos(int32_t *x, int32_t *y, int32_t *btn)
+{
+    int32_t buf[3];
+    syscall1(SYS_MOUSE_POS, (uint64_t)(uintptr_t)buf);
+    *x = buf[0]; *y = buf[1]; *btn = buf[2];
+}
+#define SYS_POWEROFF  32
+#define SYS_REBOOT    33
+static inline uint64_t uptime(void) { return (uint64_t)syscall0(SYS_UPTIME); }
+static inline void poweroff(void) { syscall0(SYS_POWEROFF); }
+static inline void reboot(void)   { syscall0(SYS_REBOOT); }
+
+#define SYS_SPAWN     39
+static inline int64_t spawn(const char *path)
+{
+    return syscall1(SYS_SPAWN, (uint64_t)(uintptr_t)path);
+}
+
+/* ping: send ICMP echo to ip, returns 0=ok -1=timeout */
+static inline int64_t ping(ip4_t ip) { return syscall1(SYS_PING, (uint64_t)ip); }
+
+
+#define SYS_FB_CIRCLE  42
+#define SYS_FB_RRECT   43
+
+static inline void fb_circle(int cx, int cy, int r, uint32_t color)
+{
+    /* rdi=cx  rsi=cy  rdx=r  r10=color */
+    register uint64_t r10 __asm__("r10") = (uint64_t)color;
+    int64_t ret;
+    __asm__ volatile ("syscall"
+        : "=a"(ret)
+        : "a"((uint64_t)SYS_FB_CIRCLE),
+          "D"((uint64_t)(int64_t)cx),
+          "S"((uint64_t)(int64_t)cy),
+          "d"((uint64_t)(int64_t)r),
+          "r"(r10)
+        : "rcx","r11","r8","r9","memory");
+}
+
+
+static inline int chdir(const char *path)
+{
+    return (int)syscall1(SYS_CHDIR, (uint64_t)(uintptr_t)path);
+}
+
+static inline int getcwd(char *buf, uint64_t size)
+{
+    return (int)syscall2(SYS_GETCWD, (uint64_t)(uintptr_t)buf, size);
+}
+static inline void fb_flip(void)
+{
+    syscall0(SYS_FB_FLIP);
+}
+
+static inline void fb_rrect(int x, int y, int w, int h, int r, uint32_t color)
+{
+    /* syscall6: rdi=x rsi=y rdx=w r10=h r8=radius r9=color */
+    syscall6(SYS_FB_RRECT,
+             (uint64_t)(int64_t)x, (uint64_t)(int64_t)y,
+             (uint64_t)(int64_t)w, (uint64_t)(int64_t)h,
+             (uint64_t)(int64_t)r, (uint64_t)color);
+}
