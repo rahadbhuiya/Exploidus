@@ -2,6 +2,16 @@
 
 A custom x86-64 operating system kernel built from scratch.
 
+
+
+
+## Demo
+
+![Exploidus Boot Demo](docs/exploidus_demo.gif)
+
+
+
+
 **Features:**
 - Multiboot2 boot via GRUB2
 - 4-level x86-64 paging with NX enforcement
