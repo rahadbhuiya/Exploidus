@@ -5,7 +5,7 @@
 #include "../../mm/kmalloc.h"
 #include <string.h>
 
-#define MAX_TCP_CONNS  32
+#define MAX_TCP_CONNS  256
 #define ISS_BASE       0x12345678   /* fallback if RDRAND unavailable */
 
 static tcp_conn_t g_conns[MAX_TCP_CONNS];
