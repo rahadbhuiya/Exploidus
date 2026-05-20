@@ -3,6 +3,7 @@
 #include "../net.h"
 #include "../../drivers/serial.h"
 #include "../../mm/kmalloc.h"
+#include "../../cnsl/cnsl.h"
 #include <string.h>
 
 static uint16_t g_ip_id = 0;
@@ -197,6 +198,12 @@ void ip4_input(netif_t *iface, netbuf_t *buf)
 
     /* Accept only packets addressed to us or broadcast */
     if (dst != iface->ip && dst != IP4_BROADCAST) return;
+
+    /* CNSL: drop packets from blocked IPs before any processing */
+    if (cnsl_is_blocked(src)) {
+        serial_print("[CNSL] dropped packet from blocked IP\n");
+        return;
+    }
 
     uint16_t flags_offset = ntohs(hdr->flags_offset);
     bool     is_fragment  = (flags_offset & IP_FLAG_MF) ||

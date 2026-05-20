@@ -3,9 +3,10 @@
 #include "../net.h"
 #include "../../drivers/serial.h"
 #include "../../mm/kmalloc.h"
+#include "../../cnsl/cnsl.h"
 #include <string.h>
 
-#define MAX_TCP_CONNS  256
+#define MAX_TCP_CONNS  32
 #define ISS_BASE       0x12345678   /* fallback if RDRAND unavailable */
 
 static tcp_conn_t g_conns[MAX_TCP_CONNS];
@@ -169,6 +170,20 @@ void tcp_input(netif_t *iface, netbuf_t *buf, ip4_t src, ip4_t dst)
     uint32_t   seq      = ntohl(hdr->seq);
     uint32_t   ack_num  = ntohl(hdr->ack);
     uint8_t    flags    = hdr->flags;
+
+    /* CNSL: Honeypot port detection — after flags is available */
+    if (flags & TCP_SYN) {
+        static const uint16_t HONEYPOT_PORTS[] = {
+            23, 3389, 6379, 27017, 5900, 445,
+        };
+        for (int _i = 0; _i < 6; _i++) {
+            if (dst_port == HONEYPOT_PORTS[_i]) {
+                serial_print("[CNSL] Honeypot port hit\n");
+                cnsl_ingest(src, CNSL_KIND_FW_HONEYPOT_PORT);
+                break;
+            }
+        }
+    }
 
     if (hdr_len < TCP_HDR_LEN || hdr_len > buf->len) return;
 
