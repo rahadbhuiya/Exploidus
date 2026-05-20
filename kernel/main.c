@@ -13,6 +13,8 @@
 #include "syscall/table.h"
 extern void syscall_init_msr(void);
 #include "audit/audit.h"
+#include "cnsl/cnsl.h"
+#include "cnsl/fim.h"
 #include "drivers/vga.h"
 #include "drivers/fb.h"
 #include "drivers/font.h"
@@ -159,6 +161,10 @@ extern void jump_to_userspace(uint64_t entry, uint64_t stack, uint64_t pml4);
 extern uint8_t _binary_build_userspace_shell_exploish_elf_start[] __attribute__((weak));
 extern uint8_t _binary_build_userspace_shell_exploish_elf_end[]   __attribute__((weak));
 
+/*  Init blob symbols (objcopy)  */
+extern uint8_t _binary_build_userspace_bin_init_elf_start[] __attribute__((weak));
+extern uint8_t _binary_build_userspace_bin_init_elf_end[]   __attribute__((weak));
+
 
 /*  kprint   */
 
@@ -252,6 +258,12 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     kprint("[NET ] Initializing TCP/IP network stack...\n");
     net_init();
 
+    kprint("[CNSL] Starting correlated security layer...\n");
+    cnsl_init();
+
+    kprint("[FIM ] Starting file integrity monitor...\n");
+    fim_init();
+
     kprint("[ExFS] Attempting to mount root filesystem...\n");
     vfs_node_t *fs_root = exfs_mount(0);
     if (fs_root) {
@@ -283,8 +295,41 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     kprint("\nAll subsystems nominal.\n");
     kprint("Exploidus kernel ready.\n\n");
 
+    /* Try to launch init first — init will spawn shell and daemons */
+    if (_binary_build_userspace_bin_init_elf_start != NULL &&
+        (void *)_binary_build_userspace_bin_init_elf_start !=
+        (void *)_binary_build_userspace_bin_init_elf_end)
+    {
+        uint64_t init_size =
+            (uint64_t)(_binary_build_userspace_bin_init_elf_end
+                     - _binary_build_userspace_bin_init_elf_start);
 
-    /*  launch shell  */
+        serial_print("[INIT] Loading init ELF\n");
+
+        uint64_t init_pml4  = 0;
+        uint64_t init_entry = 0;
+        uint64_t init_stack = 0;
+
+        if (elf_load(_binary_build_userspace_bin_init_elf_start,
+                     init_size, &init_pml4, &init_entry, &init_stack))
+        {
+            if (init_proc) {
+                sched_dequeue(init_proc);
+                init_proc->state = PROC_RUNNING;
+                init_proc->cr3   = init_pml4;
+                g_current_proc   = init_proc;
+                tss_set_rsp0(init_proc->kernel_stack_top);
+                g_kernel_stack_top   = init_proc->kernel_stack_top;
+                g_syscall_kernel_rsp = init_proc->kernel_stack_top;
+            }
+            serial_print("[INIT] Jumping to init (PID 1)\n");
+            __asm__ volatile("cli\njmp jump_to_userspace\n"
+                : : "D"(init_entry), "S"(init_stack), "d"(init_pml4));
+        }
+        serial_print("[INIT] init ELF load failed, falling back to shell\n");
+    }
+
+    /*  launch shell (fallback if no init)  */
     if (_binary_build_userspace_shell_exploish_elf_start != NULL &&
         (void *)_binary_build_userspace_shell_exploish_elf_start !=
         (void *)_binary_build_userspace_shell_exploish_elf_end)
