@@ -118,9 +118,27 @@ static void unblock_waiters(void)
     }
 }
 
+static void unblock_sleepers(void)
+{
+    uint32_t count;
+    const process_t *table = proc_get_table(&count);
+
+    for (uint32_t i = 0; i < count; i++) {
+        process_t *p = (process_t *)&table[i];
+        if (p->state != PROC_BLOCKED || p->wake_tick == 0)
+            continue;
+        if (g_uptime_ticks >= p->wake_tick) {
+            p->wake_tick = 0;
+            p->state     = PROC_READY;
+            sched_enqueue(p);
+        }
+    }
+}
+
 void sched_tick(void)
 {
     g_uptime_ticks++;
+    unblock_sleepers();
     unblock_waiters();
 }
 
@@ -149,10 +167,14 @@ void sched_yield(void)
             __asm__ volatile ("sti" ::: "memory");
             return;
         }
-        /* Shutdown QEMU via ACPI */
-        __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
-        __asm__ volatile ("cli");
-        for (;;) __asm__ volatile ("hlt");
+        /* No runnable process — idle until timer wakes something */
+        while (1) {
+            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            unblock_sleepers();
+            unblock_waiters();
+            next = sched_next();
+            if (next) break;
+        }
     }
 
     sched_dequeue(next);
