@@ -15,15 +15,64 @@ static void _print_int(int64_t n) {
 static const char *_skip(const char *s) { while (*s == ' ') s++; return s; }
 
 static void _abs(const char *path, char *out, int max) {
+    char tmp[256];
+    int i = 0;
+
+    /* Build full path */
     if (path[0] == '/') {
-        int i = 0;
-        while (*path && i < max-1) out[i++] = *path++;
-        out[i] = 0;
+        /* absolute */
+        while (*path && i < 255) tmp[i++] = *path++;
+        tmp[i] = 0;
     } else {
-        out[0] = '/'; int i = 1;
-        while (*path && i < max-1) out[i++] = *path++;
-        out[i] = 0;
+        /* relative — get cwd first */
+        if (getcwd(tmp, 256) < 0 || tmp[0] == '\0') {
+            tmp[0] = '/'; tmp[1] = '\0';
+        }
+        i = 0;
+        while (tmp[i]) i++;
+        if (i > 1 && tmp[i-1] != '/') tmp[i++] = '/';
+        while (*path && i < 255) tmp[i++] = *path++;
+        tmp[i] = 0;
     }
+
+    /* Resolve . and .. */
+    char res[256];
+    int  ri = 0;
+    char *p = tmp;
+    res[ri++] = '/';
+
+    while (*p) {
+        /* skip slashes */
+        while (*p == '/') p++;
+        if (!*p) break;
+
+        /* read component */
+        char comp[128];
+        int ci = 0;
+        while (*p && *p != '/') comp[ci++] = *p++;
+        comp[ci] = 0;
+
+        if (ci == 0) continue;
+        if (ci == 1 && comp[0] == '.') continue; /* . */
+        if (ci == 2 && comp[0] == '.' && comp[1] == '.') {
+            /* go up — remove last component */
+            while (ri > 1 && res[ri-1] != '/') ri--;
+            if (ri > 1) ri--; /* remove trailing slash */
+            continue;
+        }
+
+        /* append component */
+        if (ri > 1) res[ri++] = '/';
+        int j = 0;
+        while (comp[j] && ri < max-1) res[ri++] = comp[j++];
+    }
+
+    res[ri] = 0;
+    if (ri == 0) { res[0] = '/'; res[1] = 0; }
+
+    i = 0;
+    while (res[i] && i < max-1) out[i] = res[i], i++;
+    out[i] = 0;
 }
 
 void cmd_ext_cd(const char *path) {

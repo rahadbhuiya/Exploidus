@@ -320,6 +320,9 @@ static inline int64_t ping(ip4_t ip) { return syscall1(SYS_PING, (uint64_t)ip); 
 
 #define SYS_FB_CIRCLE  42
 #define SYS_FB_RRECT   43
+#define SYS_FB_FLIP    44
+#define SYS_CHDIR      45
+#define SYS_GETCWD     46
 
 static inline void fb_circle(int cx, int cy, int r, uint32_t color)
 {
