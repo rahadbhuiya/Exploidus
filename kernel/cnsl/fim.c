@@ -22,7 +22,7 @@ static int k_strncmp(const char *a, const char *b, uint64_t n)
  * non-watched paths.
  */
 
-/* ─── Watched path table ──────────────────────────────────────────── */
+/*  Watched path table  */
 typedef struct {
     const char *path;        /* exact path or prefix if ends with / */
     bool        is_prefix;   /* true = watch everything under this dir */
@@ -53,7 +53,7 @@ static const fim_watch_t g_watched[] = {
 
 #define FIM_WATCH_COUNT (sizeof(g_watched) / sizeof(g_watched[0]))
 
-/* ─── Init ────────────────────────────────────────────────────────── */
+/*  Init  */
 void fim_init(void)
 {
     serial_print("[FIM ] File Integrity Monitor initialized\n");
@@ -67,7 +67,7 @@ void fim_init(void)
     serial_print(" critical paths\n");
 }
 
-/* ─── Match helper ────────────────────────────────────────────────── */
+/*  Match helper  */
 static const fim_watch_t *fim_match(const char *path)
 {
     if (!path) return NULL;
@@ -89,7 +89,7 @@ static const fim_watch_t *fim_match(const char *path)
     return NULL;
 }
 
-/* ─── Alert helper ────────────────────────────────────────────────── */
+/*  Alert helper  */
 static void fim_alert(const fim_watch_t *w, const char *path, uint8_t event)
 {
     const char *ev_str = (event == FIM_EVENT_WRITE)  ? "WRITE"  :
@@ -112,7 +112,7 @@ static void fim_alert(const fim_watch_t *w, const char *path, uint8_t event)
     }
 }
 
-/* ─── Public hooks ────────────────────────────────────────────────── */
+/*  Public hooks  */
 
 bool fim_on_write(const char *path)
 {

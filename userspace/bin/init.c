@@ -16,7 +16,7 @@
 
 #include "../libc/syscall.h"
 
-/* ─── Helpers ─────────────────────────────────────────────────────── */
+/*  Helpers  */
 static void print(const char *s) { puts(s); }
 static void println(const char *s) { puts(s); putc('\n'); }
 static void print_uint(uint64_t n)
@@ -27,7 +27,7 @@ static void print_uint(uint64_t n)
     while (i--) putc(buf[i]);
 }
 
-/* ─── Daemon table ────────────────────────────────────────────────── */
+/*  Daemon table  */
 #define MAX_DAEMONS 8
 #define RESTART_DELAY 100   /* ticks before restart */
 
@@ -53,7 +53,7 @@ static daemon_t g_daemons[] = {
 /* Shell is special — if it exits, we reboot */
 static int64_t g_shell_pid = -1;
 
-/* ─── Banner ──────────────────────────────────────────────────────── */
+/*  Banner  */
 static void print_banner(void)
 {
     println("");
@@ -64,7 +64,7 @@ static void print_banner(void)
     println("");
 }
 
-/* ─── Start one daemon ────────────────────────────────────────────── */
+/*  Start one daemon  */
 static int64_t start_daemon(daemon_t *d)
 {
     print("[INIT] Starting ");
@@ -86,7 +86,7 @@ static int64_t start_daemon(daemon_t *d)
     return pid;
 }
 
-/* ─── Start shell ─────────────────────────────────────────────────── */
+/*  Start shell  */
 static void start_shell(void)
 {
     println("[INIT] Starting exploish shell...");
@@ -101,7 +101,7 @@ static void start_shell(void)
     putc('\n');
 }
 
-/* ─── Main ────────────────────────────────────────────────────────── */
+/*  Main  */
 void main(void)
 {
     print_banner();

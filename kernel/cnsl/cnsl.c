@@ -3,7 +3,7 @@
 #include "../audit/audit.h"
 #include <string.h>
 
-/* ─── Config ──────────────────────────────────────────────────────── */
+/* Config  */
 #define CNSL_MAX_IPS        256   /* max tracked IPs */
 #define CNSL_EVENT_BUF      64    /* events per IP (circular) */
 #define CNSL_BLOCK_TABLE    64    /* max blocked IPs */
@@ -12,17 +12,17 @@
 #define CNSL_WINDOW_LONG    600   /* 10 min */
 #define CNSL_COOLDOWN       120   /* 2 min between same alerts */
 
-/* ─── Tick counter (incremented by sched_tick) ───────────────────── */
+/*  Tick counter (incremented by sched_tick)  */
 extern uint64_t g_uptime_ticks;
 #define NOW()  (g_uptime_ticks / 100)   /* ticks → seconds (100Hz PIT) */
 
-/* ─── Event entry ─────────────────────────────────────────────────── */
+/*  Event entry  */
 typedef struct {
     uint64_t ts;     /* seconds since boot */
     uint8_t  kind;
 } cnsl_event_t;
 
-/* ─── Per-IP buffer ───────────────────────────────────────────────── */
+/*  Per-IP buffer  */
 typedef struct {
     uint32_t      ip;
     cnsl_event_t  events[CNSL_EVENT_BUF];
@@ -31,7 +31,9 @@ typedef struct {
     uint64_t      last_alert_ts[9];  /* cooldown per rule index */
 } ip_buf_t;
 
-/* ─── Block table ─────────────────────────────────────────────────── */
+
+
+/*  Block table  */
 typedef struct {
     uint32_t ip;
     bool     active;
@@ -42,7 +44,9 @@ static block_entry_t g_block_table[CNSL_BLOCK_TABLE];
 static uint16_t g_ip_count    = 0;
 static uint16_t g_block_count = 0;
 
-/* ─── Init ────────────────────────────────────────────────────────── */
+
+
+/*  Init  */
 void cnsl_init(void)
 {
     memset(g_ip_table,    0, sizeof(g_ip_table));
@@ -52,7 +56,8 @@ void cnsl_init(void)
     serial_print("[CNSL] Correlated Network Security Layer initialized\n");
 }
 
-/* ─── Helpers ─────────────────────────────────────────────────────── */
+
+/*  Helpers  */
 static ip_buf_t *find_or_create_buf(uint32_t ip)
 {
     /* find existing */
@@ -109,7 +114,7 @@ static bool check_cooldown(ip_buf_t *buf, uint8_t rule_idx)
     return true;
 }
 
-/* ─── Rules ───────────────────────────────────────────────────────── */
+/*  Rules  */
 
 /* Rule 0: Honeypot port + SSH fail = automated scanner */
 static bool rule_honeypot_ssh(ip_buf_t *buf, uint32_t ip)
@@ -187,7 +192,7 @@ static bool rule_web_auth_flood(ip_buf_t *buf, uint32_t ip)
     return false;
 }
 
-/* ─── Public: ingest event ────────────────────────────────────────── */
+/*  Public: ingest event  */
 bool cnsl_ingest(uint32_t src_ip, uint8_t kind)
 {
     if (kind >= CNSL_KIND_COUNT) return false;
@@ -215,7 +220,8 @@ bool cnsl_ingest(uint32_t src_ip, uint8_t kind)
     return false;
 }
 
-/* ─── Public: is IP blocked? ──────────────────────────────────────── */
+
+/*  Public: is IP blocked?  */
 bool cnsl_is_blocked(uint32_t ip)
 {
     for (int i = 0; i < g_block_count; i++)

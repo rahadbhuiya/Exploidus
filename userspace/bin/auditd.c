@@ -27,12 +27,12 @@
 
 #include "../libc/syscall.h"
 
-/* ─── Config ──────────────────────────────────────────────────────── */
+/*  Config  */
 #define AUDIT_BUF_SIZE   256
 #define POLL_INTERVAL    50    /* ticks (~500ms at 100Hz) */
 #define LOG_PATH         "/var/log/audit.log"
 
-/* ─── Helpers ─────────────────────────────────────────────────────── */
+/*  Helpers  */
 static void println(const char *s) { puts(s); putc('\n'); }
 
 static void print_uint(uint64_t n)
@@ -79,7 +79,7 @@ static int is_critical(uint32_t ev)
     return (ev == 1 || ev == 2);
 }
 
-/* ─── Log one entry to stdout + log file ─────────────────────────── */
+/*  Log one entry to stdout + log file  */
 static void log_entry(int logfd, const audit_entry_user_t *e)
 {
     /* Format: [TICK] PID=N EVENT arg0=X arg1=X */
@@ -103,7 +103,7 @@ static void log_entry(int logfd, const audit_entry_user_t *e)
     }
 }
 
-/* ─── Main ────────────────────────────────────────────────────────── */
+/*  Main  */
 void main(void)
 {
     println("=== Exploidus Audit Daemon (auditd) ===");
