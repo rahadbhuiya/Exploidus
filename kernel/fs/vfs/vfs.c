@@ -1,5 +1,6 @@
 #include "vfs.h"
 #include "../../drivers/serial.h"
+#include "../../cnsl/fim.h"
 #include <string.h>
 
 #define MAX_MOUNTS 16
@@ -207,6 +208,10 @@ int64_t vfs_write(int fd, const void *buf, uint64_t len)
     if (!node || !node->ops || !node->ops->write)
         return -1;
 
+    /* FIM: check if this is a critical path before writing */
+    if (node->name[0])
+        fim_on_write(node->name);
+
     int64_t n = node->ops->write(node, g_fds[fd].offset, buf, len);
 
     if (n > 0)
@@ -253,6 +258,9 @@ int vfs_create(const char *path, uint8_t type)
     vfs_node_t *newnode = dir->ops->create(dir, name, type);
     if (!newnode) return -1;
 
+    /* FIM: check if new file is in a watched path */
+    fim_on_create(path);
+
     /* Open the new file and return fd */
     for (int i = 3; i < VFS_MAX_FDS; i++) {
         if (!g_fds[i].active) {
@@ -274,6 +282,45 @@ vfs_node_t *vfs_get_cwd(void)
 
 int vfs_chdir(const char *path)
 {
+    char abspath[512];
+
+    /* Convert relative path to absolute */
+    if (path[0] != '/') {
+        /* build absolute path from cwd */
+        if (g_cwd && g_cwd->name[0]) {
+            /* Try /mountpoint/path */
+            abspath[0] = '/';
+            abspath[1] = '\0';
+            /* find cwd path by checking mounts */
+            for (int i = 0; i < g_mount_count; i++) {
+                if (!g_mounts[i].active) continue;
+                if (g_mounts[i].root == g_cwd ||
+                    g_mounts[i].root->ops->lookup(g_mounts[i].root, path)) {
+                    /* build /mountpoint/path */
+                    uint64_t mlen = strlen(g_mounts[i].mountpoint);
+                    uint64_t plen = strlen(path);
+                    if (mlen + plen + 2 < 512) {
+                        memcpy(abspath, g_mounts[i].mountpoint, mlen);
+                        if (abspath[mlen-1] != '/') abspath[mlen++] = '/';
+                        memcpy(abspath + mlen, path, plen + 1);
+                        vfs_node_t *node = vfs_lookup(abspath);
+                        if (node && node->type == VFS_DIRECTORY) {
+                            g_cwd = node;
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+        /* fallback: try /path */
+        abspath[0] = '/';
+        uint64_t plen = strlen(path);
+        if (plen + 2 < 512) {
+            memcpy(abspath + 1, path, plen + 1);
+            path = abspath;
+        }
+    }
+
     vfs_node_t *node = vfs_lookup(path);
     if (!node) return -1;
     if (node->type != VFS_DIRECTORY) return -1;

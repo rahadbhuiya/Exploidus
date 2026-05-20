@@ -45,7 +45,9 @@ KERNEL_C_SRCS := \
     kernel/net/arp/arp.c kernel/net/ip/ip.c \
     kernel/net/icmp/icmp.c kernel/net/udp/udp.c \
     kernel/net/tcp/tcp.c kernel/net/socket/socket.c \
-    kernel/net/drivers/e1000.c
+    kernel/net/drivers/e1000.c \
+    kernel/cnsl/cnsl.c \
+    kernel/cnsl/fim.c
 
 KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \
@@ -57,6 +59,8 @@ KERNEL_ASM_SRCS := \
 
 SHELL_C_SRCS   := userspace/shell/exploish.c userspace/shell/exploish_cmds.c
 HELLO_C_SRCS   := userspace/bin/hello.c
+AUDITD_C_SRCS  := userspace/bin/auditd.c
+INIT_C_SRCS    := userspace/bin/init.c
 SHELL_ASM_SRCS := userspace/libc/crt0.asm
 
 #  OBJECTS 
@@ -64,6 +68,8 @@ KC_OBJS  := $(patsubst %.c,   build/%.o, $(KERNEL_C_SRCS))
 KA_OBJS  := $(patsubst %.asm, build/%.o, $(KERNEL_ASM_SRCS))
 SC_OBJS  := $(patsubst %.c,   build/%.o, $(SHELL_C_SRCS))
 HC_OBJS  := $(patsubst %.c,   build/%.o, $(HELLO_C_SRCS))
+AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
+IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
 SA_OBJS  := $(patsubst %.asm, build/%.o, $(SHELL_ASM_SRCS))
 
 ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
@@ -75,16 +81,26 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/bin/hello.elf
+all: build/exploidus.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf
+
+build/userspace/bin/init.elf: $(SA_OBJS) $(IN_OBJS) userspace/bin/init.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  init   -> $@"
+	$(LD) -T userspace/bin/init.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(IN_OBJS)
+
+build/userspace/bin/auditd.elf: $(SA_OBJS) $(AD_OBJS) userspace/bin/auditd.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  auditd -> $@"
+	$(LD) -T userspace/bin/auditd.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(AD_OBJS)
 #  KERNEL ELF 
 build/userspace/bin/hello.elf: $(SA_OBJS) $(HC_OBJS) userspace/bin/hello.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  hello  -> $@"
 	$(LD) -T userspace/bin/hello.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(HC_OBJS)
 
-build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o linker.ld
+build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o linker.ld
 	@echo "[LD]  kernel -> $@"
-	$(LD) $(LDFLAGS) -o $@ $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o
+	$(LD) $(LDFLAGS) -o $@ $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o
 
 #  SHELL ELF 
 build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) userspace/shell/shell.ld
@@ -200,11 +216,11 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf
+build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/shell/exploish.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/shell/exploish.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img
@@ -215,6 +231,18 @@ qemu-disk: build/exploidus.iso build/disk.img
 	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
 	    -m 256M \
 	    -device usb-ehci -device usb-tablet \
+	    -serial stdio \
+	    -cpu qemu64,+rdrand
+
+qemu-gui: build/exploidus.iso build/disk.img
+	qemu-system-x86_64 \
+	    -cdrom build/exploidus.iso \
+	    -netdev user,id=n0 \
+	    -device e1000,netdev=n0 \
+	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
+	    -m 256M \
+	    -device usb-ehci -device usb-tablet \
+	    -vga virtio \
 	    -serial stdio \
 	    -cpu qemu64,+rdrand
 
@@ -234,4 +262,8 @@ qemu-run: build/exploidus.iso build/disk.img
 # Hello binary blob
 build/hello_blob.o: build/userspace/bin/hello.elf
 	@echo "[BIN] embedding hello blob"
+	x86_64-elf-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 $< $@
+
+build/init_blob.o: build/userspace/bin/init.elf
+	@echo "[BIN] embedding init blob"
 	x86_64-elf-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 $< $@
