@@ -378,14 +378,33 @@ static void cmd_nafu(const char *args)
 
 static void cmd_ls(const char *path)
 {
-    if (!*path) path = "/";
     char abspath[256];
-    if (path[0] != '/') {
-        abspath[0] = '/';
-        int i = 1;
-        const char *s = path;
-        while (*s && i < 254) abspath[i++] = *s++;
-        abspath[i] = '\0';
+    if (!path || !*path) {
+        /* use cwd */
+        if (getcwd(abspath, 256) < 0 || abspath[0] == '\0')
+            abspath[0] = '/', abspath[1] = '\0';
+        path = abspath;
+    } else if (path[0] != '/') {
+        /* relative — prepend cwd */
+        char cwd[200];
+        if (getcwd(cwd, 200) >= 0 && cwd[0]) {
+            int clen = 0;
+            while (cwd[clen]) clen++;
+            abspath[0] = '\0';
+            int i = 0;
+            const char *s = cwd;
+            while (*s && i < 200) abspath[i++] = *s++;
+            if (i > 1 && abspath[i-1] != '/') abspath[i++] = '/';
+            s = path;
+            while (*s && i < 254) abspath[i++] = *s++;
+            abspath[i] = '\0';
+        } else {
+            abspath[0] = '/';
+            int i = 1;
+            const char *s = path;
+            while (*s && i < 254) abspath[i++] = *s++;
+            abspath[i] = '\0';
+        }
         path = abspath;
     }
     int fd = open(path, 0);
@@ -1223,8 +1242,15 @@ static void cmd_shutdown(void)
     int has_fb = (fb_info(&w, &h, &active) >= 0 && active);
 
     if (!has_fb) {
-        println("Shutting down...");
-        sleep_ticks(50);
+        println("");
+        println("╔══════════════════════════════════════╗");
+        println("║       EXPLOIDUS  —  SHUTDOWN         ║");
+        println("║                                      ║");
+        println("║   Saving state...                    ║");
+        println("║   Unmounting filesystems...          ║");
+        println("║   Powering off...                    ║");
+        println("╚══════════════════════════════════════╝");
+        println("");
         poweroff();
         return;
     }
@@ -1303,8 +1329,14 @@ static void cmd_reboot(void)
     uint32_t w, h, active;
     int has_fb = (fb_info(&w, &h, &active) >= 0 && active);
     if (!has_fb) {
-        println("Rebooting...");
-        sleep_ticks(50);
+        println("");
+        println("╔══════════════════════════════════════╗");
+        println("║       EXPLOIDUS  —  REBOOT           ║");
+        println("║                                      ║");
+        println("║   Syncing...                         ║");
+        println("║   Restarting system...               ║");
+        println("╚══════════════════════════════════════╝");
+        println("");
         reboot();
         return;
     }
@@ -1632,15 +1664,36 @@ static void dispatch(const char *line)
         }
         exit(code);
     } else {
-            /* Try to run as program from disk */
+            /* Try to run as program — check /bin/ first, then absolute */
             char path[260];
-            path[0] = '/';
-            int i = 1;
+            int i = 0;
             const char *s = l;
             while (*s && *s != ' ' && i < 257) path[i++] = *s++;
             path[i] = '\0';
 
-            int64_t pid = spawn(path);
+            /* If not absolute path, try /bin/<cmd> first */
+            char binpath[270];
+            int64_t pid = -1;
+
+            if (path[0] != '/') {
+                binpath[0] = '/'; binpath[1] = 'b'; binpath[2] = 'i';
+                binpath[3] = 'n'; binpath[4] = '/';
+                int j = 5, k = 0;
+                while (path[k] && j < 268) binpath[j++] = path[k++];
+                binpath[j] = '\0';
+                pid = spawn(binpath);
+            }
+
+            /* fallback: try as-is with / prefix */
+            if (pid < 0) {
+                char abspath[260];
+                abspath[0] = '/';
+                int j = 1, k = 0;
+                while (path[k] && j < 258) abspath[j++] = path[k++];
+                abspath[j] = '\0';
+                pid = spawn(abspath);
+            }
+
             if (pid < 0) {
                 print("exploish: command not found: ");
                 println(l);
@@ -1665,11 +1718,17 @@ int main(void)
     println("");
 
     for (;;) {
-        /* Print prompt */
+        /* Print prompt with cwd */
         int64_t pid = getpid();
+        char cwd[256];
+        if (getcwd(cwd, 256) < 0 || cwd[0] == '\0') {
+            cwd[0] = '/'; cwd[1] = '\0';
+        }
         print("root@exploidus[");
         print_int(pid);
-        print("]:~$ ");
+        print("]:");
+        print(cwd);
+        print("$ ");
 
         /* Read command */
         int n = read_line(line, (int)sizeof(line));
