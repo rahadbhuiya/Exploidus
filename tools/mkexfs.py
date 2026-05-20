@@ -7,7 +7,6 @@ INODE_SIZE  = 256
 
 def make_inode(mode, size, direct_blocks):
     d = list(direct_blocks) + [0]*(12-len(direct_blocks))
-    # struct: size(Q) created_at(Q) modified_at(Q) creator_pid(I) mode(I) direct[12](Q) indirect(Q) double(Q) triple(Q) prov_head(Q) prov_count(I) block_hash(8s) reserved(16s)
     return struct.pack("<QQQ"+"II"+"Q"*12+"QQQ"+"QI"+"8s84s",
         size, 0, 0, 0, mode,
         *d, 0, 0, 0, 0, 0,
@@ -19,8 +18,8 @@ def make_dirent(inode_num, name, ftype):
         inode_num, len(name_b), ftype, 0,
         b'\x00', name_b + b'\x00'*(256-len(name_b)))
 
-disk_path = sys.argv[1]
-hello_path = sys.argv[2] if len(sys.argv) > 2 else None
+disk_path  = sys.argv[1]
+elf_paths  = sys.argv[2:]   # all remaining args are ELF files
 
 disk_size    = os.path.getsize(disk_path)
 total_blocks = disk_size // BLOCK_SIZE
@@ -67,42 +66,87 @@ def write_inode(ino, inode_data):
     off = blk * BLOCK_SIZE + (ino % ipb) * INODE_SIZE
     img[off:off+INODE_SIZE] = bytes(inode_data)[:INODE_SIZE]
 
+def write_file_to_disk(ino, filepath):
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    blocks = []
+    for i in range(0, len(data), BLOCK_SIZE):
+        blk = alloc_block()
+        write_block(blk, data[i:i+BLOCK_SIZE])
+        blocks.append(blk)
+    inode = make_inode(0o755, len(data), blocks[:12])
+    write_inode(ino, inode)
+    return len(data), len(blocks)
+
 # Root inode (inode 0) - directory
 root_dir_block = alloc_block()
 root_inode = make_inode(0o755, 0, [root_dir_block])
 write_inode(0, root_inode)
 
-# Root directory block (initially empty)
-dir_block_data = bytearray(BLOCK_SIZE)
+# bin inode (inode 1) - /bin directory
+bin_dir_block = alloc_block()
+bin_inode = make_inode(0o755, 0, [bin_dir_block])
+write_inode(1, bin_inode)
 
-next_ino = 1
+# var/log directory inodes
+var_dir_block = alloc_block()
+var_inode = make_inode(0o755, 0, [var_dir_block])
+write_inode(2, var_inode)
 
-# Write hello.elf if provided
-if hello_path and os.path.exists(hello_path):
-    with open(hello_path, 'rb') as f:
-        hello_data = f.read()
+log_dir_block = alloc_block()
+log_inode = make_inode(0o755, 0, [log_dir_block])
+write_inode(3, log_inode)
 
-    # Allocate blocks for hello
-    hello_blocks = []
-    for i in range(0, len(hello_data), BLOCK_SIZE):
-        blk = alloc_block()
-        chunk = hello_data[i:i+BLOCK_SIZE]
-        write_block(blk, chunk)
-        hello_blocks.append(blk)
+# Root directory — add bin/ and var/ entries
+root_dir_data = bytearray(BLOCK_SIZE)
+# bin entry
+de_bin = struct.pack("<QHBB256s", 1, 3, 1, 0, b'bin'+b'\x00'*253)
+root_dir_data[0:len(de_bin)] = de_bin
+# var entry
+de_var = struct.pack("<QHBB256s", 2, 3, 1, 0, b'var'+b'\x00'*253)
+root_dir_data[len(de_bin):len(de_bin)+len(de_var)] = de_var
+write_block(root_dir_block, root_dir_data)
 
-    # Hello inode (inode 1)
-    hello_inode = make_inode(0o755, len(hello_data), hello_blocks[:12])
-    write_inode(next_ino, hello_inode)
+# var directory — add log/
+var_dir_data = bytearray(BLOCK_SIZE)
+de_log = struct.pack("<QHBB256s", 3, 3, 1, 0, b'log'+b'\x00'*253)
+var_dir_data[0:len(de_log)] = de_log
+write_block(var_dir_block, var_dir_data)
 
-    # Add dirent to root
+# Write ELF files into /bin/
+next_ino = 4
+bin_dir_data = bytearray(BLOCK_SIZE)
+bin_dir_offset = 0
+
+# Map of ELF filename → disk name
+NAME_MAP = {
+    'exploish.elf':  'exploish',
+    'auditd.elf':    'auditd',
+    'init.elf':      'init',
+    'hello.elf':     'hello',
+}
+
+for elf_path in elf_paths:
+    if not elf_path or not os.path.exists(elf_path):
+        print(f"  skipping {elf_path} (not found)")
+        continue
+
+    basename = os.path.basename(elf_path)
+    disk_name = NAME_MAP.get(basename, basename.replace('.elf', ''))
+
+    size, nblocks = write_file_to_disk(next_ino, elf_path)
+
+    name_b = disk_name.encode()
     de = struct.pack("<QHBB256s",
-        next_ino, 5, 0, 0,
-        b'hello'+b'\x00'*251)
-    dir_block_data[0:len(de)] = de
-    next_ino += 1
-    print(f"  added /hello ({len(hello_data)} bytes, {len(hello_blocks)} blocks)")
+        next_ino, len(name_b), 0, 0,
+        name_b + b'\x00'*(256-len(name_b)))
+    bin_dir_data[bin_dir_offset:bin_dir_offset+len(de)] = de
+    bin_dir_offset += len(de)
 
-write_block(root_dir_block, dir_block_data)
+    print(f"  added /bin/{disk_name} ({size} bytes, {nblocks} blocks)")
+    next_ino += 1
+
+write_block(bin_dir_block, bin_dir_data)
 
 # Block bitmap
 bitmap = bytearray(BLOCK_SIZE)
