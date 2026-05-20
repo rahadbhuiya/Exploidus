@@ -197,6 +197,13 @@ static __attribute__((unused)) int64_t sys_open(syscall_frame_t *f)
     if (i == max_len) return -1;
 
     int fd = vfs_open(path, flags);
+
+    /* O_CREAT: create file if not found */
+    if (fd < 0 && (flags & O_CREAT)) {
+        vfs_create(path, 0);
+        fd = vfs_open(path, flags);
+    }
+
     if (fd < 0) {
         serial_print("[SYS] open: not found: ");
         serial_print(path);
@@ -220,9 +227,15 @@ static __attribute__((unused)) int64_t sys_getpid(syscall_frame_t *f) { (void)f;
 static __attribute__((unused)) int64_t sys_sleep(syscall_frame_t *f)
 {
     extern uint64_t g_uptime_ticks;
-    uint64_t end = g_uptime_ticks + f->rdi;
-    while (g_uptime_ticks < end)
-        __asm__ volatile ("sti; hlt; cli" ::: "memory");
+    uint64_t ticks = f->rdi;
+    if (ticks == 0) return 0;
+
+    /* Block the process until wake time */
+    if (g_current_proc) {
+        g_current_proc->wake_tick = g_uptime_ticks + ticks;
+        g_current_proc->state     = PROC_BLOCKED;
+        sched_yield();
+    }
     return 0;
 }
 
@@ -779,8 +792,11 @@ static __attribute__((unused)) int64_t sys_poweroff(syscall_frame_t *f)
     (void)f;
     serial_print("[SYS] Shutting down...\n");
 
+    /* QEMU ACPI shutdown — try multiple ports */
     __asm__ volatile ("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
     __asm__ volatile ("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
+    /* QEMU newer versions */
+    __asm__ volatile ("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x4004));
 
     for(;;) __asm__ volatile ("cli; hlt");
     return 0;
@@ -791,21 +807,23 @@ static __attribute__((unused)) int64_t sys_reboot(syscall_frame_t *f)
     (void)f;
     serial_print("[SYS] Rebooting...\n");
 
-    uint32_t t = 100000;
-    while (t--) { __asm__ volatile("" ::: "memory"); }
+    __asm__ volatile ("cli");
 
-    /* Method 1: PS/2 keyboard controller reset */
+    /* PS/2 keyboard controller reset — works in QEMU */
+    uint32_t t = 100000;
+    while (t--) __asm__ volatile ("" ::: "memory");
+
     __asm__ volatile ("outb %0, %1" :: "a"((uint8_t)0xFE), "Nd"((uint16_t)0x64));
 
-    t = 100000;
-    while (t--) { __asm__ volatile("" ::: "memory"); }
+    t = 500000;
+    while (t--) __asm__ volatile ("" ::: "memory");
 
-    /* Method 2: triple fault via null IDT */
-    __asm__ volatile (
-        "lidt %0\n"
-        "int $0\n"
-        :: "m"(*(uint8_t*)0)
-    );
+    /* Fallback: triple fault */
+    static const struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) null_idt = {0, 0};
+    __asm__ volatile ("lidt %0\n int $0\n" :: "m"(null_idt));
 
     for(;;) __asm__ volatile ("cli; hlt");
     return 0;

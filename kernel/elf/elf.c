@@ -7,7 +7,7 @@
 
 #define PAGE_SIZE        4096UL
 #define USER_STACK_TOP   0x00007FFFFFFFE000ULL
-#define USER_STACK_PAGES 8
+#define USER_STACK_PAGES 64
 
 #define PML4_IDX(a) (((a) >> 39) & 0x1FF)
 #define PDPT_IDX(a) (((a) >> 30) & 0x1FF)
