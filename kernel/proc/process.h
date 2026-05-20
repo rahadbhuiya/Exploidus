@@ -74,6 +74,7 @@ typedef struct process {
 
     /* non-zero when blocked in waitpid() */
     uint32_t       blocked_on_pid;
+    uint64_t       wake_tick;      /* for sleep — unblock when uptime >= wake_tick */
 
     uint64_t       user_entry;
     uint64_t       user_stack_top;
