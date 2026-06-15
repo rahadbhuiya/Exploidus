@@ -49,7 +49,7 @@ process_t *proc_create(proc_intent_t intent, uint32_t parent_pid)
 
     p->pid        = g_next_pid++;
     p->parent_pid = parent_pid;
-    p->state      = PROC_READY;
+    p->state      = PROC_BLOCKED;   /* NOT ready until sys_spawn finishes setup */
     p->intent     = intent;
 
     /*  KERNEL STACK  */
@@ -105,6 +105,17 @@ void proc_exit(uint32_t pid, int code)
     p->exit_code = code;
 
     audit_record(AUDIT_PROC_EXIT, pid, (uint64_t)code, 0);
+
+    /* Immediately unblock any process waiting on this pid */
+    extern void sched_enqueue(process_t *);
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (g_proc_table[i].state == PROC_BLOCKED &&
+            g_proc_table[i].blocked_on_pid == pid) {
+            g_proc_table[i].blocked_on_pid = 0;
+            g_proc_table[i].state          = PROC_READY;
+            sched_enqueue(&g_proc_table[i]);
+        }
+    }
 }
 
 /*  LINK FIX  */

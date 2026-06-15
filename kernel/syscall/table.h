@@ -51,8 +51,18 @@
 #define SYS_FB_RRECT     43
 #define SYS_FB_FLIP      44
 #define SYS_CHDIR        45
-#define SYS_GETCWD       46
-#define SYS_COUNT        47
+#define SYS_GETCWD         46
+#define SYS_CNSL_UNBLOCK   47
+#define SYS_CNSL_BLOCK_TTL 48
+#define SYS_CNSL_LIST      49
+#define SYS_LSEEK          50
+#define SYS_STAT           51
+#define SYS_FSTAT          52
+#define SYS_DUP            53
+#define SYS_DUP2           54
+#define SYS_HTTP_GET       55   /* download URL to buffer */
+#define SYS_FILE_WRITE     56   /* create+write file atomically */
+#define SYS_COUNT          57
 
 
 

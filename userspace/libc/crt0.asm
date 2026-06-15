@@ -1,33 +1,33 @@
-; crt0.asm — C runtime entry point for all Exploidus user programs.
-;
-; The kernel jumps here via IRETQ. The stack is clean (RSP aligned).
-; We call main() and then exit() with its return value.
-;
-; Linked at the start of every user executable.
-
 bits 64
-section .text
+section .text._start
 global _start
 extern main
+extern __bss_end
 
+
+section .text._start
 _start:
-
-    ; Stack is already aligned to 16 bytes by jump_to_userspace.
-    ; argc and argv are not yet implemented — pass 0, NULL.
-    xor  rdi, rdi    ; argc = 0
-    xor  rsi, rsi    ; argv = NULL
-
-
-
-
+    ; Zero BSS using RIP-relative addresses (ASLR safe)
+    lea  rdi, [rel __bss_start_here]
+    lea  rcx, [rel __bss_end]
+    sub  rcx, rdi
+    jle  .done_bss
+    xor  al, al
+    rep  stosb
+.done_bss:
+    ; System V ABI: kernel placed argc at rsp, argv at rsp+8
+    mov  rdi, [rsp]            ; argc
+    lea  rsi, [rsp + 8]        ; argv
+    lea  rdx, [rsi + rdi*8 + 8] ; envp
     call main
-
-    ; exit(main's return value)
-    mov  rdi, rax
-    mov  rax, 0      ; SYS_EXIT = 0
+    ; exit syscall (SYS_EXIT = 0)
+    xor  rdi, rdi      ; exit code = 0
+    xor  rax, rax      ; SYS_EXIT = 0
     syscall
-
-    ; Should never reach here. Spin if it does.
 .hang:
     hlt
-    jmp .hang
+    jmp  .hang
+
+section .bss
+global __bss_start_here
+__bss_start_here: resb 0

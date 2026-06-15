@@ -110,6 +110,12 @@ void irq_dispatch(interrupt_frame_t *frame)
 
     uint8_t irq = vec - IRQ_BASE;
 
+    /* Poll network on every timer tick */
+    if (irq == 0) {
+        extern void net_poll(void);
+        net_poll();
+    }
+
     /* call handler if exists */
     if (g_handlers[irq])
         g_handlers[irq](frame);

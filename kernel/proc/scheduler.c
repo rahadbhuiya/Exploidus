@@ -37,6 +37,16 @@ void sched_enqueue(process_t *p)
 {
     if (!p || p->intent >= INTENT_COUNT) return;
 
+    /* Check if already in queue */
+    { process_t *chk = g_queues[p->intent];
+      while (chk) {
+          if (chk == p) {
+              return;
+          }
+          chk = chk->sched_next;
+      }
+    }
+
     p->sched_next = NULL;
 
     if (!g_queues[p->intent]) {
@@ -131,6 +141,9 @@ static void unblock_sleepers(void)
             p->wake_tick = 0;
             p->state     = PROC_READY;
             sched_enqueue(p);
+            serial_print("[SCHED] unblocked PID=");
+            serial_printhex((uint64_t)p->pid);
+            serial_print("\n");
         }
     }
 }
@@ -140,6 +153,9 @@ void sched_tick(void)
     g_uptime_ticks++;
     unblock_sleepers();
     unblock_waiters();
+    /* Poll network on every tick so TCP/IP works while processes run */
+    extern void net_poll(void);
+    net_poll();
 }
 
 void sched_yield(void)
@@ -175,6 +191,9 @@ void sched_yield(void)
             next = sched_next();
             if (next) break;
         }
+        serial_print("[SCHED] woke up, running PID=");
+        serial_printhex((uint64_t)next->pid);
+        serial_print("\n");
     }
 
     sched_dequeue(next);
@@ -185,7 +204,5 @@ void sched_yield(void)
     if (next == prev)
         return;
 
-    serial_printhex((uint64_t)next->pid);
-    serial_print("\n");
     context_switch(prev, next);
 }

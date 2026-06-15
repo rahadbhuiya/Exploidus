@@ -5,11 +5,13 @@ EXFS_MAGIC  = 0x45584653
 MAX_INODES  = 4096
 INODE_SIZE  = 256
 
-def make_inode(mode, size, direct_blocks):
+def make_inode(mode, size, direct_blocks, indirect=0):
     d = list(direct_blocks) + [0]*(12-len(direct_blocks))
     return struct.pack("<QQQ"+"II"+"Q"*12+"QQQ"+"QI"+"8s84s",
         size, 0, 0, 0, mode,
-        *d, 0, 0, 0, 0, 0,
+        *d,
+        indirect,  # indirect block pointer
+        0, 0, 0, 0,
         b'\x00'*8, b'\x00'*84)
 
 def make_dirent(inode_num, name, ftype):
@@ -74,7 +76,21 @@ def write_file_to_disk(ino, filepath):
         blk = alloc_block()
         write_block(blk, data[i:i+BLOCK_SIZE])
         blocks.append(blk)
-    inode = make_inode(0o755, len(data), blocks[:12])
+    
+    direct = blocks[:12]
+    indirect_blocks = blocks[12:]
+    
+    # indirect block
+    indirect_block_num = 0
+    if indirect_blocks:
+        indirect_block_num = alloc_block()
+        # write block numbers into indirect block
+        indirect_data = bytearray(BLOCK_SIZE)
+        for idx, blk in enumerate(indirect_blocks):
+            indirect_data[idx*8:(idx+1)*8] = blk.to_bytes(8, 'little')
+        write_block(indirect_block_num, indirect_data)
+    
+    inode = make_inode(0o755, len(data), direct, indirect_block_num)
     write_inode(ino, inode)
     return len(data), len(blocks)
 
@@ -124,6 +140,9 @@ NAME_MAP = {
     'auditd.elf':    'auditd',
     'init.elf':      'init',
     'hello.elf':     'hello',
+    'httpd.elf':     'httpd',
+    'ys.elf':        'ys',
+
 }
 
 for elf_path in elf_paths:

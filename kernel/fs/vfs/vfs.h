@@ -45,3 +45,16 @@ int         vfs_create(const char *path, uint8_t type);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);
 vfs_node_t *vfs_get_cwd(void);
+int64_t     vfs_lseek(int fd, int64_t offset, int whence);
+int         vfs_dup(int fd);
+int         vfs_dup2(int oldfd, int newfd);
+
+/* stat structure */
+typedef struct {
+    uint64_t size;    /* file size in bytes */
+    uint32_t type;    /* 0=file 1=dir 2=dev */
+    uint64_t inode;
+} vfs_stat_t;
+
+int vfs_stat(const char *path, vfs_stat_t *st);
+int vfs_fstat(int fd, vfs_stat_t *st);

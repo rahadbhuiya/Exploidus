@@ -1,4 +1,5 @@
 #include "arp.h"
+#include "../tcp/tcp.h"
 #include "../net.h"
 #include "../../drivers/serial.h"
 #include <string.h>
@@ -36,10 +37,11 @@ typedef struct {
     mac_addr_t mac;
     uint32_t   ttl;
     bool       valid;
+    bool       permanent;
 } arp_entry_t;
 
 static arp_entry_t g_cache[ARP_CACHE_SIZE];
-static uint32_t    g_tick = 0;
+extern uint64_t g_uptime_ticks;
 
 void arp_init(void)
 {
@@ -52,7 +54,7 @@ static void arp_cache_update(ip4_t ip, mac_addr_t mac)
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (g_cache[i].valid && g_cache[i].ip == ip) {
             g_cache[i].mac = mac;
-            g_cache[i].ttl = g_tick + ARP_TTL_TICKS;
+            g_cache[i].ttl = g_uptime_ticks + ARP_TTL_TICKS;
             return;
         }
     }
@@ -70,14 +72,24 @@ static void arp_cache_update(ip4_t ip, mac_addr_t mac)
 
     g_cache[target].ip    = ip;
     g_cache[target].mac   = mac;
-    g_cache[target].ttl   = g_tick + ARP_TTL_TICKS;
+    g_cache[target].ttl   = g_uptime_ticks + ARP_TTL_TICKS;
     g_cache[target].valid = true;
+}
+
+/* Pre-populate QEMU gateway after arp_cache_update is defined */
+void arp_preload_qemu_gateway(void)
+{
+    mac_addr_t gw_mac = {{ 0xde, 0x7c, 0x85, 0xe3, 0x74, 0x90 }};
+    arp_cache_update(IP4(10, 0, 2, 2), gw_mac);
+    /* Mark as permanent — never expires */
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (g_cache[i].valid && g_cache[i].ip == IP4(10, 0, 2, 2))
+            g_cache[i].permanent = true;
+    }
 }
 
 bool arp_resolve(netif_t *iface, ip4_t ip, mac_addr_t *out)
 {
-    g_tick++;
-
     /* Broadcast resolves to broadcast MAC */
     if (ip == IP4_BROADCAST) {
         for (int i = 0; i < 6; i++) out->b[i] = 0xFF;
@@ -87,7 +99,7 @@ bool arp_resolve(netif_t *iface, ip4_t ip, mac_addr_t *out)
     /* Same subnet — look up in cache */
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (g_cache[i].valid && g_cache[i].ip == ip &&
-            g_cache[i].ttl > g_tick)
+            (g_cache[i].permanent || g_cache[i].ttl > g_uptime_ticks))
         {
             *out = g_cache[i].mac;
             return true;
@@ -133,10 +145,13 @@ void arp_input(netif_t *iface, netbuf_t *buf)
 
     ip4_t sender_ip = ntohl(pkt->spa);
     arp_cache_update(sender_ip, pkt->sha);
+    tcp_flush_pending_synacks(iface, sender_ip);
 
     /* Only respond to requests targeting our IP */
     if (ntohs(pkt->op) != ARP_OP_REQUEST) return;
     if (ntohl(pkt->tpa) != iface->ip) return;
+
+    serial_print("[ARP] Replying to request for our IP\n");
 
     /* Send ARP reply */
     netbuf_t *reply = netbuf_alloc();
