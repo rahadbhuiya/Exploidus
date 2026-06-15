@@ -1,5 +1,10 @@
 #pragma once
-#include <stdint.h>
+/* Use local stdint — must come before any typedef */
+#ifdef __EXPLOIDUS_USERSPACE__
+#  include "stdint.h"
+#else
+#  include <stdint.h>
+#endif
 #include "../../kernel/syscall/table.h"
 
 #define SYS_EXIT          0
@@ -34,8 +39,11 @@
 #define SYS_UPTIME       40
 #define SYS_PING         41
 
+#ifndef _SYSCALL_H_TYPES_DEFINED
+#define _SYSCALL_H_TYPES_DEFINED
 typedef uint64_t size_t;
 typedef int64_t  ssize_t;
+#endif
 typedef uint32_t ip4_t;
 
 #define STDIN_FILENO  0
@@ -96,10 +104,12 @@ static inline int64_t syscall6(uint64_t n,
 }
 
 /*  Process  */
+#ifndef __EXPLOIDUS_LIBC__
 static inline void exit(int code)
 {
     syscall1(SYS_EXIT,(uint64_t)(int64_t)code); for(;;){}
 }
+#endif
 static inline int64_t fork(void)          { return syscall0(SYS_FORK); }
 static inline int64_t getpid(void)        { return syscall0(SYS_GETPID); }
 static inline int64_t yield(void)         { return syscall0(SYS_YIELD); }
@@ -208,12 +218,16 @@ static inline void xclose(int fd)
 static inline ip4_t getifaddr(void) { return (ip4_t)syscall0(SYS_GETIFADDR); }
 
 /*  String helpers  */
+#ifndef __EXPLOIDUS_LIBC__
 static inline size_t strlen(const char *s)
     { size_t n=0; while(*s++)n++; return n; }
+#ifndef _STDIO_H_
 static inline void puts(const char *s)
     { write(STDOUT_FILENO,s,strlen(s)); }
 static inline void putc(char c)
     { write(STDOUT_FILENO,&c,1); }
+#endif
+#endif
 static inline void *memset_u(void *d,int v,size_t n)
     { uint8_t *p=(uint8_t*)d; while(n--)*p++=(uint8_t)v; return d; }
 static inline int strcmp_u(const char *a,const char *b)
@@ -313,6 +327,77 @@ static inline int64_t spawn(const char *path)
 {
     return syscall1(SYS_SPAWN, (uint64_t)(uintptr_t)path);
 }
+/* spawn with argument string — use INTENT_INTERACTIVE so it runs */
+static inline int64_t spawn_args(const char *path, const char *args)
+{
+    return syscall3(SYS_SPAWN, (uint64_t)(uintptr_t)path, 3, (uint64_t)(uintptr_t)args);
+}
+static inline int64_t spawn_intent(const char *path, uint64_t intent)
+{
+    return syscall2(SYS_SPAWN, (uint64_t)(uintptr_t)path, intent);
+}
+
+/*  lseek / stat / dup  */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+static inline int64_t lseek(int fd, int64_t offset, int whence)
+{
+    return syscall3(SYS_LSEEK, (uint64_t)(int64_t)fd,
+                    (uint64_t)offset, (uint64_t)(int64_t)whence);
+}
+
+typedef struct {
+    uint64_t size;
+    uint32_t type;
+    uint64_t inode;
+} vfs_stat_t;
+
+static inline int stat(const char *path, vfs_stat_t *st)
+{
+    return (int)syscall2(SYS_STAT,
+        (uint64_t)(uintptr_t)path, (uint64_t)(uintptr_t)st);
+}
+
+static inline int fstat(int fd, vfs_stat_t *st)
+{
+    return (int)syscall2(SYS_FSTAT,
+        (uint64_t)(int64_t)fd, (uint64_t)(uintptr_t)st);
+}
+
+static inline int dup(int fd)
+{
+    return (int)syscall1(SYS_DUP, (uint64_t)(int64_t)fd);
+}
+
+static inline int dup2(int oldfd, int newfd)
+{
+    return (int)syscall2(SYS_DUP2,
+        (uint64_t)(int64_t)oldfd, (uint64_t)(int64_t)newfd);
+}
+
+/*  rahu package manager syscalls  */
+#define SYS_HTTP_GET    55
+#define SYS_FILE_WRITE  56
+
+/* http_get: download url into buf, returns bytes or negative error */
+static inline int64_t http_get(const char *url, void *buf, uint64_t size)
+{
+    return syscall3(SYS_HTTP_GET,
+        (uint64_t)(uintptr_t)url,
+        (uint64_t)(uintptr_t)buf,
+        size);
+}
+
+/* file_write: create/overwrite file at path with data */
+static inline int64_t file_write(const char *path, const void *data, uint64_t size)
+{
+    return syscall3(SYS_FILE_WRITE,
+        (uint64_t)(uintptr_t)path,
+        (uint64_t)(uintptr_t)data,
+        size);
+}
 
 /* ping: send ICMP echo to ip, returns 0=ok -1=timeout */
 static inline int64_t ping(ip4_t ip) { return syscall1(SYS_PING, (uint64_t)ip); }
@@ -349,6 +434,25 @@ static inline int getcwd(char *buf, uint64_t size)
 {
     return (int)syscall2(SYS_GETCWD, (uint64_t)(uintptr_t)buf, size);
 }
+
+/*  CNSL security commands  */
+static inline int cnsl_unblock_ip(uint32_t ip)
+{
+    return (int)syscall1(SYS_CNSL_UNBLOCK, (uint64_t)ip);
+}
+static inline uint64_t cnsl_block_ttl(uint32_t ip)
+{
+    return (uint64_t)syscall1(SYS_CNSL_BLOCK_TTL, (uint64_t)ip);
+}
+/* cnsl_list_entry_t — matches kernel struct */
+typedef struct { uint32_t ip; uint64_t ttl_secs; } cnsl_list_entry_t;
+static inline int cnsl_list_ips(cnsl_list_entry_t *buf, int max)
+{
+    return (int)syscall2(SYS_CNSL_LIST,
+                         (uint64_t)(uintptr_t)buf,
+                         (uint64_t)(uint32_t)max);
+}
+
 static inline void fb_flip(void)
 {
     syscall0(SYS_FB_FLIP);

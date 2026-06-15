@@ -124,7 +124,7 @@ static void pci_write(uint8_t bus, uint8_t dev, uint8_t fn,
 typedef struct __attribute__((packed)) {
     uint64_t addr;
     uint16_t length;
-    uint16_t cso;
+    uint8_t  cso;
     uint8_t  cmd;
     uint8_t  status;
     uint8_t  css;
@@ -252,13 +252,14 @@ void e1000_poll(void)
     if (!g_mmio) return;
 
     uint32_t head = e1000_read(E1000_RDH);
-    if (head != g_rx_tail) { serial_print("[E1000] RX head="); serial_printhex(head); serial_print(" tail="); serial_printhex(g_rx_tail); serial_print("\n"); }
+    /* RX debug disabled */
     uint32_t tail = g_rx_tail;
 
     while (tail != head) {
         e1000_rx_desc_t *desc = &g_rx_ring[tail];
 
-        /* DD bit check removed for debugging */
+        /* Only process descriptors marked done by hardware (DD bit) */
+        if (!(desc->status & RDESC_STAT_DD)) break;
 
         if (desc->length > 0 && (desc->status & RDESC_STAT_EOP)) {
             netbuf_t *buf = netbuf_alloc();

@@ -17,6 +17,8 @@ typedef enum {
     AUDIT_FILE_WRITE   = 12,
     AUDIT_NET_SEND     = 13,
     AUDIT_NET_RECV     = 14,
+    AUDIT_CNSL_BLOCK   = 15,
+    AUDIT_CNSL_UNBLOCK = 16,
 } audit_event_t;
 
 typedef struct {

@@ -51,30 +51,273 @@ static char read_char(void)
 
 /*  Line editor — reads one line from stdin into buf        */
 
+/* ── history ── */
+#define HIST_SIZE 32
+#define HIST_LEN  256
+static char  hist_buf[HIST_SIZE][HIST_LEN];
+static int   hist_count = 0;   /* total entries added        */
+static int   hist_head  = 0;   /* next slot to write (ring)  */
+
+static void hist_push(const char *s)
+{
+    if (!s || !*s) return;
+    /* Avoid duplicate of last entry */
+    if (hist_count > 0) {
+        int last = (hist_head - 1 + HIST_SIZE) % HIST_SIZE;
+        int same = 1;
+        const char *a = hist_buf[last], *b = s;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*a == *b) same = 1; else same = 0;
+        if (same) return;
+    }
+    int i = 0;
+    while (s[i] && i < HIST_LEN - 1) { hist_buf[hist_head][i] = s[i]; i++; }
+    hist_buf[hist_head][i] = '\0';
+    hist_head = (hist_head + 1) % HIST_SIZE;
+    if (hist_count < HIST_SIZE) hist_count++;
+}
+
+/* idx=0 → most recent, idx=1 → one before, etc. */
+static const char *hist_get(int idx)
+{
+    if (idx < 0 || idx >= hist_count) return 0;
+    int slot = (hist_head - 1 - idx + HIST_SIZE * 2) % HIST_SIZE;
+    return hist_buf[slot];
+}
+
+/* ── redraw_line ──
+   Redraws the entire input buffer from scratch.
+   cur_col : current screen cursor column relative to editable area start
+   buf/len : full input buffer and its length
+   pos     : where cursor should end up after redraw
+   old_len : previous visible length (to erase leftover chars)
+*/
+static void redraw_line(const char *buf, int len, int pos, int old_len, int cur_col)
+{
+    /* 1. move back to column 0 of editable area */
+    for (int i = 0; i < cur_col; i++) write(STDOUT_FILENO, "\b", 1);
+    /* 2. print entire new buffer */
+    for (int i = 0; i < len; i++) putc(buf[i]);
+    /* 3. erase leftover chars if buffer shrank */
+    for (int i = len; i < old_len; i++) putc(' ');
+    for (int i = len; i < old_len; i++) write(STDOUT_FILENO, "\b", 1);
+    /* 4. move cursor from end back to pos */
+    for (int i = len; i > pos; i--) write(STDOUT_FILENO, "\b", 1);
+}
+
+/* ── cursor blink helpers ──
+   তোমার VGA driver ANSI escape বোঝে না।
+   তাই cursor character সরাসরি print করি:
+   cursor_on  : '_' print করে backspace দিয়ে ফিরি
+   cursor_off : space print করে backspace দিয়ে ফিরি
+*/
+static void cursor_on(void)
+{
+    write(STDOUT_FILENO, "_\b", 2);
+}
+static void cursor_off(void)
+{
+    write(STDOUT_FILENO, " \b", 2);
+}
 
 static int read_line(char *buf, int max)
 {
-    int i = 0;
-    while (i < max - 1) {
-        char c = read_char();
+    int len  = 0;
+    int pos  = 0;
+    int hidx = -1;
+    static char saved[HIST_LEN];
+    saved[0] = '\0';
+    buf[0]   = '\0';
 
-        if (c == '\n' || c == '\r') {
-            putc('\n');
-            break;
-        }
-        if (c == '\b' || c == 127) {
-            if (i > 0) {
-                i--;
-                /* Erase: backspace, space, backspace */
-                write(STDOUT_FILENO, "\b \b", 3);
+    /* blink state */
+    int      cur_visible = 0;
+    cursor_on();
+    cur_visible = 1;
+
+    while (1) {
+        /* ── non-blocking read ── */
+        char c = 0;
+        int got = (int)read(STDIN_FILENO, &c, 1);
+
+        if (got != 1) {
+            /* no key — handle blink (same method as term_buf.c) */
+            uint64_t phase = (uptime() * 2) & 1;  /* toggles ~every 0.5s */
+            if ((int)phase != cur_visible) {
+                if (phase) { cursor_on();  cur_visible = 1; }
+                else       { cursor_off(); cur_visible = 0; }
             }
+            yield();
             continue;
         }
-        buf[i++] = c;
-        putc(c);  /* echo */
+
+        /* got a key — hide cursor while processing, redraw after */
+        if (cur_visible) { cursor_off(); cur_visible = 0; }
+
+        /* ── ESC sequence ── */
+        if (c == 0x1B) {
+            char c2 = read_char();
+            if (c2 != '[') goto redraw;   /* ignore unknown ESC sequences */
+            char c3 = read_char();
+
+            /* Arrow UP — older history */
+            if (c3 == 'A') {
+                if (hidx == -1) {
+                    int j = 0;
+                    while (buf[j] && j < HIST_LEN-1) { saved[j] = buf[j]; j++; }
+                    saved[j] = '\0';
+                }
+                const char *h = hist_get(hidx + 1);
+                if (h) {
+                    int old_len = len;
+                    int old_pos = pos;
+                    hidx++;
+                    len = 0;
+                    while (h[len] && len < max-1) { buf[len] = h[len]; len++; }
+                    buf[len] = '\0';
+                    pos = len;
+                    redraw_line(buf, len, pos, old_len, old_pos);
+                }
+                goto redraw;
+            }
+
+            /* Arrow DOWN — newer / back to live */
+            if (c3 == 'B') {
+                if (hidx >= 0) {
+                    int old_len = len;
+                    int old_pos = pos;
+                    hidx--;
+                    const char *h = (hidx >= 0) ? hist_get(hidx) : saved;
+                    len = 0;
+                    while (h[len] && len < max-1) { buf[len] = h[len]; len++; }
+                    buf[len] = '\0';
+                    pos = len;
+                    redraw_line(buf, len, pos, old_len, old_pos);
+                }
+                goto redraw;
+            }
+
+            /* Arrow LEFT */
+            if (c3 == 'D') {
+                if (pos > 0) { pos--; write(STDOUT_FILENO, "\b", 1); }
+                goto redraw;
+            }
+
+            /* Arrow RIGHT */
+            if (c3 == 'C') {
+                if (pos < len) { putc(buf[pos]); pos++; }
+                goto redraw;
+            }
+
+            /* Home \033[H */
+            if (c3 == 'H') {
+                for (int i = 0; i < pos; i++) write(STDOUT_FILENO, "\b", 1);
+                pos = 0;
+                goto redraw;
+            }
+
+            /* End \033[F */
+            if (c3 == 'F') {
+                for (int i = pos; i < len; i++) putc(buf[i]);
+                pos = len;
+                goto redraw;
+            }
+
+            /* Delete \033[3~ */
+            if (c3 == '3') {
+                read_char(); /* consume '~' */
+                if (pos < len) {
+                    int old_len = len;
+                    for (int i = pos; i < len - 1; i++) buf[i] = buf[i+1];
+                    len--;
+                    buf[len] = '\0';
+                    redraw_line(buf, len, pos, old_len, pos);
+                }
+                goto redraw;
+            }
+
+            /* ignore other CSI sequences */
+            goto redraw;
+        }
+
+        /*  Enter  */
+        if (c == '\n' || c == '\r') {
+            buf[len] = '\0';
+            putc('\n');
+            hist_push(buf);
+            break;
+        }
+
+        /*  Backspace  */
+        if (c == '\b' || c == 127) {
+            if (pos > 0) {
+                int old_len = len;
+                for (int i = pos - 1; i < len - 1; i++) buf[i] = buf[i+1];
+                len--;
+                pos--;
+                buf[len] = '\0';
+                redraw_line(buf, len, pos, old_len, pos + 1);
+            }
+            goto redraw;
+        }
+
+        /*  Ctrl-A — go to start  */
+        if (c == 0x01) {
+            for (int i = 0; i < pos; i++) write(STDOUT_FILENO, "\b", 1);
+            pos = 0;
+            goto redraw;
+        }
+
+        /*  Ctrl-E — go to end  */
+        if (c == 0x05) {
+            for (int i = pos; i < len; i++) putc(buf[i]);
+            pos = len;
+            goto redraw;
+        }
+
+        /*  Ctrl-K — kill to end  */
+        if (c == 0x0B) {
+            int old_len = len;
+            len = pos;
+            buf[len] = '\0';
+            for (int i = pos; i < old_len; i++) putc(' ');
+            for (int i = pos; i < old_len; i++) write(STDOUT_FILENO, "\b", 1);
+            goto redraw;
+        }
+
+        /*  Ctrl-C  */
+        if (c == 0x03) {
+            write(STDOUT_FILENO, "^C\n", 3);
+            buf[0] = '\0';
+            return 0;
+        }
+
+        /*  Ctrl-L — clear screen  */
+        if (c == 0x0C) {
+            for (int i = 0; i < 40; i++) putc('\n');
+            write(STDOUT_FILENO, buf, (size_t)len);
+            for (int i = len; i > pos; i--) write(STDOUT_FILENO, "\b", 1);
+            goto redraw;
+        }
+
+        /* ── Printable — insert at pos ── */
+        if ((unsigned char)c >= 0x20 && len < max - 1) {
+            for (int i = len; i > pos; i--) buf[i] = buf[i-1];
+            buf[pos] = c;
+            len++;
+            buf[len] = '\0';
+            write(STDOUT_FILENO, buf + pos, (size_t)(len - pos));
+            for (int i = len; i > pos + 1; i--) write(STDOUT_FILENO, "\b", 1);
+            pos++;
+        }
+
+redraw:
+        /* show cursor after every keypress, reset blink phase */
+        cursor_on();
+        cur_visible = 1;
     }
-    buf[i] = '\0';
-    return i;
+
+    buf[len] = '\0';
+    return len;
 }
 
 
@@ -132,15 +375,18 @@ static void cmd_help(void)
     println("");
     println("Package management:");
     println("  rahu install <pkg>   Install a package");
-    println("  rahu remove  <pkg>   Alias for nafu");
+    println("  rahu remove  <pkg>   Remove a package");
     println("  rahu list            List installed packages");
     println("  rahu search  <q>     Search repository");
-    println("  nafu remove  <pkg>   Remove a package");
     println("");
     println("System:");
     println("  ps              List running processes");
     println("  audit           Print last audit entries");
+    println("  cnsl-list          List all blocked IPs with TTL");
+    println("  cnsl-unblock <ip>  Manually unblock an IP from CNSL");
+    println("  cnsl-ttl <ip>      Seconds until IP auto-unblocks");
     println("  alien-gui       Launch graphical interface");
+    println("  ys <script>     Run a Yolish script");
 }
 
 static void cmd_echo(const char *args)
@@ -274,103 +520,19 @@ static void cmd_audit(void)
 }
 
 
-/*  rahu / nafu package manager stubs   */
-
-
-/*
- * In the full system rahu forks a rahu-daemon process that handles
- * downloads, verification, and installation. For Phase 5 these are
- * interactive stubs that demonstrate the interface.
- */
-
-static void rahu_install(const char *pkg)
-{
-    if (!*pkg) { println("Usage: rahu install <package>"); return; }
-
-    print("rahu: resolving dependencies for "); println(pkg);
-    print("rahu: fetching "); print(pkg); println("...");
-    print("rahu: verifying BLAKE3 checksum... ");
-    println("OK");
-    print("rahu: installing /usr/bin/"); println(pkg);
-    print("rahu: granting CAP_RIGHT_EXEC for /usr/bin/"); println(pkg);
-    print("[OK] "); print(pkg); println(" installed.");
-}
-
-static void nafu_remove(const char *pkg)
-{
-    if (!*pkg) { println("Usage: nafu remove <package>"); return; }
-
-    print("nafu: revoking capability tokens for "); println(pkg);
-    print("nafu: removing /usr/bin/"); println(pkg);
-    print("[OK] "); print(pkg); println(" removed.");
-}
-
-static void rahu_list(void)
-{
-    println("Installed packages:");
-    println("  exploish      0.1.0");
-    println("  capd          0.1.0");
-    println("  rahu          0.1.0");
-    println("  exfs-tools    0.1.0");
-    println("  coreutils     0.1.0");
-}
-
-static void rahu_search(const char *q)
-{
-    println("Repository search results:");
-    if (!*q || str_starts("nmap", q))
-        println("  nmap          7.94    network scanner");
-    if (!*q || str_starts("wireshark", q))
-        println("  wireshark     4.2.3   packet analyzer");
-    if (!*q || str_starts("metasploit", q))
-        println("  metasploit    6.3.44  exploit framework");
-    if (!*q || str_starts("gcc", q))
-        println("  gcc           13.2.0  C compiler");
-    if (!*q || str_starts("vim", q))
-        println("  vim           9.1.0   text editor");
-    if (!*q || str_starts("python3", q))
-        println("  python3       3.12.2  Python interpreter");
-    if (!*q || str_starts("tcpdump", q))
-        println("  tcpdump       4.99.4  packet capture");
-    if (!*q || str_starts("htop", q))
-        println("  htop          3.3.0   process monitor");
-    if (!*q || str_starts("git", q))
-        println("  git           2.44.0  version control");
-    if (!*q || str_starts("john", q))
-        println("  john          1.9.0   password cracker");
-    if (!*q || str_starts("sqlmap", q))
-        println("  sqlmap        1.8.1   SQL injection tool");
-    if (!*q || str_starts("aircrack", q))
-        println("  aircrack-ng   1.7.0   wifi auditing");
-}
+/*  rahu package manager — delegates to /bin/rahu binary  */
 
 static void cmd_rahu(const char *args)
 {
     const char *a = skip_spaces(args);
-
-    if (str_starts(a, "install")) {
-        rahu_install(skip_spaces(a + 7));
-    } else if (str_starts(a, "remove")) {
-        nafu_remove(skip_spaces(a + 6));
-    } else if (str_starts(a, "list")) {
-        rahu_list();
-    } else if (str_starts(a, "search")) {
-        rahu_search(skip_spaces(a + 6));
-    } else {
-        println("Usage: rahu install|remove|list|search <package>");
-    }
+    int64_t pid;
+    if (*a)
+        pid = spawn_args("/bin/rahu", a);
+    else
+        pid = spawn("/bin/rahu");
+    if (pid < 0) println("rahu: failed to spawn /bin/rahu");
+    else waitpid(pid);
 }
-
-static void cmd_nafu(const char *args)
-{
-    const char *a = skip_spaces(args);
-    if (str_starts(a, "remove")) {
-        nafu_remove(skip_spaces(a + 6));
-    } else {
-        println("Usage: nafu remove <package>");
-    }
-}
-
 
 /*  Clear screen (VT100 escape)   */
 
@@ -422,10 +584,24 @@ static void cmd_ls(const char *path)
 static void cmd_touch(const char *path)
 {
     if (!*path) { println("Usage: touch <file>"); return; }
-    int fd = fs_create(path, 0);
-    if (fd < 0) { println("touch: failed"); return; }
+    /* build absolute path */
+    char ap[256];
+    if (path[0] == '/') {
+        int i = 0;
+        while (path[i] && i < 254) { ap[i] = path[i]; i++; }
+        ap[i] = '\0';
+    } else {
+        if (getcwd(ap, 256) < 0 || ap[0] == '\0') { ap[0] = '/'; ap[1] = '\0'; }
+        int i = 0; while (ap[i]) i++;
+        if (i > 1 && ap[i-1] != '/') ap[i++] = '/';
+        int j = 0;
+        while (path[j] && i < 254) { ap[i++] = path[j++]; }
+        ap[i] = '\0';
+    }
+    int fd = fs_create(ap, 0);
+    if (fd < 0) { print("touch: failed: "); println(ap); return; }
     close(fd);
-    print("created: "); println(path);
+    print("created: "); println(ap);
 }
 
 static void cmd_cat(const char *path)
@@ -453,6 +629,93 @@ static void cmd_cat(const char *path)
 }
 
 
+
+static void cmd_edit(const char *path)
+{
+    if (!path || !*path) { println("Usage: edit <file>"); return; }
+
+    /* Read existing content */
+    static char buf[4096];
+    int blen = 0;
+    int fd = open(path, 0);
+    if (fd >= 0) {
+        blen = (int)read(fd, buf, sizeof(buf)-1);
+        if (blen < 0) blen = 0;
+        buf[blen] = 0;
+        close(fd);
+    } else {
+        buf[0] = 0;
+    }
+
+    /* Show current content */
+    print("\n=== edit: "); print(path); println(" ===");
+    println("Commands: :w save | :q quit | :wq save+quit | :help");
+    println("Type text and press Enter. Empty line = new line.");
+    println("─────────────────────────────────");
+    if (blen > 0) { print(buf); println(""); }
+    println("─────────────────────────────────");
+
+    /* Edit loop */
+    static char newbuf[4096];
+    static char line[256];
+    int nlen = 0;
+    int running = 1;
+
+    /* Start with existing content */
+    for (int i = 0; i < blen && nlen < 4000; i++)
+        newbuf[nlen++] = buf[i];
+
+    while (running) {
+        print("> ");
+
+        /* Read line */
+        int li = 0;
+        char c = 0;
+        while (li < 255) {
+            if (read(STDIN_FILENO, &c, 1) != 1) break;
+            if (c == '\n' || c == '\r') break;
+            if (c == 127 || c == '\b') {
+                if (li > 0) { li--; print("\b \b"); }
+                continue;
+            }
+            line[li++] = c;
+        }
+        line[li] = 0;
+
+        if (str_eq(line, ":q")) {
+            running = 0;
+        } else if (str_eq(line, ":w") || str_eq(line, ":wq")) {
+            /* Save file */
+            int wfd = open(path, 1);
+            if (wfd < 0) { println("edit: cannot save"); }
+            else {
+                write(wfd, newbuf, nlen);
+                close(wfd);
+                println("Saved!");
+            }
+            if (str_eq(line, ":wq")) running = 0;
+        } else if (str_eq(line, ":help")) {
+            println(":w   = save");
+            println(":q   = quit");
+            println(":wq  = save and quit");
+            println(":cls = clear buffer (start fresh)");
+            println(":show = show current buffer");
+        } else if (str_eq(line, ":cls")) {
+            nlen = 0;
+            println("Buffer cleared.");
+        } else if (str_eq(line, ":show")) {
+            println("─── Current content ───");
+            newbuf[nlen] = 0;
+            println(newbuf);
+            println("───────────────────────");
+        } else {
+            /* Append line to buffer */
+            for (int i = 0; line[i] && nlen < 4090; i++)
+                newbuf[nlen++] = line[i];
+            newbuf[nlen++] = '\n';
+        }
+    }
+}
 static void cmd_write(const char *args)
 {
     /* write <file> <text> */
@@ -679,17 +942,17 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
            "Copyright (c) Exploidus Project. MIT License.",
            rgb(70,70,120), bg);
     fb_rect(wx+1, ty+30, ww-2, 1, rgb(30,20,60));
-    fb_str(tx, ty+38,  "root@exploidus:~$ uname -a",
+    fb_str(tx, ty+38,  "star@exploidus:~$ uname -a",
            rgb(80,170,255), bg);
     fb_str(tx+8, ty+54,
            "Exploidus 0.1.0 x86_64 Reactive-Capability-Kernel",
            rgb(200,200,200), bg);
-    fb_str(tx, ty+74,  "root@exploidus:~$ ls /",
+    fb_str(tx, ty+74,  "star@exploidus:~$ ls /",
            rgb(80,170,255), bg);
     fb_str(tx+8, ty+90,
            "bin/   etc/   home/   lib/   tmp/   var/",
            rgb(200,200,200), bg);
-    fb_str(tx, ty+110, "root@exploidus:~$ cat /etc/motd",
+    fb_str(tx, ty+110, "star@exploidus:~$ cat /etc/motd",
            rgb(80,170,255), bg);
     fb_str(tx+8, ty+126,"Welcome to Exploidus OS!",
            rgb(255,200,60), bg);
@@ -697,13 +960,13 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
            "A capability-based reactive microkernel.",
            rgb(170,150,255), bg);
     fb_rect(wx+1, ty+158, ww-2, 1, rgb(30,20,60));
-    fb_str(tx, ty+166, "root@exploidus:~$ alien-gui",
+    fb_str(tx, ty+166, "star@exploidus:~$ alien-gui",
            rgb(80,170,255), bg);
     fb_str(tx+8, ty+182,
            "Launching graphical environment...",
            rgb(80,255,80), bg);
     fb_rect(wx+1, ty+198, ww-2, 1, rgb(30,20,60));
-    fb_str(tx, ty+206, "root@exploidus:~$ ",
+    fb_str(tx, ty+206, "star@exploidus:~$ ",
            rgb(80,170,255), bg);
     /* cursor */
     fb_rect(tx+144, ty+206, 8, 14, rgb(100,180,255));
@@ -919,27 +1182,27 @@ static void draw_terminal_content(win_t *w)
            "Copyright (c) Exploidus Project. MIT License.",rgb(70,70,120),bg);
     fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+30),(uint32_t)(w->w-2),1,rgb(30,20,60));
     fb_str((uint32_t)tx,(uint32_t)(ty+38),
-           "root@exploidus:~$ uname -a",rgb(80,170,255),bg);
+           "star@exploidus:~$ uname -a",rgb(80,170,255),bg);
     fb_str((uint32_t)(tx+8),(uint32_t)(ty+54),
            "Exploidus 0.1.0 x86_64 Reactive-Capability-Kernel",rgb(200,200,200),bg);
     fb_str((uint32_t)tx,(uint32_t)(ty+74),
-           "root@exploidus:~$ ls /",rgb(80,170,255),bg);
+           "star@exploidus:~$ ls /",rgb(80,170,255),bg);
     fb_str((uint32_t)(tx+8),(uint32_t)(ty+90),
            "bin/   etc/   home/   lib/   tmp/   var/",rgb(200,200,200),bg);
     fb_str((uint32_t)tx,(uint32_t)(ty+110),
-           "root@exploidus:~$ cat /etc/motd",rgb(80,170,255),bg);
+           "star@exploidus:~$ cat /etc/motd",rgb(80,170,255),bg);
     fb_str((uint32_t)(tx+8),(uint32_t)(ty+126),
            "Welcome to Exploidus OS!",rgb(255,200,60),bg);
     fb_str((uint32_t)(tx+8),(uint32_t)(ty+142),
            "A capability-based reactive microkernel.",rgb(170,150,255),bg);
     fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+158),(uint32_t)(w->w-2),1,rgb(30,20,60));
     fb_str((uint32_t)tx,(uint32_t)(ty+166),
-           "root@exploidus:~$ alien-gui",rgb(80,170,255),bg);
+           "star@exploidus:~$ alien-gui",rgb(80,170,255),bg);
     fb_str((uint32_t)(tx+8),(uint32_t)(ty+182),
            "Launching graphical environment...",rgb(80,255,80),bg);
     fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+198),(uint32_t)(w->w-2),1,rgb(30,20,60));
     fb_str((uint32_t)tx,(uint32_t)(ty+206),
-           "root@exploidus:~$ ",rgb(80,170,255),bg);
+           "star@exploidus:~$ ",rgb(80,170,255),bg);
     fb_rect((uint32_t)(tx+144),(uint32_t)(ty+206),8,14,rgb(100,180,255));
 }
 
@@ -1565,10 +1828,116 @@ static void cmd_ping(const char *arg)
 
 
 static void cmd_clear(void)
-{    
-    write(STDOUT_FILENO, "\033[2J\033[H", 7);
+{
+    /* VGA console ANSI বোঝে না — অনেক newline দিয়ে scroll করি */
+    for (int i = 0; i < 40; i++) putc('\n');
 }
 
+
+
+/*  cnsl-unblock / cnsl-status  */
+static uint32_t parse_ip4(const char *s)
+{
+    uint32_t a=0,b=0,c=0,d=0;
+    int n=0;
+    while(*s){
+        if(*s>='0'&&*s<='9'){
+            switch(n){
+            case 0: a=a*10+(*s-'0'); break;
+            case 1: b=b*10+(*s-'0'); break;
+            case 2: c=c*10+(*s-'0'); break;
+            case 3: d=d*10+(*s-'0'); break;
+            }
+        } else if(*s=='.') { n++; }
+        s++;
+    }
+    /* network byte order: a.b.c.d → 0xAABBCCDD stored big-endian */
+    return (uint32_t)((a<<24)|(b<<16)|(c<<8)|d);
+}
+
+static void cmd_cnsl(const char *args)
+{
+    const char *p = args;
+    /* skip leading spaces already done by dispatch */
+
+    /* cnsl-status — show all blocked IPs (no args) */
+    if (!*p) {
+        /* iterate — we have no list syscall yet; just print a hint */
+        println("cnsl: use 'cnsl-unblock <ip>' to manually unblock an IP");
+        println("cnsl: blocked IPs auto-expire after 1800 seconds (30 min)");
+        return;
+    }
+
+    /* cnsl-unblock <ip> */
+    if (str_starts(p, "unblock ") || str_starts(p, "unblock")) {
+        const char *ip_str = skip_spaces(p + 7);
+        if (!*ip_str) { println("usage: cnsl-unblock <ip>"); return; }
+
+        uint32_t ip = parse_ip4(ip_str);
+
+        /* show TTL before unblocking */
+        uint64_t ttl = cnsl_block_ttl(ip);
+        if (ttl == 0) {
+            print(ip_str);
+            println(" is not currently blocked");
+            return;
+        }
+
+        print("Unblocking "); print(ip_str);
+        print(" (had ");
+        print_int((int64_t)ttl);
+        println("s remaining)...");
+
+        int r = cnsl_unblock_ip(ip);
+        if (r == 0) println("Done.");
+        else        println("Failed (kernel rejected).");
+        return;
+    }
+
+    /* cnsl-ttl <ip> */
+    if (str_starts(p, "ttl ")) {
+        const char *ip_str = skip_spaces(p + 4);
+        uint32_t ip  = parse_ip4(ip_str);
+        uint64_t ttl = cnsl_block_ttl(ip);
+        if (ttl == 0) {
+            print(ip_str); println(": not blocked");
+        } else {
+            print(ip_str); print(": auto-unblock in ");
+            print_int((int64_t)ttl); println("s");
+        }
+        return;
+    }
+
+    println("cnsl: unknown subcommand. try: cnsl-unblock <ip>  |  cnsl-ttl <ip>");
+}
+
+
+/*  cnsl-list  */
+static void cmd_cnsl_list(void)
+{
+    cnsl_list_entry_t entries[32];
+    int n = cnsl_list_ips(entries, 32);
+    if (n <= 0) {
+        println("No IPs currently blocked.");
+        return;
+    }
+    println("Blocked IPs:");
+    println("  IP               TTL (sec)");
+    println("  ─────────────────────────");
+    for (int i = 0; i < n; i++) {
+        uint32_t ip = entries[i].ip;
+        uint8_t  a  = (uint8_t)(ip >> 24);
+        uint8_t  b  = (uint8_t)(ip >> 16);
+        uint8_t  c  = (uint8_t)(ip >>  8);
+        uint8_t  d  = (uint8_t)(ip      );
+        print("  ");
+        print_int(a); print("."); print_int(b); print(".");
+        print_int(c); print("."); print_int(d);
+        print("  →  ");
+        print_int((int64_t)entries[i].ttl_secs);
+        println("s");
+    }
+}
 
 /*  Command dispatcher */
 
@@ -1604,12 +1973,20 @@ static void dispatch(const char *line)
         cmd_ps();
     } else if (str_eq(l, "audit")) {
         cmd_audit();
+    } else if (str_starts(l, "cnsl-unblock")) {
+        cmd_cnsl(skip_spaces(l + 12));
+    } else if (str_starts(l, "cnsl-ttl")) {
+        cmd_cnsl(skip_spaces(l + 8));
+    } else if (str_starts(l, "cnsl")) {
+        cmd_cnsl(skip_spaces(l + 4));
     } else if (str_starts(l, "ls")) {
         cmd_ls(skip_spaces(l + 2));
     } else if (str_starts(l, "touch ")) {
         cmd_touch(skip_spaces(l + 6));
     } else if (str_starts(l, "cat ")) {
         cmd_cat(skip_spaces(l + 4));
+    } else if (str_starts(l, "edit ")) {
+        cmd_edit(skip_spaces(l + 5));
     } else if (str_starts(l, "write ")) {
         cmd_write(skip_spaces(l + 6));   
     } else if (str_eq(l, "mousetest")) {
@@ -1653,8 +2030,8 @@ static void dispatch(const char *line)
         cmd_gfx();
     } else if (str_starts(l, "rahu")) {
         cmd_rahu(skip_spaces(l + 4));
-    } else if (str_starts(l, "nafu")) {
-        cmd_nafu(skip_spaces(l + 4));
+    } else if (str_eq(l, "cnsl-list")) {
+        cmd_cnsl_list();
     } else if (str_starts(l, "exit")) {
         const char *arg = skip_spaces(l + 4);
         int code = 0;
@@ -1663,6 +2040,21 @@ static void dispatch(const char *line)
             arg++;
         }
         exit(code);
+    } else if (str_starts(l, "ys ")) {
+        const char *sc = skip_spaces(l + 3);
+        static char ysp[260];
+        if (sc[0]=='/'){int i=0;while(sc[i]&&i<258){ysp[i]=sc[i];i++;}ysp[i]=0;}
+        else{ysp[0]='/';int i=1;while(*sc&&i<258){ysp[i++]=*sc++;}ysp[i]=0;}
+        static char wa[300];
+        wa[0]='/';wa[1]='y';wa[2]='s';wa[3]='_';wa[4]='r';
+        wa[5]='u';wa[6]='n';wa[7]=' ';
+        int i=8,j=0;
+        while(ysp[j]&&i<298){wa[i++]=ysp[j++];}wa[i]=0;
+        cmd_write(wa);
+        int64_t pid=spawn("/bin/ys");
+        if(pid<0)pid=spawn("/ys");
+        if(pid<0)println("ys: not found");
+        else waitpid(pid);
     } else {
             /* Try to run as program — check /bin/ first, then absolute */
             char path[260];
@@ -1718,17 +2110,17 @@ int main(void)
     println("");
 
     for (;;) {
-        /* Print prompt with cwd */
-        int64_t pid = getpid();
+        /* Multi-line prompt:
+         *   ╭─[star@exploidus]─[<cwd>]
+         *   ╰─#
+         */
         char cwd[256];
         if (getcwd(cwd, 256) < 0 || cwd[0] == '\0') {
             cwd[0] = '/'; cwd[1] = '\0';
         }
-        print("root@exploidus[");
-        print_int(pid);
-        print("]:");
+        print("\xe2\x95\xad\xe2\x94\x80[star@exploidus]\xe2\x94\x80[");
         print(cwd);
-        print("$ ");
+        print("]\n\xe2\x95\xb0\xe2\x94\x80# ");
 
         /* Read command */
         int n = read_line(line, (int)sizeof(line));

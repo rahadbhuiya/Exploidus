@@ -22,10 +22,13 @@ SHELL_LDFLAGS := -T userspace/shell/shell.ld -nostdlib \
 
 # Shell-specific C flags (freestanding, no stdlib, debug info)
 SHELL_CFLAGS := -std=c11 -ffreestanding -fno-stack-protector \
-                -fno-pic -fno-pie -mno-red-zone               \
+                -fPIC -mno-red-zone                            \
                 -mno-mmx -mno-sse -mno-sse2                   \
                 -Wall -Wextra -Werror -Wno-unused-parameter   \
-                -Iuserspace/libc -g -O2
+                -D__EXPLOIDUS_USERSPACE__                      \
+                -Iuserspace/libc -O2
+
+USER_LDFLAGS := -nostdlib -z max-page-size=0x1000 --no-dynamic-linker
 
 #  SOURCES 
 KERNEL_C_SRCS := \
@@ -47,7 +50,8 @@ KERNEL_C_SRCS := \
     kernel/net/tcp/tcp.c kernel/net/socket/socket.c \
     kernel/net/drivers/e1000.c \
     kernel/cnsl/cnsl.c \
-    kernel/cnsl/fim.c
+    kernel/cnsl/fim.c \
+	kernel/huddlecluster/huddlecluster.c \
 
 KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \
@@ -61,7 +65,18 @@ SHELL_C_SRCS   := userspace/shell/exploish.c userspace/shell/exploish_cmds.c
 HELLO_C_SRCS   := userspace/bin/hello.c
 AUDITD_C_SRCS  := userspace/bin/auditd.c
 INIT_C_SRCS    := userspace/bin/init.c
+HTTPD_C_SRCS   := userspace/bin/httpd.c
+HTTPT_C_SRCS   := userspace/bin/httptest.c
+RAHU_C_SRCS    := userspace/bin/rahu.c
 SHELL_ASM_SRCS := userspace/libc/crt0.asm
+
+LIBC_C_SRCS := \
+    userspace/libc/stdio.c  \
+    userspace/libc/string.c \
+    userspace/libc/stdlib.c \
+    userspace/libc/malloc.c
+
+LIBC_OBJS := $(patsubst %.c, build/%.o, $(LIBC_C_SRCS))
 
 #  OBJECTS 
 KC_OBJS  := $(patsubst %.c,   build/%.o, $(KERNEL_C_SRCS))
@@ -70,7 +85,12 @@ SC_OBJS  := $(patsubst %.c,   build/%.o, $(SHELL_C_SRCS))
 HC_OBJS  := $(patsubst %.c,   build/%.o, $(HELLO_C_SRCS))
 AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
 IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
+HT_OBJS  := $(patsubst %.c,   build/%.o, $(HTTPD_C_SRCS))
+HTT_OBJS := $(patsubst %.c,   build/%.o, $(HTTPT_C_SRCS))
+RH_OBJS  := $(patsubst %.c,   build/%.o, $(RAHU_C_SRCS))
 SA_OBJS  := $(patsubst %.asm, build/%.o, $(SHELL_ASM_SRCS))
+# CRT + libc for bin/* programs
+BIN_OBJS := $(SA_OBJS) $(LIBC_OBJS)
 
 ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 
@@ -81,22 +101,44 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf
+all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf
 
-build/userspace/bin/init.elf: $(SA_OBJS) $(IN_OBJS) userspace/bin/init.ld
+build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/auditd.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  httptest -> $@"
+	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HTT_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/httpd.elf: $(BIN_OBJS) $(HT_OBJS) userspace/bin/auditd.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  httpd  -> $@"
+	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HT_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/init.elf: $(BIN_OBJS) $(IN_OBJS) userspace/bin/init.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  init   -> $@"
-	$(LD) -T userspace/bin/init.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(IN_OBJS)
+	$(LD) -T userspace/bin/init.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(IN_OBJS)
+	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/auditd.elf: $(SA_OBJS) $(AD_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/auditd.elf: $(BIN_OBJS) $(AD_OBJS) userspace/bin/auditd.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  auditd -> $@"
-	$(LD) -T userspace/bin/auditd.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(AD_OBJS)
-#  KERNEL ELF 
-build/userspace/bin/hello.elf: $(SA_OBJS) $(HC_OBJS) userspace/bin/hello.ld
+	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(AD_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+#  KERNEL ELF
+build/userspace/bin/hello.elf: $(BIN_OBJS) $(HC_OBJS) userspace/bin/hello.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  hello  -> $@"
-	$(LD) -T userspace/bin/hello.ld -nostdlib -z max-page-size=0x1000 --no-dynamic-linker -o $@ $(SA_OBJS) $(HC_OBJS)
+	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HC_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/auditd.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  rahu   -> $@"
+	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(RH_OBJS)
+	x86_64-elf-strip --strip-debug $@
 
 build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o linker.ld
 	@echo "[LD]  kernel -> $@"
@@ -106,10 +148,12 @@ build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/in
 build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) userspace/shell/shell.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  shell  -> $@"
-	$(LD) $(SHELL_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS)
+	$(LD) -T userspace/shell/shell.ld $(USER_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS)
+	x86_64-elf-strip --strip-debug $@
+	@echo "[STRIP] exploish done"
 
 #  SHELL BLOB 
-build/shell_blob.o: build/userspace/shell/exploish.elf
+build/shell_blob.o: build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf
 	@echo "[BIN] embedding shell blob"
 	x86_64-elf-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 $< $@
 
@@ -117,10 +161,22 @@ build/shell_blob.o: build/userspace/shell/exploish.elf
 # COMPILE RULES
 
 
+# Userspace libc objects — use SHELL_CFLAGS
+build/userspace/libc/%.o: userspace/libc/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC]  libc: $<"
+	$(CC) $(SHELL_CFLAGS) -D__EXPLOIDUS_LIBC__ -c $< -o $@
+
 # Shell C objects — use SHELL_CFLAGS (debug, libc include)
 build/userspace/shell/%.o: userspace/shell/%.c
 	@mkdir -p $(dir $@)
 	@echo "[CC]  shell: $<"
+	$(CC) $(SHELL_CFLAGS) -c $< -o $@
+
+# Userspace bin objects — use SHELL_CFLAGS (fPIC, libc include)
+build/userspace/bin/%.o: userspace/bin/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC]  bin: $<"
 	$(CC) $(SHELL_CFLAGS) -c $< -o $@
 
 # Kernel C objects
@@ -216,23 +272,24 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/shell/exploish.elf
+build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/shell/exploish.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img
 	qemu-system-x86_64 \
 	    -cdrom build/exploidus.iso \
-	    -netdev user,id=n0 \
+	    -netdev user,id=n0,hostfwd=tcp::8080-:80 \
 	    -device e1000,netdev=n0 \
 	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
 	    -m 256M \
 	    -device usb-ehci -device usb-tablet \
 	    -serial stdio \
-	    -cpu qemu64,+rdrand
+	    -cpu qemu64,+rdrand \
+	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
 
 qemu-gui: build/exploidus.iso build/disk.img
 	qemu-system-x86_64 \
@@ -244,7 +301,8 @@ qemu-gui: build/exploidus.iso build/disk.img
 	    -device usb-ehci -device usb-tablet \
 	    -vga virtio \
 	    -serial stdio \
-	    -cpu qemu64,+rdrand
+	    -cpu qemu64,+rdrand \
+	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
 
 qemu-run: build/exploidus.iso build/disk.img
 	qemu-system-x86_64 \
@@ -255,6 +313,7 @@ qemu-run: build/exploidus.iso build/disk.img
 	    -m 256M \
 	    -net nic,model=e1000 -net user \
 	     -cpu qemu64,+rdrand \
+	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap \
 	    -device usb-ehci -device usb-tablet \
 	    -serial file:/tmp/serial.log \
 	    -vga virtio -display gtk,grab-on-hover=off 
@@ -267,3 +326,19 @@ build/hello_blob.o: build/userspace/bin/hello.elf
 build/init_blob.o: build/userspace/bin/init.elf
 	@echo "[BIN] embedding init blob"
 	x86_64-elf-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 $< $@
+# ── Yolish interpreter ──────────────────────────────────────────
+YOLISH_SRCS := userspace/yolish/lexer.c \
+               userspace/yolish/parser.c \
+               userspace/yolish/eval.c   \
+               userspace/yolish/main.c
+YOLISH_OBJS := $(patsubst %.c, build/%.o, $(YOLISH_SRCS))
+
+build/userspace/yolish/%.o: userspace/yolish/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC]  yolish: $<"
+	$(CC) $(SHELL_CFLAGS) -Iuserspace/yolish -Iuserspace/libc -c $< -o $@
+
+build/userspace/yolish/ys.elf: $(SA_OBJS) $(YOLISH_OBJS) userspace/shell/shell.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  ys -> $@"
+	$(LD) -T userspace/shell/shell.ld $(USER_LDFLAGS) -o $@ $(SA_OBJS) $(YOLISH_OBJS)

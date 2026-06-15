@@ -24,6 +24,8 @@ void eth_input(netif_t *iface, netbuf_t *buf)
     if (!eth) { netbuf_free(buf); return; }
 
     uint16_t type = ntohs(eth->type);
+    /* Drop IPv6 */
+    if (type == 0x86DD) { netbuf_free(buf); return; }
 
     switch (type) {
         case ETHERTYPE_ARP:

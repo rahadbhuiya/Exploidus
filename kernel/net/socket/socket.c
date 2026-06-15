@@ -4,7 +4,10 @@
 #include "../udp/udp.h"
 #include "../../drivers/serial.h"
 #include "../../proc/scheduler.h"
+#include "../../proc/process.h"
 #include <string.h>
+
+extern void net_poll(void);
 
 static socket_t  g_sockets[MAX_SOCKETS];
 static uint16_t  g_next_ephemeral = 49152;
@@ -54,6 +57,27 @@ int net_connect(int fd, ip4_t ip, uint16_t port)
         s->local_port = g_next_ephemeral++;
 
     if (s->type == SOCK_TCP) {
+        /* Loopback: if connecting to our own IP, bypass network */
+        if (ip == iface->ip || ip == IP4(127,0,0,1)) {
+            tcp_conn_t *listener = tcp_listen_find(port);
+            if (!listener) return -1;
+
+            /* Create connected pair directly */
+            tcp_conn_t *server_side = tcp_conn_alloc_for_loopback(listener, s->local_port, iface->ip);
+            tcp_conn_t *client_side = tcp_conn_alloc_for_loopback_client(port, s->local_port, iface->ip);
+
+            if (!server_side || !client_side) return -1;
+
+            /* Link partners so send goes to partner's rx_buf */
+            server_side->partner = client_side;
+            client_side->partner = server_side;
+
+            s->tcp_conn    = client_side;
+            s->remote_ip   = ip;
+            s->remote_port = port;
+            return 0;
+        }
+
         s->tcp_conn = tcp_connect(iface, ip, port, s->local_port);
         if (!s->tcp_conn) return -1;
         s->remote_ip   = ip;
@@ -61,8 +85,10 @@ int net_connect(int fd, ip4_t ip, uint16_t port)
 
         /* Spin until connected or timeout */
         uint32_t timeout = 50000;
-        while (!tcp_is_connected(s->tcp_conn) && timeout--)
+        while (!tcp_is_connected(s->tcp_conn) && timeout--) {
+            net_poll();
             sched_yield();
+        }
 
         return tcp_is_connected(s->tcp_conn) ? 0 : -1;
     }
@@ -92,12 +118,15 @@ int net_accept(int fd)
 
     /* Wait for an incoming connection */
     tcp_conn_t *accepted = NULL;
-    uint32_t spins = 0;
-    while (!accepted && spins < 1000000) {
+    for (;;) {
+        net_poll();
         accepted = tcp_accept(s->tcp_conn);
-        if (!accepted) { sched_yield(); spins++; }
+        if (accepted) {
+            serial_print("[SOCK] accept OK\n");
+            break;
+        }
+        sched_yield();
     }
-    if (!accepted) return -1;
 
     /* Create a new socket for the accepted connection */
     int nfd = net_socket(SOCK_TCP);
@@ -134,11 +163,19 @@ int net_recv(int fd, void *buf, uint16_t len)
     if (!s) return -1;
 
     if (s->type == SOCK_TCP) {
+        if (!s->tcp_conn) return -1;
+
+        /* Wait up to ~5 seconds for data */
+        uint32_t timeout = 5000;
         int16_t n = 0;
-        /* Block until data available */
-        while (n == 0) {
+        while (n == 0 && timeout > 0) {
+            net_poll();
             n = tcp_recv(s->tcp_conn, buf, len);
-            if (n == 0) sched_yield();
+            if (n > 0) { break; }
+            if (s->tcp_conn->state == TCP_CLOSED ||
+                s->tcp_conn->state == TCP_CLOSE_WAIT) break;
+            sched_yield();
+            timeout--;
         }
         return (int)n;
     }

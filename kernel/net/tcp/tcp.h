@@ -39,7 +39,7 @@ typedef struct __attribute__((packed)) {
 #define TCP_HDR_LEN  20
 
 /* Receive/send buffer per connection */
-#define TCP_BUF_SIZE  4096
+#define TCP_BUF_SIZE  32768
 
 typedef struct tcp_conn {
     tcp_state_t state;
@@ -63,6 +63,9 @@ typedef struct tcp_conn {
     uint16_t    tx_tail;
 
     struct tcp_conn *next;
+    uint8_t  pending_synack;
+    uint32_t ts_recent;   /* last timestamp received from peer */
+    struct tcp_conn *partner;  /* loopback partner connection */
 } tcp_conn_t;
 
 void      tcp_init(void);
@@ -71,7 +74,11 @@ tcp_conn_t *tcp_connect(netif_t *iface, ip4_t dst_ip, uint16_t dst_port,
                          uint16_t src_port);
 tcp_conn_t *tcp_listen(uint16_t port);
 tcp_conn_t *tcp_accept(tcp_conn_t *listener);
+tcp_conn_t *tcp_listen_find(uint16_t port);
+tcp_conn_t *tcp_conn_alloc_for_loopback(tcp_conn_t *listener, uint16_t client_port, ip4_t client_ip);
+tcp_conn_t *tcp_conn_alloc_for_loopback_client(uint16_t server_port, uint16_t client_port, ip4_t server_ip);
 int16_t   tcp_send(tcp_conn_t *conn, const void *data, uint16_t len);
 int16_t   tcp_recv(tcp_conn_t *conn, void *buf, uint16_t len);
 void      tcp_close(tcp_conn_t *conn);
 bool      tcp_is_connected(tcp_conn_t *conn);
+void      tcp_flush_pending_synacks(netif_t *iface, ip4_t resolved_ip);

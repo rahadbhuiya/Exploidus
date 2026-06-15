@@ -13,6 +13,7 @@
 #include "../drivers/mouse.h"
 #include "../net/socket/socket.h"
 #include "../net/net.h"
+#include "../cnsl/cnsl.h"
 #include "../fs/vfs/vfs.h"
 #include "../mm/kmalloc.h"
 #include "../elf/elf.h"
@@ -265,12 +266,12 @@ static __attribute__((unused)) int64_t sys_mmap(syscall_frame_t *f)
     for (uint64_t pg = 0; pg < pages; pg++) {
         uint64_t phys = pmm_alloc(ZONE_RED);
         if (!phys) return -1;
-        memset((void *)(uintptr_t)phys, 0, MMAP_PAGE_SIZE);
 
         if (!vmm_map_into(g_current_proc->cr3,
                           phys,
                           virt + pg * MMAP_PAGE_SIZE,
                           VMM_WRITE | VMM_USER | VMM_NX)) {
+            serial_print("[MMAP] vmm_map_into failed at pg="); serial_printhex(pg); serial_print("\n");
             pmm_free(phys);
             return -1;
         }
@@ -278,11 +279,6 @@ static __attribute__((unused)) int64_t sys_mmap(syscall_frame_t *f)
 
     g_current_proc->mmap_top = virt;
 
-    serial_print("[MMAP] virt=");
-    serial_printhex(virt);
-    serial_print(" len=");
-    serial_printhex(len);
-    serial_print("\n");
 
     return (int64_t)virt;
 }
@@ -456,6 +452,8 @@ static bool net_cap_check(syscall_frame_t *f, uint64_t required_rights)
 {
     if (!g_current_proc) return false;
     cap_token_t tok = { f->rdi, f->rsi };
+    /* Allow null capability — daemons use network without explicit cap */
+    if (tok.upper == 0 && tok.lower == 0) return true;
     return broker_check(g_current_proc->pid, tok, required_rights);
 }
 
@@ -673,7 +671,7 @@ void proc_trampoline(void)
 static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
 {
 
-    /* 1. Copy path from userspace BEFORE switching CR3 */
+    /* 1. Copy path AND args from userspace BEFORE switching CR3 */
     if (!uptr_ok(f->rdi, 1)) { serial_print("[SPAWN] uptr fail\n"); return -1; }
     const char *path = (const char *)(uintptr_t)f->rdi;
     char kpath[512];
@@ -681,6 +679,15 @@ static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
     while (plen < 511 && path[plen]) { kpath[plen] = path[plen]; plen++; }
     kpath[plen] = 0;
     if (plen == 0) return -1;
+
+    /* Copy optional args string (rdx) before CR3 switch */
+    char kargs[512]; kargs[0] = 0;
+    if (f->rdx && uptr_ok(f->rdx, 1)) {
+        const char *uargs = (const char *)(uintptr_t)f->rdx;
+        uint64_t alen = 0;
+        while (alen < 511 && uargs[alen]) { kargs[alen] = uargs[alen]; alen++; }
+        kargs[alen] = 0;
+    }
 
     /* 2. Switch to kernel PML4 */
     extern uint64_t vmm_get_kernel_pml4(void);
@@ -700,22 +707,24 @@ static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
     }
 
     /* 4. Read ELF into kernel buffer */
-    uint8_t *buf = kmalloc(256 * 1024);
+    uint8_t *buf = kmalloc(640 * 1024);
     if (!buf) {
         vfs_close(fd);
         __asm__ volatile("mov %0, %%cr3" :: "r"(saved_cr3) : "memory");
         return -1;
     }
-    int64_t sz = vfs_read(fd, buf, 256 * 1024);
+    int64_t sz = vfs_read(fd, buf, 640 * 1024);
     vfs_close(fd);
-    if (sz <= 0) {
+    serial_print("[SPAWN] vfs_read sz="); serial_printhex((uint64_t)(int64_t)sz); serial_print("\n"); if (sz <= 0) {
         kfree(buf);
         __asm__ volatile("mov %0, %%cr3" :: "r"(saved_cr3) : "memory");
         return -1;
     }
 
-    /* 5. Create child process */
-    process_t *child = proc_create(INTENT_INTERACTIVE,
+    /* 5. Create child process — rsi carries optional intent id */
+    proc_intent_t spawn_intent = (proc_intent_t)f->rsi;
+    if (spawn_intent >= INTENT_COUNT) spawn_intent = INTENT_INTERACTIVE;
+    process_t *child = proc_create(spawn_intent,
                                     g_current_proc ? g_current_proc->pid : 0);
     if (!child) {
         kfree(buf);
@@ -725,7 +734,19 @@ static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
 
     /* 6. Load ELF into child address space */
     uint64_t new_pml4 = 0, entry = 0, stk_top = 0;
-    if (!elf_load(buf, (uint64_t)sz, &new_pml4, &entry, &stk_top)) {
+
+    /* Build argv: argv[0]=path, argv[1]=args (if any), NULL */
+    const char *spawn_argv[3];
+    spawn_argv[0] = kpath;
+    if (kargs[0]) {
+        spawn_argv[1] = kargs;
+        spawn_argv[2] = (const char *)0;
+    } else {
+        spawn_argv[1] = (const char *)0;
+    }
+
+    if (!elf_load(buf, (uint64_t)sz, &new_pml4, &entry, &stk_top,
+                  spawn_argv, (const char **)0)) {
         serial_print("[SPAWN] ELF load failed\n");
         kfree(buf);
         proc_exit(child->pid, -1);
@@ -754,8 +775,6 @@ static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
 
     serial_print("[SPAWN] PID=");
     serial_printhex((uint64_t)child->pid);
-    serial_print(" entry=");
-    serial_printhex(entry);
     serial_print("\n");
 
     return (int64_t)child->pid;
@@ -829,6 +848,240 @@ static __attribute__((unused)) int64_t sys_reboot(syscall_frame_t *f)
     return 0;
 }
 
+
+static __attribute__((unused)) int64_t sys_cnsl_unblock(syscall_frame_t *f)
+{
+    /* rdi = IPv4 address (network byte order) */
+    uint32_t ip = (uint32_t)f->rdi;
+    bool ok = cnsl_unblock(ip);
+    return ok ? 0 : -1;
+}
+
+static __attribute__((unused)) int64_t sys_cnsl_block_ttl(syscall_frame_t *f)
+{
+    /* rdi = IPv4 address — returns seconds until auto-unblock, 0 if not blocked */
+    uint32_t ip = (uint32_t)f->rdi;
+    return (int64_t)cnsl_get_block_ttl(ip);
+}
+
+/*
+ * sys_cnsl_list - copy active CNSL block entries to userspace.
+ *
+ * rdi = pointer to cnsl_list_entry_t[]
+ * rsi = max entries to write
+ */
+static __attribute__((unused)) int64_t sys_cnsl_list(syscall_frame_t *f)
+{
+    uint64_t max = f->rsi;
+    uint64_t bytes;
+
+    if (max == 0) return 0;
+    if (max > USER_ADDR_MAX / sizeof(cnsl_list_entry_t)) return -1;
+
+    bytes = max * sizeof(cnsl_list_entry_t);
+    if (!uptr_ok(f->rdi, bytes)) return -1;
+
+    return (int64_t)cnsl_list((cnsl_list_entry_t *)(uintptr_t)f->rdi,
+                              (uint16_t)max);
+}
+
+static __attribute__((unused)) int64_t sys_lseek(syscall_frame_t *f)
+{
+    int     fd     = (int)(int64_t)f->rdi;
+    int64_t offset = (int64_t)f->rsi;
+    int     whence = (int)(int64_t)f->rdx;
+    return vfs_lseek(fd, offset, whence);
+}
+
+static __attribute__((unused)) int64_t sys_stat(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1))             return -1;
+    if (!uptr_ok(f->rsi, sizeof(vfs_stat_t))) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    vfs_stat_t *st   = (vfs_stat_t *)(uintptr_t)f->rsi;
+    return (int64_t)vfs_stat(path, st);
+}
+
+static __attribute__((unused)) int64_t sys_fstat(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rsi, sizeof(vfs_stat_t))) return -1;
+    int fd = (int)(int64_t)f->rdi;
+    vfs_stat_t *st = (vfs_stat_t *)(uintptr_t)f->rsi;
+    return (int64_t)vfs_fstat(fd, st);
+}
+
+static __attribute__((unused)) int64_t sys_dup(syscall_frame_t *f)
+{
+    return (int64_t)vfs_dup((int)(int64_t)f->rdi);
+}
+
+static __attribute__((unused)) int64_t sys_dup2(syscall_frame_t *f)
+{
+    return (int64_t)vfs_dup2((int)(int64_t)f->rdi, (int)(int64_t)f->rsi);
+}
+
+/*
+ * sys_http_get — download a URL into a userspace buffer
+ *   rdi = url string (user ptr)
+ *   rsi = buffer (user ptr)
+ *   rdx = buffer size
+ * Returns: bytes downloaded, or negative on error
+ */
+static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1))        return -1;
+    if (!uptr_ok(f->rsi, f->rdx))   return -1;
+
+    const char *url  = (const char *)(uintptr_t)f->rdi;
+    uint8_t    *buf  = (uint8_t *)(uintptr_t)f->rsi;
+    uint64_t    bsz  = f->rdx;
+
+
+    /* Parse URL: http://host[:port]/path */
+    if (url[0]!='h'||url[1]!='t'||url[2]!='t'||url[3]!='p') return -2;
+    const char *host_start = url + 7; /* skip http:// */
+    const char *slash = host_start;
+    while (*slash && *slash != '/' && *slash != ':') slash++;
+    if (!*slash) return -3;
+
+    /* Build host string */
+    char host[64]; uint32_t hlen = (uint32_t)(slash - host_start);
+    if (hlen >= 64) return -4;
+    for (uint32_t i = 0; i < hlen; i++) host[i] = host_start[i];
+    host[hlen] = 0;
+
+    /* Port */
+    uint16_t port = 80;
+    const char *path = slash;
+    if (*slash == ':') {
+        slash++;
+        port = 0;
+        while (*slash >= '0' && *slash <= '9') port = port*10 + (*slash++ - '0');
+        path = slash;
+    }
+    if (!*path) path = "/";
+
+    /* DNS resolve — simple: try to parse dotted-decimal IP */
+    ip4_t ip = 0;
+    const char *p = host;
+    int dots = 0;
+    for (const char *t=host; *t; t++) if (*t=='.') dots++;
+    if (dots == 3) {
+        /* dotted-decimal */
+        for (int i = 0; i < 4; i++) {
+            uint8_t oct = 0;
+            while (*p >= '0' && *p <= '9') oct = oct*10 + (*p++ - '0');
+            ip = (ip << 8) | oct;
+            if (*p == '.') p++;
+        }
+    } else {
+        /* hostname — use QEMU host gateway as default registry */
+        ip = (10UL<<24)|(0UL<<16)|(2UL<<8)|2UL; /* 10.0.2.2 */
+    }
+    if (!ip) return -5;
+
+    /* Open TCP connection */
+    int sock = (int)net_socket(SOCK_TCP);
+    if (sock < 0) return -6;
+    if (net_connect(sock, ip, port) < 0) { net_socket_close(sock); return -7; }
+
+    /* Send HTTP/1.0 GET request */
+    char req[512];
+    uint32_t rlen = 0;
+    /* Build: GET /path HTTP/1.0\r\nHost: host\r\nConnection: close\r\n\r\n */
+    const char *method = "GET ";
+    for (const char *s=method; *s; s++) req[rlen++] = *s;
+    for (const char *s=path;   *s; s++) req[rlen++] = *s;
+    const char *ver = " HTTP/1.0\r\nHost: ";
+    for (const char *s=ver; *s; s++) req[rlen++] = *s;
+    for (const char *s=host; *s; s++) req[rlen++] = *s;
+    const char *tail = "\r\nConnection: close\r\n\r\n";
+    for (const char *s=tail; *s; s++) req[rlen++] = *s;
+
+    net_send(sock, req, (uint16_t)rlen);
+
+    /* Read response — skip headers, return body */
+    uint8_t  rbuf[4096];
+    int64_t  total = 0;
+    int      headers_done = 0;
+    uint8_t  hdr_buf[4] = {0,0,0,0};
+    uint32_t empty_recvs = 0;
+
+    while (1) {
+        int64_t n = net_recv(sock, rbuf, sizeof(rbuf));
+        if (n <= 0) {
+            /* retry a few times before giving up */
+            empty_recvs++;
+            if (empty_recvs > 500) break;
+            continue;
+        }
+        empty_recvs = 0;
+        for (int64_t i = 0; i < n; i++) {
+            if (!headers_done) {
+                hdr_buf[0]=hdr_buf[1]; hdr_buf[1]=hdr_buf[2];
+                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=rbuf[i];
+                if (hdr_buf[0]=='\r'&&hdr_buf[1]=='\n'&&
+                    hdr_buf[2]=='\r'&&hdr_buf[3]=='\n') {
+                    headers_done = 1;
+                }
+            } else {
+                if ((uint64_t)total < bsz) buf[total++] = rbuf[i];
+            }
+        }
+    }
+    net_socket_close(sock);
+    return total;
+
+    while (1) {
+        int64_t n = net_recv(sock, rbuf, sizeof(rbuf));
+        if (n <= 0) break;
+        for (int64_t i = 0; i < n; i++) {
+            if (!headers_done) {
+                hdr_buf[0]=hdr_buf[1]; hdr_buf[1]=hdr_buf[2];
+                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=rbuf[i];
+                if (hdr_buf[0]=='\r'&&hdr_buf[1]=='\n'&&
+                    hdr_buf[2]=='\r'&&hdr_buf[3]=='\n') {
+                    headers_done = 1;
+                }
+            } else {
+                if ((uint64_t)total < bsz) buf[total++] = rbuf[i];
+            }
+        }
+    }
+    net_socket_close(sock);
+    return total;
+}
+
+/*
+ * sys_file_write — atomically create/overwrite a file
+ *   rdi = path (user ptr)
+ *   rsi = data (user ptr)
+ *   rdx = size
+ * Returns: bytes written, or negative on error
+ */
+static __attribute__((unused)) int64_t sys_file_write(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1))        return -1;
+    if (!uptr_ok(f->rsi, f->rdx))   return -1;
+
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    const void *data = (const void *)(uintptr_t)f->rsi;
+    uint64_t    size = f->rdx;
+
+    /* Create or open the file */
+    int fd = vfs_open(path, 1); /* O_WRONLY */
+    if (fd < 0) {
+        /* File doesn't exist — create it */
+        if (vfs_create(path, 0) < 0) return -2;
+        fd = vfs_open(path, 1);
+        if (fd < 0) return -3;
+    }
+
+    int64_t written = vfs_write(fd, data, size);
+    vfs_close(fd);
+    return written;
+}
+
 static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_EXIT]         = sys_exit,
     [SYS_FORK]         = sys_fork,
@@ -875,8 +1128,18 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_FB_CIRCLE]   = sys_fb_circle,
     [SYS_FB_RRECT]    = sys_fb_rrect,
     [SYS_FB_FLIP]     = sys_fb_flip,
-    [SYS_CHDIR]       = sys_chdir,
-    [SYS_GETCWD]      = sys_getcwd,
+    [SYS_CHDIR]         = sys_chdir,
+    [SYS_GETCWD]        = sys_getcwd,
+    [SYS_CNSL_UNBLOCK]  = sys_cnsl_unblock,
+    [SYS_CNSL_BLOCK_TTL]= sys_cnsl_block_ttl,
+    [SYS_CNSL_LIST]     = sys_cnsl_list,
+    [SYS_LSEEK]         = sys_lseek,
+    [SYS_STAT]          = sys_stat,
+    [SYS_FSTAT]         = sys_fstat,
+    [SYS_DUP]           = sys_dup,
+    [SYS_DUP2]          = sys_dup2,
+    [SYS_HTTP_GET]      = sys_http_get,
+    [SYS_FILE_WRITE]    = sys_file_write,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

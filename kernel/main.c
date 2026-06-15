@@ -15,6 +15,7 @@ extern void syscall_init_msr(void);
 #include "audit/audit.h"
 #include "cnsl/cnsl.h"
 #include "cnsl/fim.h"
+#include "huddlecluster/huddlecluster.h"
 #include "drivers/vga.h"
 #include "drivers/fb.h"
 #include "drivers/font.h"
@@ -62,7 +63,7 @@ static void parse_memory_map(uint64_t mb_info_phys,
                               uint64_t *out_base, uint64_t *out_size)
 {
     *out_base = 0x200000;
-    *out_size = 0x2000000;
+    *out_size = 0x4000000; /* 64MB — stays within bootloader identity mapping */
 
     if (!mb_info_phys) return;
 
@@ -135,6 +136,13 @@ static void timer_irq_handler(interrupt_frame_t *frame)
 {
     (void)frame;
     g_ticks++;
+    /* Keep g_syscall_kernel_rsp in sync with current process */
+    if (g_current_proc) {
+        extern uint64_t g_syscall_kernel_rsp;
+        g_syscall_kernel_rsp = g_current_proc->kernel_stack_top;
+        extern void tss_set_rsp0(uint64_t);
+        tss_set_rsp0(g_current_proc->kernel_stack_top);
+    }
     sched_tick();
 }
 
@@ -257,12 +265,19 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[NET ] Initializing TCP/IP network stack...\n");
     net_init();
+    extern void arp_preload_qemu_gateway(void);
+    arp_preload_qemu_gateway();
 
     kprint("[CNSL] Starting correlated security layer...\n");
     cnsl_init();
 
     kprint("[FIM ] Starting file integrity monitor...\n");
     fim_init();
+
+    kprint("[HC  ] Starting HuddleCluster load balancer...\n");
+    extern hc_cluster_t g_cluster;
+    hc_init(&g_cluster);
+    hc_add_server(&g_cluster, "exploidus-0", 0x0a00020f, 80, 1);
 
     kprint("[ExFS] Attempting to mount root filesystem...\n");
     vfs_node_t *fs_root = exfs_mount(0);
@@ -311,12 +326,15 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         uint64_t init_stack = 0;
 
         if (elf_load(_binary_build_userspace_bin_init_elf_start,
-                     init_size, &init_pml4, &init_entry, &init_stack))
+                     init_size, &init_pml4, &init_entry, &init_stack,
+                     (const char **)0, (const char **)0))
         {
             if (init_proc) {
                 sched_dequeue(init_proc);
-                init_proc->state = PROC_RUNNING;
-                init_proc->cr3   = init_pml4;
+                init_proc->state          = PROC_RUNNING;
+                init_proc->cr3            = init_pml4;
+                init_proc->user_entry     = init_entry;
+                init_proc->user_stack_top = init_stack;
                 g_current_proc   = init_proc;
                 tss_set_rsp0(init_proc->kernel_stack_top);
                 g_kernel_stack_top   = init_proc->kernel_stack_top;
@@ -348,14 +366,17 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         uint64_t shell_stack = 0;
 
         if (elf_load(_binary_build_userspace_shell_exploish_elf_start,
-                     elf_size, &shell_pml4, &shell_entry, &shell_stack))
+                     elf_size, &shell_pml4, &shell_entry, &shell_stack,
+                     (const char **)0, (const char **)0))
         {
             __asm__ volatile ("cli");
 
             if (init_proc) {
                 sched_dequeue(init_proc);
-                init_proc->state = PROC_RUNNING;
-                init_proc->cr3 = shell_pml4;
+                init_proc->state          = PROC_RUNNING;
+                init_proc->cr3            = shell_pml4;
+                init_proc->user_entry     = shell_entry;
+                init_proc->user_stack_top = shell_stack;
                 g_current_proc = init_proc;
                 tss_set_rsp0(init_proc->kernel_stack_top);
                 serial_print("[INIT] kernel_stack_top=");

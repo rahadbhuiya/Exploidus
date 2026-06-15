@@ -10,6 +10,7 @@
 #define ELF_CLASS_64    2
 #define ELF_DATA_LE     1
 #define ELF_TYPE_EXEC   2
+#define ELF_TYPE_DYN    3   /* PIE executable — ASLR-capable */
 #define ELF_MACH_X86_64 0x3E
 
 #define PT_LOAD         1
@@ -62,6 +63,8 @@ typedef struct __attribute__((packed)) {
 bool elf_load(const uint8_t *elf_data, uint64_t elf_size,
               uint64_t *pml4_phys,
               uint64_t *entry_out,
-              uint64_t *stack_top);
+              uint64_t *stack_top,
+              const char **argv,   /* NULL-terminated, may be NULL */
+              const char **envp);  /* NULL-terminated, may be NULL */
 
 bool elf_validate(const uint8_t *data, uint64_t size);

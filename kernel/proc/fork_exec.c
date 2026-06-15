@@ -203,7 +203,7 @@ int64_t sys_exec_impl(const uint8_t *elf_data, uint64_t elf_size)
     uint64_t entry    = 0;
     uint64_t stk_top  = 0;
 
-    if (!elf_load(elf_data, elf_size, &new_pml4, &entry, &stk_top)) {
+    if (!elf_load(elf_data, elf_size, &new_pml4, &entry, &stk_top, (const char**)0, (const char**)0)) {
         serial_print("[EXEC] ELF load failed\n");
         return -1;
     }

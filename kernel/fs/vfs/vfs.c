@@ -366,3 +366,79 @@ int vfs_getcwd(char *buf, uint64_t size)
     buf[len] = '\0';
     return 0;
 }
+
+/* SEEK constants (matching Linux/POSIX) */
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
+
+int64_t vfs_lseek(int fd, int64_t offset, int whence)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !g_fds[fd].active) return -1;
+    vfs_node_t *node = g_fds[fd].node;
+    if (!node) return -1;
+
+    int64_t new_offset;
+    switch (whence) {
+    case VFS_SEEK_SET:
+        new_offset = offset;
+        break;
+    case VFS_SEEK_CUR:
+        new_offset = (int64_t)g_fds[fd].offset + offset;
+        break;
+    case VFS_SEEK_END:
+        new_offset = (int64_t)node->size + offset;
+        break;
+    default:
+        return -1;
+    }
+
+    if (new_offset < 0) return -1;
+    g_fds[fd].offset = (uint64_t)new_offset;
+    return new_offset;
+}
+
+int vfs_fstat(int fd, vfs_stat_t *st)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !g_fds[fd].active) return -1;
+    if (!st) return -1;
+    vfs_node_t *node = g_fds[fd].node;
+    if (!node) return -1;
+    st->size  = node->size;
+    st->type  = (uint32_t)node->type;
+    st->inode = node->inode;
+    return 0;
+}
+
+int vfs_stat(const char *path, vfs_stat_t *st)
+{
+    if (!path || !st) return -1;
+    vfs_node_t *node = vfs_lookup(path);
+    if (!node) return -1;
+    st->size  = node->size;
+    st->type  = (uint32_t)node->type;
+    st->inode = node->inode;
+    return 0;
+}
+
+int vfs_dup(int fd)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !g_fds[fd].active) return -1;
+    for (int i = 3; i < VFS_MAX_FDS; i++) {
+        if (!g_fds[i].active) {
+            g_fds[i] = g_fds[fd];   /* copy node + offset */
+            return i;
+        }
+    }
+    return -1;
+}
+
+int vfs_dup2(int oldfd, int newfd)
+{
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !g_fds[oldfd].active) return -1;
+    if (newfd < 0 || newfd >= VFS_MAX_FDS) return -1;
+    if (newfd == oldfd) return newfd;
+    if (g_fds[newfd].active) vfs_close(newfd);
+    g_fds[newfd] = g_fds[oldfd];
+    return newfd;
+}

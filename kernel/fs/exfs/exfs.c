@@ -248,13 +248,18 @@ static int64_t exfs_op_read(vfs_node_t *node, uint64_t offset,
         uint64_t can_read    = EXFS_BLOCK_SIZE - block_off;
         if (can_read > len - bytes_read) can_read = len - bytes_read;
 
-        if (file_block >= EXFS_DIRECT_BLOCKS) {
-            /* Indirect blocks not yet implemented */
-            break;
+        uint64_t disk_block;
+        if (file_block < EXFS_DIRECT_BLOCKS) {
+            disk_block = in->direct[file_block];
+            if (!disk_block) break;
+        } else {
+            uint64_t indirect_idx = file_block - EXFS_DIRECT_BLOCKS;
+            if (!in->indirect) break;
+            uint8_t ind_buf[EXFS_BLOCK_SIZE];
+            if (!exfs_read_block(nd->vol, in->indirect, ind_buf)) break;
+            disk_block = ((uint64_t *)ind_buf)[indirect_idx];
+            if (!disk_block) break;
         }
-
-        uint64_t disk_block = in->direct[file_block];
-        if (!disk_block) break;
 
         uint8_t block_buf[EXFS_BLOCK_SIZE];
         if (!exfs_read_block(nd->vol, disk_block, block_buf)) break;
