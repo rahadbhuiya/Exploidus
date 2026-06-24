@@ -21,6 +21,8 @@ extern int64_t vfs_readdir(int fd, void *buf, uint64_t max);
 extern int vfs_create(const char *path, uint8_t type);
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
+#include "../crypto/blake3.h"
+#include "../net/dns/dns.h"
 #include <string.h>
 
 /*  MSR constants  */
@@ -201,7 +203,14 @@ static __attribute__((unused)) int64_t sys_open(syscall_frame_t *f)
 
     /* O_CREAT: create file if not found */
     if (fd < 0 && (flags & O_CREAT)) {
-        vfs_create(path, 0);
+        /* vfs_create() opens the new file internally and returns that
+         * fd — close it immediately since we're about to vfs_open()
+         * again with the caller's actual requested flags. Forgetting
+         * this leaked one fd slot, permanently, on every single
+         * O_CREAT of a new path (the global fd table only has 64
+         * slots total). */
+        int created_fd = vfs_create(path, 0);
+        if (created_fd >= 0) vfs_close(created_fd);
         fd = vfs_open(path, flags);
     }
 
@@ -674,14 +683,14 @@ static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
     /* 1. Copy path AND args from userspace BEFORE switching CR3 */
     if (!uptr_ok(f->rdi, 1)) { serial_print("[SPAWN] uptr fail\n"); return -1; }
     const char *path = (const char *)(uintptr_t)f->rdi;
-    char kpath[512];
+    static char kpath[512];
     uint64_t plen = 0;
     while (plen < 511 && path[plen]) { kpath[plen] = path[plen]; plen++; }
     kpath[plen] = 0;
     if (plen == 0) return -1;
 
     /* Copy optional args string (rdx) before CR3 switch */
-    char kargs[512]; kargs[0] = 0;
+    static char kargs[512]; kargs[0] = 0;
     if (f->rdx && uptr_ok(f->rdx, 1)) {
         const char *uargs = (const char *)(uintptr_t)f->rdx;
         uint64_t alen = 0;
@@ -961,22 +970,37 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
     }
     if (!*path) path = "/";
 
-    /* DNS resolve — simple: try to parse dotted-decimal IP */
+    /* DNS resolve */
     ip4_t ip = 0;
     const char *p = host;
     int dots = 0;
-    for (const char *t=host; *t; t++) if (*t=='.') dots++;
+    for (const char *t = host; *t; t++) if (*t == '.') dots++;
+
     if (dots == 3) {
-        /* dotted-decimal */
-        for (int i = 0; i < 4; i++) {
-            uint8_t oct = 0;
-            while (*p >= '0' && *p <= '9') oct = oct*10 + (*p++ - '0');
-            ip = (ip << 8) | oct;
-            if (*p == '.') p++;
+        /* Try dotted-decimal first */
+        bool all_digits = true;
+        for (const char *t = host; *t; t++)
+            if (*t != '.' && (*t < '0' || *t > '9')) { all_digits = false; break; }
+
+        if (all_digits) {
+            for (int i = 0; i < 4; i++) {
+                uint8_t oct = 0;
+                while (*p >= '0' && *p <= '9') oct = (uint8_t)(oct * 10 + (*p++ - '0'));
+                ip = (ip << 8) | oct;
+                if (*p == '.') p++;
+            }
         }
-    } else {
-        /* hostname — use QEMU host gateway as default registry */
-        ip = (10UL<<24)|(0UL<<16)|(2UL<<8)|2UL; /* 10.0.2.2 */
+    }
+
+    if (!ip) {
+        /* Hostname — do a real DNS A-record lookup */
+        serial_print("[HTTP] resolving: "); serial_print(host); serial_print("\n");
+        ip = dns_resolve(host);
+        if (!ip) {
+            serial_print("[HTTP] DNS resolve failed for: "); serial_print(host); serial_print("\n");
+            return -5;
+        }
+        serial_print("[HTTP] resolved -> "); serial_printhex(ip); serial_print("\n");
     }
     if (!ip) return -5;
 
@@ -1000,12 +1024,21 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
 
     net_send(sock, req, (uint16_t)rlen);
 
-    /* Read response — skip headers, return body */
-    uint8_t  rbuf[4096];
+    /* Read response — parse status line, skip headers, return body */
+    static uint8_t  rbuf[4096];
     int64_t  total = 0;
     int      headers_done = 0;
     uint8_t  hdr_buf[4] = {0,0,0,0};
     uint32_t empty_recvs = 0;
+
+    /* HTTP status line: "HTTP/1.x NNN <reason>\r\n", captured up to the
+     * first '\n'. Parsed in parallel with the existing hdr_buf logic
+     * below — it does not consume/skip bytes, so the \r\n\r\n header-end
+     * detection still sees every byte exactly as before. */
+    char     status_line[32];
+    uint32_t status_len  = 0;
+    int      status_done = 0;
+    int      http_status = 0;
 
     while (1) {
         int64_t n = net_recv(sock, rbuf, sizeof(rbuf));
@@ -1017,38 +1050,280 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
         }
         empty_recvs = 0;
         for (int64_t i = 0; i < n; i++) {
+            uint8_t c = rbuf[i];
+
+            if (!status_done) {
+                if (c == '\n') {
+                    status_line[status_len] = 0;
+                    status_done = 1;
+
+                    /* Parse "HTTP/1.x NNN ..." -> NNN */
+                    const char *sp = status_line;
+                    while (*sp && *sp != ' ') sp++;
+                    while (*sp == ' ') sp++;
+                    int code = 0, digits = 0;
+                    while (*sp >= '0' && *sp <= '9' && digits < 3) {
+                        code = code * 10 + (*sp - '0');
+                        sp++; digits++;
+                    }
+                    http_status = code;
+
+                    /* Non-2xx: bail out now instead of silently saving
+                     * an error page's body as if it were the package. */
+                    if (http_status < 200 || http_status >= 300) {
+                        net_socket_close(sock);
+                        return -8;
+                    }
+                } else if (c != '\r' && status_len < sizeof(status_line) - 1) {
+                    status_line[status_len++] = (char)c;
+                }
+            }
+
             if (!headers_done) {
                 hdr_buf[0]=hdr_buf[1]; hdr_buf[1]=hdr_buf[2];
-                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=rbuf[i];
+                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=c;
                 if (hdr_buf[0]=='\r'&&hdr_buf[1]=='\n'&&
                     hdr_buf[2]=='\r'&&hdr_buf[3]=='\n') {
                     headers_done = 1;
                 }
             } else {
-                if ((uint64_t)total < bsz) buf[total++] = rbuf[i];
+                if ((uint64_t)total < bsz) buf[total++] = c;
             }
         }
     }
     net_socket_close(sock);
     return total;
+}
+
+/*
+ * sys_blake3 — hash a userspace buffer with BLAKE3
+ *   rdi = input buffer (user ptr)
+ *   rsi = input length
+ *   rdx = output buffer (user ptr, must hold 32 bytes)
+ * Returns: 0 on success, negative on error
+ */
+static __attribute__((unused)) int64_t sys_blake3(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, f->rsi)) return -1;
+    if (!uptr_ok(f->rdx, 32))     return -1;
+
+    const uint8_t *input = (const uint8_t *)(uintptr_t)f->rdi;
+    uint64_t       len   = f->rsi;
+    uint8_t       *out   = (uint8_t *)(uintptr_t)f->rdx;
+
+    blake3_hash(input, len, out);
+    return 0;
+}
+
+/*
+ * sys_unlink — remove a file
+ *   rdi = path (user ptr)
+ * Returns: 0 on success, -1 not found / bad path, -2 it's a directory
+ */
+static __attribute__((unused)) int64_t sys_unlink(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    return vfs_unlink(path);
+}
+
+/*
+ * sys_http_download — download a URL directly to a file path.
+ *   rdi = url       (user ptr)
+ *   rsi = dest path (user ptr)
+ *   rdx = hash_out  (user ptr, 32 bytes) — optional, pass 0/NULL to skip.
+ *         If non-NULL, the kernel computes a BLAKE3 digest of the body
+ *         INCREMENTALLY as it streams in (blake3_update on each 4KB
+ *         chunk right before it's written to disk), and writes the
+ *         final digest into hash_out once the download completes.
+ *         There is no re-read of the file afterward: the hash is a
+ *         byproduct of the same single pass that writes the data, so
+ *         it can't fail independently of the download/write itself.
+ * Returns: bytes written, or negative on error.
+ *
+ * No userspace buffer is involved for the download itself: the kernel
+ * streams the TCP response body straight into the VFS file in 4KB
+ * chunks.  This removes the old MAX_PKG_SIZE limit entirely — the only
+ * constraint is free disk space.
+ *
+ * Error codes mirror sys_http_get plus:
+ *   -9  = could not create/open destination file
+ */
+static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    if (!uptr_ok(f->rsi, 1)) return -1;
+    if (f->rdx && !uptr_ok(f->rdx, 32)) return -1;
+
+    const char *url      = (const char *)(uintptr_t)f->rdi;
+    const char *dst_path = (const char *)(uintptr_t)f->rsi;
+    uint8_t    *hash_out = (uint8_t *)(uintptr_t)f->rdx;  /* may be NULL */
+
+    /* ---- reuse the URL-parsing logic from sys_http_get ---- */
+    if (url[0]!='h'||url[1]!='t'||url[2]!='t'||url[3]!='p') return -2;
+    const char *host_start = url + 7;
+    const char *slash = host_start;
+    while (*slash && *slash != '/' && *slash != ':') slash++;
+    if (!*slash) return -3;
+
+    char host[64]; uint32_t hlen = (uint32_t)(slash - host_start);
+    if (hlen >= 64) return -4;
+    for (uint32_t i = 0; i < hlen; i++) host[i] = host_start[i];
+    host[hlen] = 0;
+
+    uint16_t port = 80;
+    const char *path = slash;
+    if (*slash == ':') {
+        slash++;
+        port = 0;
+        while (*slash >= '0' && *slash <= '9') port = (uint16_t)(port*10 + (*slash++ - '0'));
+        path = slash;
+    }
+    if (!*path) path = "/";
+
+    /* DNS resolve */
+    ip4_t ip = 0;
+    const char *pp = host;
+    int dots = 0;
+    for (const char *t = host; *t; t++) if (*t == '.') dots++;
+
+    if (dots == 3) {
+        bool all_digits = true;
+        for (const char *t = host; *t; t++)
+            if (*t != '.' && (*t < '0' || *t > '9')) { all_digits = false; break; }
+        if (all_digits) {
+            for (int i = 0; i < 4; i++) {
+                uint8_t oct = 0;
+                while (*pp >= '0' && *pp <= '9') oct = (uint8_t)(oct*10 + (*pp++ - '0'));
+                ip = (ip << 8) | oct;
+                if (*pp == '.') pp++;
+            }
+        }
+    }
+    if (!ip) {
+        ip = dns_resolve(host);
+        if (!ip) return -5;
+    }
+
+    /* Open / create destination file BEFORE connecting.
+     * If this disk I/O happened after net_send (as it did before),
+     * the Python server would send the full response + FIN while we
+     * were busy writing to disk.  By the time we entered the recv
+     * loop the connection was already in TCP_CLOSE_WAIT with all
+     * data queued but unread — net_recv saw CLOSE_WAIT immediately
+     * and returned 0 without draining any data, giving Error: 0. */
+    int fd = vfs_open(dst_path, 1);
+    if (fd < 0) {
+        int created_fd = vfs_create(dst_path, 0);
+        if (created_fd < 0) return -9;
+        vfs_close(created_fd);
+        fd = vfs_open(dst_path, 1);
+        if (fd < 0) return -9;
+    }
+
+    /* TCP connect */
+    int sock = (int)net_socket(SOCK_TCP);
+    if (sock < 0) { vfs_close(fd); return -6; }
+    if (net_connect(sock, ip, port) < 0) { vfs_close(fd); net_socket_close(sock); return -7; }
+
+    /* Send HTTP/1.0 GET */
+    static char req[512]; uint32_t rlen = 0;
+    const char *method = "GET ";    for (const char *s=method; *s;) req[rlen++]=*s++;
+    for (const char *s=path;   *s;) req[rlen++]=*s++;
+    const char *ver = " HTTP/1.0\r\nHost: "; for (const char *s=ver;  *s;) req[rlen++]=*s++;
+    for (const char *s=host;   *s;) req[rlen++]=*s++;
+    const char *tail = "\r\nConnection: close\r\n\r\n"; for (const char *s=tail; *s;) req[rlen++]=*s++;
+    net_send(sock, req, (uint16_t)rlen);
+
+    /* Stream response: parse status line, skip headers, write body */
+    static uint8_t  rbuf[4096];
+    int64_t  total         = 0;
+    int      headers_done  = 0;
+    uint8_t  hdr_buf[4]    = {0,0,0,0};
+    uint32_t empty_recvs   = 0;
+
+    char     status_line[32];
+    uint32_t status_len  = 0;
+    int      status_done = 0;
+    int      http_status = 0;
+
+    /* Accumulate body bytes into a kernel-side write buffer so we
+     * call vfs_write in decent-sized chunks rather than one byte at
+     * a time.  Use a static kernel buffer (4KB = one ExFS block). */
+    static uint8_t wbuf[4096];
+    uint32_t wbuf_pos = 0;
+
+    blake3_ctx_t hash_ctx;
+    if (hash_out) blake3_init(&hash_ctx);
 
     while (1) {
         int64_t n = net_recv(sock, rbuf, sizeof(rbuf));
-        if (n <= 0) break;
+        if (n <= 0) {
+            empty_recvs++;
+            if (empty_recvs > 500) break;
+            continue;
+        }
+        empty_recvs = 0;
+
         for (int64_t i = 0; i < n; i++) {
+            uint8_t c = rbuf[i];
+
+            if (!status_done) {
+                if (c == '\n') {
+                    status_line[status_len] = 0;
+                    status_done = 1;
+                    const char *sp = status_line;
+                    while (*sp && *sp != ' ') sp++;
+                    while (*sp == ' ') sp++;
+                    int code = 0, digits = 0;
+                    while (*sp >= '0' && *sp <= '9' && digits < 3) {
+                        code = code * 10 + (*sp - '0'); sp++; digits++;
+                    }
+                    http_status = code;
+                    if (http_status < 200 || http_status >= 300) {
+                        vfs_close(fd); net_socket_close(sock); return -8;
+                    }
+                } else if (c != '\r' && status_len < sizeof(status_line) - 1) {
+                    status_line[status_len++] = (char)c;
+                }
+            }
+
             if (!headers_done) {
                 hdr_buf[0]=hdr_buf[1]; hdr_buf[1]=hdr_buf[2];
-                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=rbuf[i];
+                hdr_buf[2]=hdr_buf[3]; hdr_buf[3]=c;
                 if (hdr_buf[0]=='\r'&&hdr_buf[1]=='\n'&&
                     hdr_buf[2]=='\r'&&hdr_buf[3]=='\n') {
                     headers_done = 1;
                 }
             } else {
-                if ((uint64_t)total < bsz) buf[total++] = rbuf[i];
+                wbuf[wbuf_pos++] = c;
+                if (wbuf_pos == sizeof(wbuf)) {
+                    if (hash_out) blake3_update(&hash_ctx, wbuf, wbuf_pos);
+                    vfs_write(fd, wbuf, wbuf_pos);
+                    total    += wbuf_pos;
+                    wbuf_pos  = 0;
+                }
             }
         }
     }
+
+    /* Flush remainder */
+    if (wbuf_pos > 0) {
+        if (hash_out) blake3_update(&hash_ctx, wbuf, wbuf_pos);
+        vfs_write(fd, wbuf, wbuf_pos);
+        total += wbuf_pos;
+    }
+
+    vfs_close(fd);
     net_socket_close(sock);
+
+    /* The hash is a byproduct of the same pass that wrote the file —
+     * every byte that went through vfs_write also went through
+     * blake3_update right before it, so there's nothing left to do but
+     * finalize. No kmalloc, no reopening dst_path, no re-read: this
+     * can't fail independently of the download itself. */
+    if (hash_out) blake3_final(&hash_ctx, hash_out);
+
     return total;
 }
 
@@ -1072,7 +1347,9 @@ static __attribute__((unused)) int64_t sys_file_write(syscall_frame_t *f)
     int fd = vfs_open(path, 1); /* O_WRONLY */
     if (fd < 0) {
         /* File doesn't exist — create it */
-        if (vfs_create(path, 0) < 0) return -2;
+        int created_fd = vfs_create(path, 0);
+        if (created_fd < 0) return -2;
+        vfs_close(created_fd);  /* don't leak — see sys_open for why */
         fd = vfs_open(path, 1);
         if (fd < 0) return -3;
     }
@@ -1140,6 +1417,9 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_DUP2]          = sys_dup2,
     [SYS_HTTP_GET]      = sys_http_get,
     [SYS_FILE_WRITE]    = sys_file_write,
+    [SYS_BLAKE3]        = sys_blake3,
+    [SYS_UNLINK]        = sys_unlink,
+    [SYS_HTTP_DOWNLOAD] = sys_http_download,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

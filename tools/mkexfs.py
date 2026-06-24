@@ -36,14 +36,14 @@ free_blocks       = total_blocks - data_start_block - provenance_size
 img = bytearray(disk_size)
 
 # Superblock
-sb = struct.pack("<II"+"Q"*9+"16s4008s",
+sb = struct.pack("<II"+"Q"*9+"16s4000s",
     EXFS_MAGIC, 1,
     total_blocks, free_blocks,
     MAX_INODES, MAX_INODES - 1,
     inode_table_block, bitmap_block, data_start_block,
     provenance_block, provenance_size,
     b'\x45\x58\x46\x53'+b'\x00'*12,
-    b'\x00'*4008)
+    b'\x00'*4000)
 img[0:BLOCK_SIZE] = sb[:BLOCK_SIZE]
 
 # Block allocator
@@ -113,6 +113,11 @@ log_dir_block = alloc_block()
 log_inode = make_inode(0o755, 0, [log_dir_block])
 write_inode(3, log_inode)
 
+# var/rahu directory inode — rahu package manager state (index.json etc.)
+rahu_dir_block = alloc_block()
+rahu_inode = make_inode(0o755, 0, [rahu_dir_block])
+write_inode(4, rahu_inode)
+
 # Root directory — add bin/ and var/ entries
 root_dir_data = bytearray(BLOCK_SIZE)
 # bin entry
@@ -123,14 +128,16 @@ de_var = struct.pack("<QHBB256s", 2, 3, 1, 0, b'var'+b'\x00'*253)
 root_dir_data[len(de_bin):len(de_bin)+len(de_var)] = de_var
 write_block(root_dir_block, root_dir_data)
 
-# var directory — add log/
+# var directory — add log/ and rahu/
 var_dir_data = bytearray(BLOCK_SIZE)
 de_log = struct.pack("<QHBB256s", 3, 3, 1, 0, b'log'+b'\x00'*253)
 var_dir_data[0:len(de_log)] = de_log
+de_rahu = struct.pack("<QHBB256s", 4, 4, 1, 0, b'rahu'+b'\x00'*252)
+var_dir_data[len(de_log):len(de_log)+len(de_rahu)] = de_rahu
 write_block(var_dir_block, var_dir_data)
 
 # Write ELF files into /bin/
-next_ino = 4
+next_ino = 5
 bin_dir_data = bytearray(BLOCK_SIZE)
 bin_dir_offset = 0
 

@@ -62,7 +62,10 @@
 #define SYS_DUP2           54
 #define SYS_HTTP_GET       55   /* download URL to buffer */
 #define SYS_FILE_WRITE     56   /* create+write file atomically */
-#define SYS_COUNT          57
+#define SYS_BLAKE3         57   /* hash a userspace buffer */
+#define SYS_UNLINK         58   /* remove a file */
+#define SYS_HTTP_DOWNLOAD  59   /* stream URL directly to file — no size limit */
+#define SYS_COUNT          60
 
 
 

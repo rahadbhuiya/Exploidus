@@ -171,9 +171,22 @@ int net_recv(int fd, void *buf, uint16_t len)
         while (n == 0 && timeout > 0) {
             net_poll();
             n = tcp_recv(s->tcp_conn, buf, len);
-            if (n > 0) { break; }
+            if (n > 0) break;
+
+            /* Connection closing — but the remote may have sent data
+             * right before the FIN (HTTP/1.0 Connection: close does
+             * exactly this: full body followed immediately by FIN).
+             * If tcp_recv returned 0 here, it means the receive buffer
+             * is genuinely empty NOW.  Give it one more net_poll pass
+             * to ensure any still-queued DMA frames are flushed into
+             * the TCP buffer before concluding there is nothing left. */
             if (s->tcp_conn->state == TCP_CLOSED ||
-                s->tcp_conn->state == TCP_CLOSE_WAIT) break;
+                s->tcp_conn->state == TCP_CLOSE_WAIT) {
+                net_poll();
+                n = tcp_recv(s->tcp_conn, buf, len);
+                break;  /* whatever we got, we're done */
+            }
+
             sched_yield();
             timeout--;
         }

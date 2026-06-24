@@ -21,7 +21,7 @@ A custom x86-64 operating system kernel built from scratch.
 - Blocking waitpid (no busy-spin)
 - VFS + ExFS filesystem with provenance records
 - TCP/IP network stack (e1000, ARP, IP fragment reassembly, TCP, UDP, ICMP)
-- 29 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net)
+- 58 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net)
 - exploish interactive shell with real ps and audit commands
 
 ---
@@ -54,24 +54,48 @@ A custom x86-64 operating system kernel built from scratch.
     # Step 4: Build kernel
     make
 
-    # Step 5: Run
-    make qemu
+    # Step 5: Run (disk + network attached, so /bin/rahu works)
+    make qemu-disk
 
-You will see the kernel boot and the exploish shell appear.
+You will see the kernel boot and the exploish shell appear. Plain
+`make qemu` also works and boots faster, but it has no disk attached —
+/bin only contains what's embedded in the kernel image, so rahu and
+hello won't be there. Use `qemu-disk`/`qemu-gui`/`qemu-run` whenever you
+need a working /bin or networking.
 
 ---
 
 ## Run Options
 
-### Serial output in terminal (recommended)
+`qemu`, `qemu-vga` and `qemu-iso` boot the kernel with no disk attached —
+fine for testing the kernel/shell core, but /bin/rahu and /bin/hello
+won't exist. The `-disk`/`-gui`/`-run` targets mount build/disk.img and
+enable the e1000 NIC, so the full system (including rahu) is available.
+
+### Serial output in terminal, no disk
     make qemu
 All output goes to your terminal. Type commands here.
 
-### VGA window (needs WSLg or X server)
+### VGA window, no disk (needs WSLg or X server)
     make qemu-vga
 Opens a QEMU window with VGA text display.
 
-### Bootable ISO
+### Full system: disk + network, terminal output (recommended for rahu)
+    make qemu-disk
+Mounts build/disk.img and enables networking, so /bin/rahu, /bin/hello
+etc. are present and `rahu install` can reach the registry at
+10.0.2.2:9090. Serial output goes to your terminal.
+
+### Full system with a VGA window
+    make qemu-gui
+Same as qemu-disk, but also opens a VGA window alongside the serial output.
+
+### Full system, GUI + serial log to file
+    make qemu-run
+Same as qemu-gui, but serial output is written to /tmp/serial.log instead
+of your terminal — use `tail -f /tmp/serial.log` to follow it.
+
+### Bootable ISO (no disk)
     make iso
     qemu-system-x86_64 -cdrom build/exploidus.iso -m 256M -serial stdio -display none
 
@@ -97,10 +121,11 @@ Terminal 2:
     echo <text>     Print text
     clear           Clear screen
     cap             Show capability info
-    rahu install    Install package (stub)
-    rahu list       List packages
-    rahu search     Search repository
-    nafu remove     Remove package
+    rahu install    Install package (downloads from registry)
+    rahu remove     Remove package (stub — not yet implemented)
+    rahu list       List installed packages (stub — use 'ls /bin')
+    rahu search     Search local package index
+    rahu update     Refresh local package index
     exit [code]     Exit
 
 ---
@@ -114,7 +139,7 @@ Terminal 2:
     kernel/cap/            BLAKE3 capability tokens
     kernel/audit/          Ring-buffer audit log
     kernel/proc/           Process table, scheduler, fork/exec
-    kernel/syscall/        29 syscalls
+    kernel/syscall/        58 syscalls
     kernel/drivers/        VGA, serial, keyboard, ATA
     kernel/fs/vfs/         Virtual filesystem
     kernel/fs/exfs/        ExFS + provenance
@@ -133,8 +158,11 @@ Terminal 2:
     make           Build kernel + shell
     make clean     Remove build artifacts
     make iso       Build bootable ISO
-    make qemu      Run (serial, no window)
-    make qemu-vga  Run with VGA window
+    make qemu      Run (serial, no window, no disk)
+    make qemu-vga  Run with VGA window (no disk)
+    make qemu-disk Run with disk + network attached (rahu works)
+    make qemu-gui  Same as qemu-disk, with a VGA window
+    make qemu-run  Same as qemu-gui, serial output logged to a file
     make debug     Run with GDB on :1234
 
 ---

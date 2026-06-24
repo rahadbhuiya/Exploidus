@@ -3,6 +3,7 @@
 #include "../mm/kmalloc.h"
 #include "../audit/audit.h"
 #include "../drivers/serial.h"
+#include "../fs/vfs/vfs.h"
 #include <string.h>
 
 static process_t g_proc_table[MAX_PROCESSES];
@@ -103,6 +104,12 @@ void proc_exit(uint32_t pid, int code)
 
     p->state     = PROC_ZOMBIE;
     p->exit_code = code;
+
+    /* Reclaim any fds this process never closed — otherwise the
+     * global 64-slot vfs fd table leaks one slot per forgotten
+     * open(), eventually causing vfs_open() to fail system-wide
+     * (including for completely unrelated, perfectly valid files). */
+    vfs_close_all_for_pid(pid);
 
     audit_record(AUDIT_PROC_EXIT, pid, (uint64_t)code, 0);
 
