@@ -1,0 +1,6 @@
+build/
+registry/packages/
+registry/index.json
+*.o
+*.iso
+*.img

@@ -98,55 +98,110 @@ static void compress(const uint32_t *chaining_value,
 }
 
 /*
- * blake3_hash — single-chunk BLAKE3.
- * Handles inputs up to CHUNK_LEN (1024) bytes.
- * For the capability system this is always 44 bytes so this is sufficient.
+ * blake3_hash — single-shot convenience wrapper over the incremental API.
  */
 void blake3_hash(const uint8_t *input, uint64_t input_len, uint8_t *output)
 {
-    uint32_t chaining[8];
-    uint32_t out16[16];
+    blake3_ctx_t ctx;
+    blake3_init(&ctx);
+    blake3_update(&ctx, input, input_len);
+    blake3_final(&ctx, output);
+}
+
+/*
+ * Incremental BLAKE3.
+ *
+ * The original (and any correct BLAKE3 implementation) must compress
+ * the LAST block with CHUNK_END|ROOT flags, but a streaming caller
+ * doesn't know which block is last until it stops feeding data. So
+ * this implementation always holds back the most recently completed
+ * 64-byte block ("pending") uncompressed: a block is only compressed
+ * once we *know* more data follows it (i.e. once a new block starts
+ * filling up), or once blake3_final() is called and we know for
+ * certain it was the last one.
+ */
+void blake3_init(blake3_ctx_t *ctx)
+{
+    for (int i = 0; i < 8; i++) ctx->chaining[i] = IV[i];
+    ctx->pending_len = 0;
+    ctx->started     = 0;
+}
+
+/* Compress ctx->pending (ctx->pending_len bytes, zero-padded) as a
+ * NON-final block and fold the result into ctx->chaining. Only ever
+ * called from blake3_update for a block we already know isn't last
+ * (more data has arrived after it) — the actual last block is handled
+ * separately, inline, in blake3_final. */
+static void blake3_compress_intermediate(blake3_ctx_t *ctx)
+{
     uint8_t  padded_block[BLOCK_LEN];
     uint32_t block_words[16];
+    uint32_t out16[16];
 
-    for (int i = 0; i < 8; i++) chaining[i] = IV[i];
+    memset(padded_block, 0, BLOCK_LEN);
+    memcpy(padded_block, ctx->pending, ctx->pending_len);
 
-    uint64_t offset    = 0;
-    bool     first     = true;
-
-    while (offset < input_len || first) {
-        first = false;
-
-        uint64_t remaining  = input_len - offset;
-        uint32_t this_block = (uint32_t)(remaining > BLOCK_LEN ? BLOCK_LEN : remaining);
-        bool     is_last    = (offset + this_block >= input_len);
-
-        memset(padded_block, 0, BLOCK_LEN);
-        memcpy(padded_block, input + offset, this_block);
-
-        /* Load block as little-endian 32-bit words */
-        for (int i = 0; i < 16; i++) {
-            block_words[i] =
-                ((uint32_t)padded_block[i*4 + 0])        |
-                ((uint32_t)padded_block[i*4 + 1] <<  8)  |
-                ((uint32_t)padded_block[i*4 + 2] << 16)  |
-                ((uint32_t)padded_block[i*4 + 3] << 24);
-        }
-
-        uint32_t flags = 0;
-        if (offset == 0)    flags |= CHUNK_START;
-        if (is_last)        flags |= CHUNK_END | ROOT;
-
-        compress(chaining, block_words, 0, this_block, flags, out16);
-
-        if (is_last) break;
-
-        /* Update chaining value for next block */
-        for (int i = 0; i < 8; i++) chaining[i] = out16[i];
-        offset += this_block;
+    for (int i = 0; i < 16; i++) {
+        block_words[i] =
+            ((uint32_t)padded_block[i*4 + 0])        |
+            ((uint32_t)padded_block[i*4 + 1] <<  8)  |
+            ((uint32_t)padded_block[i*4 + 2] << 16)  |
+            ((uint32_t)padded_block[i*4 + 3] << 24);
     }
 
-    /* Write output as little-endian bytes */
+    uint32_t flags = ctx->started ? 0 : CHUNK_START;
+
+    compress(ctx->chaining, block_words, 0, ctx->pending_len, flags, out16);
+
+    for (int i = 0; i < 8; i++) ctx->chaining[i] = out16[i];
+    ctx->started = 1;
+}
+
+void blake3_update(blake3_ctx_t *ctx, const uint8_t *data, uint64_t len)
+{
+    while (len > 0) {
+        if (ctx->pending_len == BLOCK_LEN) {
+            /* pending block is full and more data is arriving, so it's
+             * definitely not the last block — compress it now. */
+            blake3_compress_intermediate(ctx);
+            ctx->pending_len = 0;
+        }
+
+        uint32_t space = BLOCK_LEN - ctx->pending_len;
+        uint64_t take  = (len < space) ? len : space;
+
+        memcpy(ctx->pending + ctx->pending_len, data, take);
+        ctx->pending_len += (uint32_t)take;
+        data += take;
+        len  -= take;
+    }
+}
+
+void blake3_final(blake3_ctx_t *ctx, uint8_t *output)
+{
+    /* Whatever is left in `pending` (0..64 bytes, possibly 0 for an
+     * empty input) is the true last block — compress it for real here
+     * so we can grab out16 directly. */
+    uint8_t  padded_block[BLOCK_LEN];
+    uint32_t block_words[16];
+    uint32_t out16[16];
+
+    memset(padded_block, 0, BLOCK_LEN);
+    memcpy(padded_block, ctx->pending, ctx->pending_len);
+
+    for (int i = 0; i < 16; i++) {
+        block_words[i] =
+            ((uint32_t)padded_block[i*4 + 0])        |
+            ((uint32_t)padded_block[i*4 + 1] <<  8)  |
+            ((uint32_t)padded_block[i*4 + 2] << 16)  |
+            ((uint32_t)padded_block[i*4 + 3] << 24);
+    }
+
+    uint32_t flags = CHUNK_END | ROOT;
+    if (!ctx->started) flags |= CHUNK_START;
+
+    compress(ctx->chaining, block_words, 0, ctx->pending_len, flags, out16);
+
     for (int i = 0; i < 8; i++) {
         output[i*4 + 0] = (uint8_t)(out16[i]);
         output[i*4 + 1] = (uint8_t)(out16[i] >>  8);

@@ -380,6 +380,8 @@ static inline int dup2(int oldfd, int newfd)
 /*  rahu package manager syscalls  */
 #define SYS_HTTP_GET    55
 #define SYS_FILE_WRITE  56
+#define SYS_BLAKE3      57
+#define SYS_UNLINK      58
 
 /* http_get: download url into buf, returns bytes or negative error */
 static inline int64_t http_get(const char *url, void *buf, uint64_t size)
@@ -397,6 +399,35 @@ static inline int64_t file_write(const char *path, const void *data, uint64_t si
         (uint64_t)(uintptr_t)path,
         (uint64_t)(uintptr_t)data,
         size);
+}
+
+/* blake3: hash buf[len] into out[32] (caller-provided 32-byte buffer) */
+static inline int64_t blake3(const void *buf, uint64_t len, uint8_t *out)
+{
+    return syscall3(SYS_BLAKE3,
+        (uint64_t)(uintptr_t)buf,
+        len,
+        (uint64_t)(uintptr_t)out);
+}
+
+/* unlink: remove a file. 0 ok, -1 not found/bad path, -2 is a directory */
+static inline int unlink(const char *path)
+{
+    return (int)syscall1(SYS_UNLINK, (uint64_t)(uintptr_t)path);
+}
+
+/* http_download: stream url directly to dest_path, no size limit.
+ * hash_out: pass a pointer to a 32-byte buffer to have the kernel fill
+ * it with the file's BLAKE3 digest after writing it (kernel-side hash,
+ * no big userspace buffer needed), or pass NULL to skip hashing.
+ * Returns bytes written or negative error (same codes as http_get, plus
+ * -9 = could not create/open destination file). */
+static inline int64_t http_download(const char *url, const char *dest_path, uint8_t *hash_out)
+{
+    return syscall3(SYS_HTTP_DOWNLOAD,
+        (uint64_t)(uintptr_t)url,
+        (uint64_t)(uintptr_t)dest_path,
+        (uint64_t)(uintptr_t)hash_out);
 }
 
 /* ping: send ICMP echo to ip, returns 0=ok -1=timeout */

@@ -21,6 +21,7 @@ typedef struct {
     vfs_node_t *(*lookup) (vfs_node_t *dir, const char *name);
     int64_t    (*readdir)(vfs_node_t *dir, uint64_t offset, void *buf, uint64_t max);
     vfs_node_t *(*create) (vfs_node_t *dir, const char *name, uint8_t type);
+    int      (*unlink)(vfs_node_t *dir, const char *name);
 } vfs_ops_t;
 
 struct vfs_node {
@@ -37,11 +38,13 @@ void        vfs_init(void);
 vfs_node_t *vfs_lookup(const char *path);
 int         vfs_open(const char *path, uint32_t flags);
 int         vfs_close(int fd);
+void        vfs_close_all_for_pid(uint32_t pid);
 int64_t     vfs_read(int fd, void *buf, uint64_t len);
 int64_t     vfs_write(int fd, const void *buf, uint64_t len);
 int         vfs_mount(const char *mountpoint, vfs_node_t *root);
 int64_t     vfs_readdir(int fd, void *buf, uint64_t max);
 int         vfs_create(const char *path, uint8_t type);
+int         vfs_unlink(const char *path);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);
 vfs_node_t *vfs_get_cwd(void);

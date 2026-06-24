@@ -47,6 +47,7 @@ KERNEL_C_SRCS := \
     kernel/net/net.c kernel/net/netstack.c \
     kernel/net/arp/arp.c kernel/net/ip/ip.c \
     kernel/net/icmp/icmp.c kernel/net/udp/udp.c \
+    kernel/net/dns/dns.c \
     kernel/net/tcp/tcp.c kernel/net/socket/socket.c \
     kernel/net/drivers/e1000.c \
     kernel/cnsl/cnsl.c \
@@ -268,7 +269,7 @@ qemu-iso: build/exploidus.iso
 clean:
 	rm -rf build iso
 	@echo "[CLN] workspace clean"
- 
+
 # DISK IMAGE
 
 
@@ -326,7 +327,7 @@ build/hello_blob.o: build/userspace/bin/hello.elf
 build/init_blob.o: build/userspace/bin/init.elf
 	@echo "[BIN] embedding init blob"
 	x86_64-elf-objcopy -I binary -O elf64-x86-64 -B i386:x86-64 $< $@
-# ── Yolish interpreter ──────────────────────────────────────────
+#  Yolish interpreter 
 YOLISH_SRCS := userspace/yolish/lexer.c \
                userspace/yolish/parser.c \
                userspace/yolish/eval.c   \

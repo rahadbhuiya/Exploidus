@@ -34,7 +34,13 @@ typedef struct __attribute__((packed)) {
     uint64_t provenance_block;       /* start of provenance region */
     uint64_t provenance_size;        /* size in blocks */
     uint8_t  fs_uuid[16];
-    uint8_t  reserved[4008];         /* pad to EXFS_BLOCK_SIZE */
+    uint8_t  reserved[4000];         /* pad to EXFS_BLOCK_SIZE exactly:
+                                       * 4+4+8*9+16+4000 = 4096. (Was 4008,
+                                       * making the struct 4104 bytes — 8
+                                       * bytes larger than EXFS_BLOCK_SIZE,
+                                       * which made exfs_mount's memcpy read
+                                       * 8 bytes past its 4096-byte stack
+                                       * buffer on every boot.) */
 } exfs_superblock_t;
 
 /*
