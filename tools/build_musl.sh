@@ -1,3 +1,49 @@
+#!/bin/bash
+# tools/build_musl.sh
+# Builds musl libc patched for Exploidus syscall ABI.
+# Run from repo root: bash tools/build_musl.sh
+set -e
+
+MUSL_VER="1.2.5"
+CROSS="$HOME/opt/cross/bin/x86_64-elf"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+SYSROOT="${REPO}/exploidus-sysroot"
+BUILD_DIR="${REPO}/musl-${MUSL_VER}"
+
+#  pre-flight 
+echo "========================================"
+echo " Exploidus musl build"
+echo " musl version : ${MUSL_VER}"
+echo " sysroot      : ${SYSROOT}"
+echo " cross        : ${CROSS}-gcc"
+echo "========================================"
+
+if [ ! -f "${CROSS}-gcc" ]; then
+    echo "[ERROR] Cross compiler not found: ${CROSS}-gcc"
+    echo "        Run: bash setup.sh"
+    exit 1
+fi
+
+#  step 1: download 
+if [ ! -d "${BUILD_DIR}" ]; then
+    echo "[1/5] Downloading musl-${MUSL_VER}..."
+    cd "${REPO}"
+    wget -q --show-progress \
+        "https://musl.libc.org/releases/musl-${MUSL_VER}.tar.gz"
+    tar -xzf "musl-${MUSL_VER}.tar.gz"
+    rm "musl-${MUSL_VER}.tar.gz"
+else
+    echo "[1/5] musl-${MUSL_VER} already extracted — skipping download."
+fi
+
+cd "${BUILD_DIR}"
+
+#  step 2: write userspace/musl/musl_syscall.h 
+# Self-contained: no external includes, all types and SYS_* constants inline.
+# This avoids stdint.h / capability.h / stdbool.h chain under -nostdinc.
+echo "[2/5] Writing ${REPO}/userspace/musl/musl_syscall.h ..."
+mkdir -p "${REPO}/userspace/musl"
+cat > "${REPO}/userspace/musl/musl_syscall.h" << 'SHIM_EOF'
 #pragma once
 /*
  * Exploidus musl Compatibility Layer
@@ -7,7 +53,7 @@
 #ifndef __EXPLOIDUS_MUSL_SYSCALL_H
 #define __EXPLOIDUS_MUSL_SYSCALL_H
 
-/* ── private integer types (GCC built-ins — never conflict with musl) ── */
+/*  private integer types (GCC built-ins — never conflict with musl)  */
 typedef __UINT8_TYPE__   __x_u8;
 typedef __UINT16_TYPE__  __x_u16;
 typedef __UINT32_TYPE__  __x_u32;
@@ -176,7 +222,7 @@ static inline __x_i64 __exploidus_syscall(
 
     switch (nr) {
 
-    /*  I/O  */
+    /* ── I/O ── */
     case LSC_read:
         return _xsc3(XSC_READ, a0, a1, a2);
 
@@ -207,7 +253,7 @@ static inline __x_i64 __exploidus_syscall(
         return n;
     }
 
-    /*  files  */
+    /* ── files ── */
     case LSC_open:
         return _xsc2(XSC_OPEN, a0, a1);
 
@@ -343,12 +389,12 @@ static inline __x_i64 __exploidus_syscall(
     case LSC_recvfrom:
         return _xsc3(XSC_NET_RECV, a0, a1, a2);
 
-    /*  identity (single-user OS — always root)  */
+    /* ── identity (single-user OS — always root) ── */
     case LSC_getuid: case LSC_geteuid:
     case LSC_getgid: case LSC_getegid:
         return 0;
 
-    /*  uname  */
+    /* ── uname ── */
     case LSC_uname: {
         _xutsname_t *u = (_xutsname_t *)(__x_uptr)a0;
         if (!u) return -1;
@@ -382,3 +428,177 @@ static inline __x_i64 __exploidus_syscall(
 }
 
 #endif /* __EXPLOIDUS_MUSL_SYSCALL_H */
+SHIM_EOF
+
+#  step 2.5: stub misc files that use unsupported Linux syscalls 
+# These functions (getpriority, getrlimit, getresuid, getresgid, setpriority,
+# setrlimit) all call syscall() with SYS_* constants that don't exist on
+# Exploidus.  Replace them with safe no-op stubs — Exploidus is single-user
+# (uid=0) and has no resource limits.
+echo "[2.5/5] Stubbing unsupported POSIX misc files..."
+
+cat > src/misc/getpriority.c << 'STUB_EOF'
+#include <sys/resource.h>
+int getpriority(int which, unsigned who) { (void)which; (void)who; return 0; }
+STUB_EOF
+
+cat > src/misc/setpriority.c << 'STUB_EOF'
+#include <sys/resource.h>
+int setpriority(int which, unsigned who, int prio)
+{ (void)which; (void)who; (void)prio; return 0; }
+STUB_EOF
+
+cat > src/misc/getrlimit.c << 'STUB_EOF'
+#include <sys/resource.h>
+int getrlimit(int res, struct rlimit *r) {
+    (void)res;
+    if (r) { r->rlim_cur = RLIM_INFINITY; r->rlim_max = RLIM_INFINITY; }
+    return 0;
+}
+int setrlimit(int res, const struct rlimit *r) { (void)res; (void)r; return 0; }
+STUB_EOF
+
+cat > src/misc/setrlimit.c << 'STUB_EOF'
+#include <sys/resource.h>
+int prlimit64(int pid, int res, const struct rlimit *new, struct rlimit *old) {
+    (void)pid; (void)res; (void)new;
+    if (old) { old->rlim_cur = RLIM_INFINITY; old->rlim_max = RLIM_INFINITY; }
+    return 0;
+}
+STUB_EOF
+
+cat > src/misc/getresuid.c << 'STUB_EOF'
+#define _GNU_SOURCE
+#include <unistd.h>
+int getresuid(unsigned *r, unsigned *e, unsigned *s) {
+    if (r) *r = 0; if (e) *e = 0; if (s) *s = 0; return 0;
+}
+STUB_EOF
+
+cat > src/misc/getresgid.c << 'STUB_EOF'
+#define _GNU_SOURCE
+#include <unistd.h>
+int getresgid(unsigned *r, unsigned *e, unsigned *s) {
+    if (r) *r = 0; if (e) *e = 0; if (s) *s = 0; return 0;
+}
+STUB_EOF
+
+cat > src/misc/ioctl.c << 'STUB_EOF'
+#include <sys/ioctl.h>
+#include <stdarg.h>
+int ioctl(int fd, int req, ...) { (void)fd; (void)req; return 0; }
+STUB_EOF
+
+cat > src/misc/syscall.c << 'STUB_EOF'
+#include "../internal/syscall.h"
+#include <stdarg.h>
+long syscall(long n, ...)
+{
+    va_list ap; long a,b,c,d,e,f;
+    va_start(ap, n);
+    a=va_arg(ap,long); b=va_arg(ap,long); c=va_arg(ap,long);
+    d=va_arg(ap,long); e=va_arg(ap,long); f=va_arg(ap,long);
+    va_end(ap);
+    return __syscall6(n,a,b,c,d,e,f);
+}
+STUB_EOF
+
+#  step 2.6: pre-generate bits/syscall.h so SYS_* constants exist 
+echo "[2.6/5] Pre-generating obj/include/bits/syscall.h ..."
+mkdir -p obj/include/bits
+sed -n 's/__NR_/SYS_/p' arch/x86_64/bits/syscall.h.in > obj/include/bits/syscall.h
+
+#  step 3: patch src/internal/syscall.h 
+echo "[3/5] Patching musl-${MUSL_VER}/src/internal/syscall.h ..."
+cat > src/internal/syscall.h << PATCH_EOF
+#pragma once
+/*
+ * Exploidus syscall bridge — replaces musl's Linux syscall layer.
+ */
+#include "../../../../userspace/musl/musl_syscall.h"
+
+/* All Linux SYS_* constants — generated from arch/x86_64/bits/syscall.h.in.
+ * This is what musl source files use when they call __syscall(SYS_foo, ...).
+ * Unknown syscalls fall through to -ENOSYS in our dispatcher. */
+#include <bits/syscall.h>
+
+/* arity-specific variants — musl calls these directly in some files */
+static inline long __syscall0(long n)
+{ return (long)__exploidus_syscall((__x_u64)n,0,0,0,0,0,0); }
+static inline long __syscall1(long n, long a)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,0,0,0,0,0); }
+static inline long __syscall2(long n, long a, long b)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,(__x_u64)b,0,0,0,0); }
+static inline long __syscall3(long n, long a, long b, long c)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,(__x_u64)b,(__x_u64)c,0,0,0); }
+static inline long __syscall4(long n, long a, long b, long c, long d)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,(__x_u64)b,(__x_u64)c,(__x_u64)d,0,0); }
+static inline long __syscall5(long n, long a, long b, long c, long d, long e)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,(__x_u64)b,(__x_u64)c,(__x_u64)d,(__x_u64)e,0); }
+static inline long __syscall6(long n, long a, long b, long c, long d, long e, long f)
+{ return (long)__exploidus_syscall((__x_u64)n,(__x_u64)a,(__x_u64)b,(__x_u64)c,(__x_u64)d,(__x_u64)e,(__x_u64)f); }
+
+/* variadic dispatch — picks arity at compile time */
+#define __NARG_X(a,b,c,d,e,f,g,h,...) h
+#define __NARG(...)  __NARG_X(__VA_ARGS__, 6,5,4,3,2,1,0,)
+#define __CAT(a,b)   a##b
+#define __SC(n,...)  __CAT(__syscall,n)(__VA_ARGS__)
+#define __syscall(...) __SC(__NARG(__VA_ARGS__), __VA_ARGS__)
+
+/* __syscall_ret: convert negative kernel errno to -1+errno (POSIX).
+ * Defined in src/internal/syscall_ret.c — declared here for all callers. */
+long __syscall_ret(unsigned long r);
+
+/* syscall(): public variadic wrapper (defined in src/unistd/syscall.c).
+ * Some src/misc/ and src/sched/ files call this directly. */
+extern long syscall(long, ...);
+
+/* __sys_open / __sys_open_cp: used by __libc_start_main.c and other musl
+ * internals.  Original musl syscall.h provides these; we must too. */
+#define __sys_open(...)     __syscall(SYS_open, __VA_ARGS__)
+#define __sys_open_cp(...)  __syscall(SYS_open, __VA_ARGS__)
+
+/* syscall_arg_t: the integer type used for syscall arguments.
+ * SYSCALL_MMAP2_UNIT: page-size unit for mmap2 offset argument.
+ * syscall_cp: cancellation-point syscall — no threads on Exploidus,
+ *             so just alias to the regular __syscall. */
+typedef long syscall_arg_t;
+#define SYSCALL_MMAP2_UNIT 4096ULL
+#define syscall_cp __syscall
+PATCH_EOF
+
+#  step 4: configure 
+echo "[4/5] Configuring..."
+make clean -s 2>/dev/null || true
+
+./configure \
+    --prefix="${SYSROOT}" \
+    --syslibdir="${SYSROOT}/lib" \
+    --disable-shared \
+    --enable-static \
+    CC="${CROSS}-gcc" \
+    CFLAGS="-ffreestanding -fno-stack-protector -fno-pie \
+            -mno-red-zone \
+            -Wno-int-conversion \
+            -D_GNU_SOURCE \
+            -I${REPO}/userspace/musl \
+            -nostdinc -O2" \
+    2>&1 | grep -v "^$" | tail -8
+
+#  step 5: build 
+echo "[5/5] Building (≈2 min)..."
+make -j"$(nproc)"
+make install -s
+
+echo ""
+echo "========================================"
+echo " musl build complete!"
+echo " sysroot: ${SYSROOT}"
+echo "========================================"
+echo ""
+echo " Test compile:"
+echo "   ${CROSS}-gcc -static -nostdlib \\"
+echo "     -I${SYSROOT}/include \\"
+echo "     -L${SYSROOT}/lib \\"
+echo "     -o hello.elf hello.c \\"
+echo "     ${SYSROOT}/lib/libc.a"

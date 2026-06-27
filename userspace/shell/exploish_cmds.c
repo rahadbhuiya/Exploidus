@@ -245,3 +245,367 @@ void cmd_ext_xxd(const char *path) {
     }
     close(fd);
 }
+/* 
+ *  New Unix-style commands
+ *  All use only Exploidus syscall wrappers — no Linux libc dependency.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/*  cat  */
+void cmd_ext_cat(const char *path)
+{
+    if (!path || !*path) { _println("cat: missing file"); return; }
+    char ap[256]; _abs(path, ap, 256);
+    int fd = open(ap, O_RDONLY);
+    if (fd < 0) { puts("cat: cannot open: "); _println(ap); return; }
+    char buf[512];
+    int64_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+        write(STDOUT_FILENO, buf, (size_t)n);
+    close(fd);
+}
+
+/*  touch  */
+void cmd_ext_touch(const char *path)
+{
+    if (!path || !*path) { _println("touch: missing file"); return; }
+    char ap[256]; _abs(path, ap, 256);
+    int fd = open(ap, O_RDONLY);
+    if (fd >= 0) { close(fd); return; }           /* already exists */
+    fd = open(ap, O_WRONLY | O_CREAT);
+    if (fd >= 0) close(fd);
+    else { puts("touch: cannot create: "); _println(ap); }
+}
+
+/*  cp  */
+void cmd_ext_cp(const char *args)
+{
+    /* cp <src> <dst> */
+    const char *p = _skip(args);
+    char src[256], dst[256];
+    int i = 0;
+    while (*p && *p != ' ' && i < 255) src[i++] = *p++;
+    src[i] = 0;
+    p = _skip(p);
+    i = 0;
+    while (*p && i < 255) dst[i++] = *p++;
+    dst[i] = 0;
+    if (!src[0] || !dst[0]) { _println("cp: usage: cp <src> <dst>"); return; }
+
+    char asrc[256], adst[256];
+    _abs(src, asrc, 256); _abs(dst, adst, 256);
+
+    int fdin = open(asrc, O_RDONLY);
+    if (fdin < 0) { puts("cp: cannot open: "); _println(asrc); return; }
+
+    int fdout = open(adst, O_WRONLY | O_CREAT);
+    if (fdout < 0) { close(fdin); puts("cp: cannot create: "); _println(adst); return; }
+
+    char buf[512]; int64_t n;
+    while ((n = read(fdin, buf, sizeof(buf))) > 0)
+        write(fdout, buf, (size_t)n);
+    close(fdin); close(fdout);
+}
+
+/*  mv  */
+void cmd_ext_mv(const char *args)
+{
+    /* mv = cp + unlink src */
+    const char *p = _skip(args);
+    char src[256], dst[256];
+    int i = 0;
+    while (*p && *p != ' ' && i < 255) src[i++] = *p++;
+    src[i] = 0;
+    p = _skip(p);
+    i = 0;
+    while (*p && i < 255) dst[i++] = *p++;
+    dst[i] = 0;
+    if (!src[0] || !dst[0]) { _println("mv: usage: mv <src> <dst>"); return; }
+
+    char asrc[256], adst[256];
+    _abs(src, asrc, 256); _abs(dst, adst, 256);
+
+    int fdin = open(asrc, O_RDONLY);
+    if (fdin < 0) { puts("mv: cannot open: "); _println(asrc); return; }
+    int fdout = open(adst, O_WRONLY | O_CREAT);
+    if (fdout < 0) { close(fdin); puts("mv: cannot create: "); _println(adst); return; }
+
+    char buf[512]; int64_t n;
+    while ((n = read(fdin, buf, sizeof(buf))) > 0)
+        write(fdout, buf, (size_t)n);
+    close(fdin); close(fdout);
+    unlink(asrc);
+}
+
+/*  tail  */
+/* Simple tail: reads up to 4KB from end of file, prints last N lines    */
+void cmd_ext_tail(const char *args)
+{
+    int nlines = 10;
+    const char *p = _skip(args);
+
+    /* parse optional -N */
+    if (*p == '-') {
+        p++;
+        nlines = 0;
+        while (*p >= '0' && *p <= '9') nlines = nlines * 10 + (*p++ - '0');
+        p = _skip(p);
+    }
+    if (!*p) { _println("tail: missing file"); return; }
+
+    char ap[256]; _abs(p, ap, 256);
+    int fd = open(ap, O_RDONLY);
+    if (fd < 0) { puts("tail: cannot open: "); _println(ap); return; }
+
+    /* Read last 4KB */
+    static char tbuf[4096];
+    int64_t total = 0, n;
+    while ((n = read(fd, tbuf + total,
+                     (size_t)(4096 - total))) > 0) {
+        total += n;
+        if (total >= 4096) break;
+    }
+    close(fd);
+    if (total == 0) return;
+
+    /* Count newlines from end */
+    int found = 0;
+    int64_t start = total;
+    for (int64_t i = total - 1; i >= 0 && found < nlines; i--) {
+        if (tbuf[i] == '\n') { found++; start = i + 1; }
+    }
+    if (found < nlines) start = 0;
+    write(STDOUT_FILENO, tbuf + start, (size_t)(total - start));
+}
+
+/*  find  */
+/* find <dir> [-name <pattern>]  — simple recursive listing              */
+static int _str_match(const char *pat, const char *str)
+{
+    /* Very minimal glob: only * wildcard */
+    while (*pat && *str) {
+        if (*pat == '*') {
+            pat++;
+            if (!*pat) return 1;
+            while (*str) {
+                if (_str_match(pat, str)) return 1;
+                str++;
+            }
+            return 0;
+        }
+        if (*pat != *str) return 0;
+        pat++; str++;
+    }
+    while (*pat == '*') pat++;
+    return !*pat && !*str;
+}
+
+static void _find_dir(const char *dir, const char *pat, int depth)
+{
+    if (depth > 8) return;
+    char abuf[256]; _abs(dir, abuf, 256);
+    int fd = open(abuf, O_RDONLY);
+    if (fd < 0) return;
+
+    dirent_t ents[32]; int64_t n;
+    while ((n = readdir(fd, ents, 32)) > 0) {
+        for (int64_t i = 0; i < n; i++) {
+            if (ents[i].name[0] == '.' &&
+                (ents[i].name[1] == 0 ||
+                 (ents[i].name[1] == '.' && ents[i].name[2] == 0))) continue;
+
+            char full[256];
+            int ai = 0;
+            const char *d = abuf;
+            while (*d && ai < 250) full[ai++] = *d++;
+            if (ai > 1 && full[ai-1] != '/') full[ai++] = '/';
+            const char *nm = ents[i].name;
+            while (*nm && ai < 255) full[ai++] = *nm++;
+            full[ai] = 0;
+
+            if (!pat || _str_match(pat, ents[i].name)) {
+                _println(full);
+            }
+            if (ents[i].type == 1)   /* directory */
+                _find_dir(full, pat, depth + 1);
+        }
+    }
+    close(fd);
+}
+
+void cmd_ext_find(const char *args)
+{
+    const char *p = _skip(args);
+    char dir[256] = ".";
+    const char *pat = (const char *)0;
+    int i = 0;
+
+    /* parse dir */
+    if (*p && *p != '-') {
+        while (*p && *p != ' ' && i < 255) dir[i++] = *p++;
+        dir[i] = 0;
+        p = _skip(p);
+    }
+
+    /* parse -name <pat> */
+    if (p[0] == '-' && p[1] == 'n' && p[2] == 'a' &&
+        p[3] == 'm' && p[4] == 'e') {
+        p = _skip(p + 5);
+        pat = p;
+    }
+
+    _find_dir(dir, (*pat ? pat : (const char *)0), 0);
+}
+
+/*  sed  */
+/* sed s/old/new/  <file>  — single substitution per line               */
+void cmd_ext_sed(const char *args)
+{
+    const char *p = _skip(args);
+
+    /* parse s/old/new/ */
+    if (*p != 's') { _println("sed: only s/old/new/ supported"); return; }
+    p++;
+    char delim = *p++;
+    char old[128], newstr[128];
+    int oi = 0, ni = 0;
+    while (*p && *p != delim && oi < 127) old[oi++] = *p++;
+    old[oi] = 0;
+    if (*p == delim) p++;
+    while (*p && *p != delim && ni < 127) newstr[ni++] = *p++;
+    newstr[ni] = 0;
+    if (*p == delim) p++;
+    if (*p == delim) p++;  /* trailing / or g */
+
+    p = _skip(p);
+    if (!*p) { _println("sed: missing file"); return; }
+
+    char ap[256]; _abs(p, ap, 256);
+    int fd = open(ap, O_RDONLY);
+    if (fd < 0) { puts("sed: cannot open: "); _println(ap); return; }
+
+    static char line[1024];
+    int li = 0;
+    char ch;
+
+    while (read(fd, &ch, 1) == 1) {
+        if (ch == '\n' || li >= 1023) {
+            line[li] = 0;
+            /* Search and replace in line */
+            char out[1024]; int oo = 0;
+            char *lp = line;
+            while (*lp) {
+                /* try match */
+                int matched = 1;
+                for (int k = 0; k < oi; k++) {
+                    if (lp[k] != old[k]) { matched = 0; break; }
+                }
+                if (matched && oi > 0) {
+                    for (int k = 0; k < ni && oo < 1023; k++) out[oo++] = newstr[k];
+                    lp += oi;
+                } else {
+                    if (oo < 1023) out[oo++] = *lp++;
+                }
+            }
+            out[oo] = 0;
+            puts(out); putc('\n');
+            li = 0;
+        } else {
+            line[li++] = ch;
+        }
+    }
+    /* flush last line without newline */
+    if (li > 0) {
+        line[li] = 0;
+        _println(line);
+    }
+    close(fd);
+}
+
+/*  chmod  */
+/* ExFS doesn't have Unix permissions yet — stub that confirms the call  */
+void cmd_ext_chmod(const char *args)
+{
+    /* Just acknowledge — ExFS permission model is capability-based */
+    const char *p = _skip(args);
+    if (!*p) { _println("chmod: usage: chmod <mode> <file>"); return; }
+    /* skip mode */
+    while (*p && *p != ' ') p++;
+    p = _skip(p);
+    if (!*p) { _println("chmod: missing file"); return; }
+    /* ExFS has no Unix rwx bits — silently succeed like busybox on tmpfs */
+    (void)p;
+}
+
+/*  env  */
+void cmd_ext_env(void)
+{
+    /* Exploidus has no env vars yet — print minimal POSIX-like set */
+    _println("PATH=/bin:/usr/bin");
+    _println("HOME=/");
+    _println("SHELL=/bin/exploish");
+    _println("TERM=vt100");
+    _println("USER=root");
+}
+
+/*  clear  */
+void cmd_ext_clear(void)
+{
+    /* ANSI clear screen + cursor home */
+    puts("\033[2J\033[H");
+}
+
+/*  tee  */
+/* tee <file>  — reads stdin, writes to file AND stdout                  */
+void cmd_ext_tee(const char *path)
+{
+    if (!path || !*path) { _println("tee: missing file"); return; }
+    char ap[256]; _abs(path, ap, 256);
+
+    int fd = open(ap, O_WRONLY | O_CREAT);
+    if (fd < 0) { puts("tee: cannot open: "); _println(ap); return; }
+
+    char buf[512]; int64_t n;
+    while ((n = read(STDIN_FILENO, buf, sizeof(buf))) > 0) {
+        write(STDOUT_FILENO, buf, (size_t)n);
+        write(fd, buf, (size_t)n);
+    }
+    close(fd);
+}
+
+/*  cmp  */
+/* cmp <file1> <file2>  — byte-by-byte comparison                        */
+void cmd_ext_cmp(const char *args)
+{
+    const char *p = _skip(args);
+    char f1[256], f2[256];
+    int i = 0;
+    while (*p && *p != ' ' && i < 255) f1[i++] = *p++;
+    f1[i] = 0; p = _skip(p); i = 0;
+    while (*p && i < 255) f2[i++] = *p++;
+    f2[i] = 0;
+    if (!f1[0] || !f2[0]) { _println("cmp: usage: cmp <file1> <file2>"); return; }
+
+    char a1[256], a2[256];
+    _abs(f1, a1, 256); _abs(f2, a2, 256);
+
+    int fd1 = open(a1, O_RDONLY), fd2 = open(a2, O_RDONLY);
+    if (fd1 < 0) { puts("cmp: cannot open: "); _println(a1); return; }
+    if (fd2 < 0) { close(fd1); puts("cmp: cannot open: "); _println(a2); return; }
+
+    char b1, b2; int64_t pos = 1; int same = 1;
+    while (1) {
+        int64_t r1 = read(fd1, &b1, 1);
+        int64_t r2 = read(fd2, &b2, 1);
+        if (r1 <= 0 && r2 <= 0) break;
+        if (r1 <= 0 || r2 <= 0 || b1 != b2) { same = 0; break; }
+        pos++;
+    }
+    close(fd1); close(fd2);
+
+    if (same) _println("files are identical");
+    else {
+        puts("files differ at byte ");
+        _print_int(pos);
+        putc('\n');
+    }
+}

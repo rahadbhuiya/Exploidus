@@ -57,7 +57,6 @@ typedef uint32_t ip4_t;
     (((uint32_t)(a)<<24)|((uint32_t)(b)<<16)|((uint32_t)(c)<<8)|(uint32_t)(d))
 
 
-
 /*  Raw syscall stubs  */
 
 static inline int64_t syscall0(uint64_t n)
@@ -144,7 +143,6 @@ static inline ssize_t read(int fd, void *buf, size_t n)
 /*  Memory  */
 static inline void *mmap(size_t len)
 {
-    /* Anonymous mmap — MAP_ANON|MAP_PRIVATE equivalent */
     int64_t r = syscall2(SYS_MMAP, 0, (uint64_t)len);
     return (r < 0) ? (void *)0 : (void *)(uintptr_t)(uint64_t)r;
 }
@@ -242,7 +240,6 @@ static inline int strcmp_u(const char *a,const char *b)
 #define SYS_READDIR   35
 #define SYS_CREATE    36
 
-
 typedef struct {
     uint64_t inode;
     uint8_t  type;
@@ -293,9 +290,6 @@ static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b)
 {
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
-
-
-
 static inline void fb_str(uint32_t x, uint32_t y, const char *s,
                            uint32_t fg, uint32_t bg)
 {
@@ -327,7 +321,6 @@ static inline int64_t spawn(const char *path)
 {
     return syscall1(SYS_SPAWN, (uint64_t)(uintptr_t)path);
 }
-/* spawn with argument string — use INTENT_INTERACTIVE so it runs */
 static inline int64_t spawn_args(const char *path, const char *args)
 {
     return syscall3(SYS_SPAWN, (uint64_t)(uintptr_t)path, 3, (uint64_t)(uintptr_t)args);
@@ -359,18 +352,15 @@ static inline int stat(const char *path, vfs_stat_t *st)
     return (int)syscall2(SYS_STAT,
         (uint64_t)(uintptr_t)path, (uint64_t)(uintptr_t)st);
 }
-
 static inline int fstat(int fd, vfs_stat_t *st)
 {
     return (int)syscall2(SYS_FSTAT,
         (uint64_t)(int64_t)fd, (uint64_t)(uintptr_t)st);
 }
-
 static inline int dup(int fd)
 {
     return (int)syscall1(SYS_DUP, (uint64_t)(int64_t)fd);
 }
-
 static inline int dup2(int oldfd, int newfd)
 {
     return (int)syscall2(SYS_DUP2,
@@ -383,7 +373,6 @@ static inline int dup2(int oldfd, int newfd)
 #define SYS_BLAKE3      57
 #define SYS_UNLINK      58
 
-/* http_get: download url into buf, returns bytes or negative error */
 static inline int64_t http_get(const char *url, void *buf, uint64_t size)
 {
     return syscall3(SYS_HTTP_GET,
@@ -391,8 +380,6 @@ static inline int64_t http_get(const char *url, void *buf, uint64_t size)
         (uint64_t)(uintptr_t)buf,
         size);
 }
-
-/* file_write: create/overwrite file at path with data */
 static inline int64_t file_write(const char *path, const void *data, uint64_t size)
 {
     return syscall3(SYS_FILE_WRITE,
@@ -400,8 +387,6 @@ static inline int64_t file_write(const char *path, const void *data, uint64_t si
         (uint64_t)(uintptr_t)data,
         size);
 }
-
-/* blake3: hash buf[len] into out[32] (caller-provided 32-byte buffer) */
 static inline int64_t blake3(const void *buf, uint64_t len, uint8_t *out)
 {
     return syscall3(SYS_BLAKE3,
@@ -409,19 +394,10 @@ static inline int64_t blake3(const void *buf, uint64_t len, uint8_t *out)
         len,
         (uint64_t)(uintptr_t)out);
 }
-
-/* unlink: remove a file. 0 ok, -1 not found/bad path, -2 is a directory */
 static inline int unlink(const char *path)
 {
     return (int)syscall1(SYS_UNLINK, (uint64_t)(uintptr_t)path);
 }
-
-/* http_download: stream url directly to dest_path, no size limit.
- * hash_out: pass a pointer to a 32-byte buffer to have the kernel fill
- * it with the file's BLAKE3 digest after writing it (kernel-side hash,
- * no big userspace buffer needed), or pass NULL to skip hashing.
- * Returns bytes written or negative error (same codes as http_get, plus
- * -9 = could not create/open destination file). */
 static inline int64_t http_download(const char *url, const char *dest_path, uint8_t *hash_out)
 {
     return syscall3(SYS_HTTP_DOWNLOAD,
@@ -430,9 +406,7 @@ static inline int64_t http_download(const char *url, const char *dest_path, uint
         (uint64_t)(uintptr_t)hash_out);
 }
 
-/* ping: send ICMP echo to ip, returns 0=ok -1=timeout */
 static inline int64_t ping(ip4_t ip) { return syscall1(SYS_PING, (uint64_t)ip); }
-
 
 #define SYS_FB_CIRCLE  42
 #define SYS_FB_RRECT   43
@@ -442,7 +416,6 @@ static inline int64_t ping(ip4_t ip) { return syscall1(SYS_PING, (uint64_t)ip); 
 
 static inline void fb_circle(int cx, int cy, int r, uint32_t color)
 {
-    /* rdi=cx  rsi=cy  rdx=r  r10=color */
     register uint64_t r10 __asm__("r10") = (uint64_t)color;
     int64_t ret;
     __asm__ volatile ("syscall"
@@ -454,13 +427,10 @@ static inline void fb_circle(int cx, int cy, int r, uint32_t color)
           "r"(r10)
         : "rcx","r11","r8","r9","memory");
 }
-
-
 static inline int chdir(const char *path)
 {
     return (int)syscall1(SYS_CHDIR, (uint64_t)(uintptr_t)path);
 }
-
 static inline int getcwd(char *buf, uint64_t size)
 {
     return (int)syscall2(SYS_GETCWD, (uint64_t)(uintptr_t)buf, size);
@@ -475,7 +445,6 @@ static inline uint64_t cnsl_block_ttl(uint32_t ip)
 {
     return (uint64_t)syscall1(SYS_CNSL_BLOCK_TTL, (uint64_t)ip);
 }
-/* cnsl_list_entry_t — matches kernel struct */
 typedef struct { uint32_t ip; uint64_t ttl_secs; } cnsl_list_entry_t;
 static inline int cnsl_list_ips(cnsl_list_entry_t *buf, int max)
 {
@@ -483,17 +452,120 @@ static inline int cnsl_list_ips(cnsl_list_entry_t *buf, int max)
                          (uint64_t)(uintptr_t)buf,
                          (uint64_t)(uint32_t)max);
 }
-
 static inline void fb_flip(void)
 {
     syscall0(SYS_FB_FLIP);
 }
-
 static inline void fb_rrect(int x, int y, int w, int h, int r, uint32_t color)
 {
-    /* syscall6: rdi=x rsi=y rdx=w r10=h r8=radius r9=color */
     syscall6(SYS_FB_RRECT,
              (uint64_t)(int64_t)x, (uint64_t)(int64_t)y,
              (uint64_t)(int64_t)w, (uint64_t)(int64_t)h,
              (uint64_t)(int64_t)r, (uint64_t)color);
 }
+
+/*  GUI : IPC  */
+
+/*
+ * ipc_msg_t — userspace mirror of kernel ipc_msg_t.
+ * Must match kernel/ipc/ipc.h exactly.
+ */
+#define IPC_MSG_PAYLOAD 120
+
+typedef struct {
+    uint32_t from_pid;              /* filled by kernel on receive        */
+    uint32_t type;                  /* caller-defined message type        */
+    uint8_t  data[IPC_MSG_PAYLOAD]; /* raw payload                        */
+    uint32_t len;                   /* bytes valid in data[]              */
+} ipc_msg_t;
+
+/*
+ * ipc_send — send msg to dst_pid.
+ *   Returns  0  ok
+ *           -1  dst_pid doesn't exist
+ *           -2  dst inbox full
+ */
+static inline int64_t ipc_send(uint32_t dst_pid, ipc_msg_t *msg)
+{
+    return syscall2(SYS_IPC_SEND,
+                    (uint64_t)dst_pid,
+                    (uint64_t)(uintptr_t)msg);
+}
+
+/*
+ * ipc_recv — blocking receive.
+ * Fills *msg and returns 0 on success.
+ * Blocks until a message arrives.
+ */
+static inline int64_t ipc_recv(ipc_msg_t *msg)
+{
+    return syscall1(SYS_IPC_RECV, (uint64_t)(uintptr_t)msg);
+}
+
+/*
+ * ipc_recv_nb — non-blocking receive.
+ * Returns 0 if a message was dequeued, -1 if queue was empty.
+ */
+static inline int64_t ipc_recv_nb(ipc_msg_t *msg)
+{
+    return syscall1(SYS_IPC_RECV_NB, (uint64_t)(uintptr_t)msg);
+}
+
+/*  GUI: SHM  */
+
+/*
+ * shm_create — allocate 'size' bytes of shared memory.
+ * Returns shm_id (> 0) on success, 0 on failure.
+ * The creator can then shm_map() it and share the id with other processes.
+ */
+static inline uint32_t shm_create(uint64_t size)
+{
+    return (uint32_t)syscall1(SYS_SHM_CREATE, size);
+}
+
+/*
+ * shm_map — map shm_id into this process's address space.
+ * Returns a pointer to the mapped region, or NULL on failure.
+ */
+static inline void *shm_map(uint32_t shm_id)
+{
+    int64_t r = syscall1(SYS_SHM_MAP, (uint64_t)shm_id);
+    return (r <= 0) ? (void *)0 : (void *)(uintptr_t)(uint64_t)r;
+}
+
+/*
+ * shm_unmap — unmap a previously mapped region.
+ * 'size' must match the original size used at shm_create() time.
+ */
+static inline void shm_unmap(void *va, uint64_t size)
+{
+    syscall2(SYS_SHM_UNMAP,
+             (uint64_t)(uintptr_t)va,
+             size);
+}
+
+/*
+ * shm_destroy — free the physical pages.
+ * Only the creator can destroy. All mappings must be released first.
+ * Returns 0 on success, -1 on failure.
+ */
+static inline int64_t shm_destroy(uint32_t shm_id)
+{
+    return syscall1(SYS_SHM_DESTROY, (uint64_t)shm_id);
+}
+
+/*  Common IPC message types (GUI protocol)  */
+/* Apps and the compositor will use these type codes in ipc_msg_t.type */
+#define IPC_MSG_PING          0x01   /* liveness check                   */
+#define IPC_MSG_PONG          0x02   /* liveness reply                   */
+#define IPC_MSG_WIN_CREATE    0x10   /* app → compositor: create window  */
+#define IPC_MSG_WIN_DESTROY   0x11   /* app → compositor: destroy window */
+#define IPC_MSG_WIN_MOVE      0x12   /* WM  → compositor: move window    */
+#define IPC_MSG_WIN_RESIZE    0x13   /* WM  → compositor: resize window  */
+#define IPC_MSG_WIN_FOCUS     0x14   /* WM  → app: you have focus        */
+#define IPC_MSG_WIN_BLUR      0x15   /* WM  → app: focus lost            */
+#define IPC_MSG_DAMAGE        0x20   /* app → compositor: region repaint */
+#define IPC_MSG_KEY_DOWN      0x30   /* compositor → app: key pressed    */
+#define IPC_MSG_KEY_UP        0x31   /* compositor → app: key released   */
+#define IPC_MSG_MOUSE_MOVE    0x32   /* compositor → app: mouse moved    */
+#define IPC_MSG_MOUSE_BTN     0x33   /* compositor → app: button event   */

@@ -2024,6 +2024,31 @@ static void dispatch(const char *line)
         cmd_ext_head(skip_spaces(l + 4));
     } else if (str_starts(l, "xxd")) {
         cmd_ext_xxd(skip_spaces(l + 3));
+    /*  new Unix commands  */
+    } else if (str_starts(l, "cat")) {
+        cmd_ext_cat(skip_spaces(l + 3));
+    } else if (str_starts(l, "touch")) {
+        cmd_ext_touch(skip_spaces(l + 5));
+    } else if (str_starts(l, "cp ")) {
+        cmd_ext_cp(skip_spaces(l + 3));
+    } else if (str_starts(l, "mv ")) {
+        cmd_ext_mv(skip_spaces(l + 3));
+    } else if (str_starts(l, "tail")) {
+        cmd_ext_tail(skip_spaces(l + 4));
+    } else if (str_starts(l, "find")) {
+        cmd_ext_find(skip_spaces(l + 4));
+    } else if (str_starts(l, "sed ")) {
+        cmd_ext_sed(skip_spaces(l + 4));
+    } else if (str_starts(l, "chmod")) {
+        cmd_ext_chmod(skip_spaces(l + 5));
+    } else if (str_eq(l, "env")) {
+        cmd_ext_env();
+    } else if (str_eq(l, "clear")) {
+        cmd_ext_clear();
+    } else if (str_starts(l, "tee ")) {
+        cmd_ext_tee(skip_spaces(l + 4));
+    } else if (str_starts(l, "cmp ")) {
+        cmd_ext_cmp(skip_spaces(l + 4));
     } else if (str_starts(l, "ping ")) {
         cmd_ping(skip_spaces(l + 5));
     } else if (str_eq(l, "alien-gui")) {

@@ -28,6 +28,8 @@ extern void syscall_init_msr(void);
 #include "elf/elf.h"
 #include "net/netstack.h"
 #include "include/multiboot2.h"
+#include "ipc/ipc.h"
+#include "shm/shm.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -63,7 +65,7 @@ static void parse_memory_map(uint64_t mb_info_phys,
                               uint64_t *out_base, uint64_t *out_size)
 {
     *out_base = 0x200000;
-    *out_size = 0x4000000; /* 64MB — stays within bootloader identity mapping */
+    *out_size = 0x4000000;
 
     if (!mb_info_phys) return;
 
@@ -72,47 +74,27 @@ static void parse_memory_map(uint64_t mb_info_phys,
     uint8_t *end = (uint8_t *)info + info->total_size;
 
     while (ptr < end) {
-
         mb2_tag_t *tag = (mb2_tag_t *)ptr;
-
-        if (tag->type == 0)
-            break;
-
+        if (tag->type == 0) break;
         if (tag->type == MB2_TAG_MMAP) {
-
             mb2_tag_mmap_t *mmap = (mb2_tag_mmap_t *)tag;
-
             mb2_mmap_entry_t *entry_base =
                 (mb2_mmap_entry_t *)((uint8_t *)mmap + sizeof(mb2_tag_mmap_t));
-
             uint32_t count =
                 (mmap->size - sizeof(mb2_tag_mmap_t)) / mmap->entry_size;
-
             for (uint32_t i = 0; i < count; i++) {
-
                 mb2_mmap_entry_t *e = &entry_base[i];
-
-                if (e->type != MB2_MMAP_AVAILABLE)
-                    continue;
-
+                if (e->type != MB2_MMAP_AVAILABLE) continue;
                 uint64_t base = e->base_addr;
                 uint64_t size = e->length;
-
                 if (base < 0x200000) {
                     uint64_t skip = 0x200000 - base;
-                    if (skip >= size)
-                        continue;
-                    base += skip;
-                    size -= skip;
+                    if (skip >= size) continue;
+                    base += skip; size -= skip;
                 }
-
-                if (size > *out_size) {
-                    *out_base = base;
-                    *out_size = size;
-                }
+                if (size > *out_size) { *out_base = base; *out_size = size; }
             }
         }
-
         ptr += MB2_ALIGN(tag->size);
     }
 }
@@ -136,7 +118,6 @@ static void timer_irq_handler(interrupt_frame_t *frame)
 {
     (void)frame;
     g_ticks++;
-    /* Keep g_syscall_kernel_rsp in sync with current process */
     if (g_current_proc) {
         extern uint64_t g_syscall_kernel_rsp;
         g_syscall_kernel_rsp = g_current_proc->kernel_stack_top;
@@ -160,7 +141,6 @@ static void pit_init(void)
 
 extern void keyboard_init(void);
 extern void mouse_init(void);
-
 extern void jump_to_userspace(uint64_t entry, uint64_t stack, uint64_t pml4);
 
 
@@ -184,9 +164,6 @@ static void kprint(const char *s)
 
 
 /*  kernel_main  */
-
-
-
 
 void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 {
@@ -221,7 +198,6 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     parse_framebuffer(mb_info_phys);
     font_init();
     fb_console_init();
-    
 
     kprint("[PMM ] Initializing colored memory zones...\n");
     pmm_init(mem_base, mem_size);
@@ -257,7 +233,7 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     kprint("[KBD ] Registering PS/2 keyboard IRQ...\n");
     keyboard_init();
 
-    kprint("[MOUSE] Initializing PS/2 mouse...\n");   
+    kprint("[MOUSE] Initializing PS/2 mouse...\n");
     mouse_init();
 
     kprint("[VFS ] Initializing virtual filesystem layer...\n");
@@ -267,6 +243,12 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     net_init();
     extern void arp_preload_qemu_gateway(void);
     arp_preload_qemu_gateway();
+
+    kprint("[IPC ] Initializing inter-process communication...\n");
+    ipc_init();
+
+    kprint("[SHM ] Initializing shared memory subsystem...\n");
+    shm_init();
 
     kprint("[CNSL] Starting correlated security layer...\n");
     cnsl_init();
@@ -304,13 +286,12 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         serial_print("[INIT] PID 1 created\n");
     }
 
-    /* PID 2 — auditd */
     serial_print("[INIT] audit log active in kernel (auditd daemon deferred)\n");
 
     kprint("\nAll subsystems nominal.\n");
     kprint("Exploidus kernel ready.\n\n");
 
-    /* Try to launch init first — init will spawn shell and daemons */
+    /* Try to launch init first */
     if (_binary_build_userspace_bin_init_elf_start != NULL &&
         (void *)_binary_build_userspace_bin_init_elf_start !=
         (void *)_binary_build_userspace_bin_init_elf_end)
@@ -347,7 +328,7 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         serial_print("[INIT] init ELF load failed, falling back to shell\n");
     }
 
-    /*  launch shell (fallback if no init)  */
+    /* Fallback: launch shell directly */
     if (_binary_build_userspace_shell_exploish_elf_start != NULL &&
         (void *)_binary_build_userspace_shell_exploish_elf_start !=
         (void *)_binary_build_userspace_shell_exploish_elf_end)
@@ -385,20 +366,13 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
             }
 
             serial_print("[INIT] Jumping to userspace...\n");
-
-            serial_print("[INIT] entry=");
-            serial_printhex(shell_entry);
-            serial_print(" stack=");
-            serial_printhex(shell_stack);
-            serial_print(" pml4=");
-            serial_printhex(shell_pml4);
+            serial_print("[INIT] entry="); serial_printhex(shell_entry);
+            serial_print(" stack=");       serial_printhex(shell_stack);
+            serial_print(" pml4=");        serial_printhex(shell_pml4);
             serial_print("\n");
 
-
-
-            __asm__ volatile("cli\njmp jump_to_userspace\n" : : "D"(shell_entry),"S"(shell_stack),"d"(shell_pml4));
-
-            /* never reached */
+            __asm__ volatile("cli\njmp jump_to_userspace\n"
+                : : "D"(shell_entry), "S"(shell_stack), "d"(shell_pml4));
         } else {
             kprint("[INIT] ELF load failed. Dropping to idle.\n");
         }
@@ -414,7 +388,4 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         net_poll();
         __asm__ volatile ("hlt");
     }
-
-
-
 }

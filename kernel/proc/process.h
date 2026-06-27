@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../cap/capability.h"
+#include "../ipc/ipc.h"     /* ipc_state_t */
 
 #define MAX_PROCESSES     256
 #define MAX_CAPS_PER_PROC 64
@@ -79,6 +80,9 @@ typedef struct process {
     uint64_t       user_entry;
     uint64_t       user_stack_top;
     struct process *sched_next;
+
+    /* GUI / IPC — added after sched_next so all prior offsets are unchanged */
+    ipc_state_t   *ipc;            /* per-process IPC inbox, alloc'd at create */
 } process_t;
 
 void       proc_init(void);
