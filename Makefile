@@ -53,6 +53,8 @@ KERNEL_C_SRCS := \
     kernel/cnsl/cnsl.c \
     kernel/cnsl/fim.c \
 	kernel/huddlecluster/huddlecluster.c \
+    kernel/ipc/ipc.c \
+    kernel/shm/shm.c \
 
 KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \

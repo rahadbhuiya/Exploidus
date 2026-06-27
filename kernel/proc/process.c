@@ -4,6 +4,7 @@
 #include "../audit/audit.h"
 #include "../drivers/serial.h"
 #include "../fs/vfs/vfs.h"
+#include "../ipc/ipc.h"
 #include <string.h>
 
 static process_t g_proc_table[MAX_PROCESSES];
@@ -80,6 +81,10 @@ process_t *proc_create(proc_intent_t intent, uint32_t parent_pid)
 
     p->cap_count = 0;
 
+    /* Allocate IPC inbox for this process */
+    p->ipc = ipc_alloc_state();
+    /* Non-fatal if OOM — process will just have no IPC capability */
+
     audit_record(AUDIT_PROC_FORK, p->pid, parent_pid, intent);
 
     serial_print("[PROC] created PID\n");
@@ -104,6 +109,12 @@ void proc_exit(uint32_t pid, int code)
 
     p->state     = PROC_ZOMBIE;
     p->exit_code = code;
+
+    /* Release IPC inbox */
+    if (p->ipc) {
+        ipc_free_state(p->ipc);
+        p->ipc = NULL;
+    }
 
     /* Reclaim any fds this process never closed — otherwise the
      * global 64-slot vfs fd table leaks one slot per forgotten

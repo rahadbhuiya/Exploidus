@@ -32,7 +32,6 @@
 #define SYS_GETIFADDR    26
 #define SYS_AUDIT_DUMP   27
 #define SYS_GETPROCS     28
-
 #define SYS_FB_PIXEL     29
 #define SYS_FB_RECT      30
 #define SYS_FB_CLEAR     31
@@ -43,7 +42,6 @@
 #define SYS_CREATE       36
 #define SYS_MOUSE_POS    37
 #define SYS_FB_STR       38
-
 #define SYS_SPAWN        39
 #define SYS_UPTIME       40
 #define SYS_PING         41
@@ -64,11 +62,19 @@
 #define SYS_FILE_WRITE     56   /* create+write file atomically */
 #define SYS_BLAKE3         57   /* hash a userspace buffer */
 #define SYS_UNLINK         58   /* remove a file */
-#define SYS_HTTP_DOWNLOAD  59   /* stream URL directly to file — no size limit */
-#define SYS_COUNT          60
+#define SYS_HTTP_DOWNLOAD  59   /* stream URL directly to file */
+#define SYS_EXECV          60   /* execve with argv array */
 
+/*  GUI Phase 1: IPC & Shared Memory  */
+#define SYS_IPC_SEND       61   /* send message to a process            */
+#define SYS_IPC_RECV       62   /* receive message (blocking)           */
+#define SYS_IPC_RECV_NB    63   /* receive message (non-blocking)       */
+#define SYS_SHM_CREATE     64   /* create shared memory region          */
+#define SYS_SHM_MAP        65   /* map shared region into address space */
+#define SYS_SHM_UNMAP      66   /* unmap shared region                  */
+#define SYS_SHM_DESTROY    67   /* free shared region                   */
 
-
+#define SYS_COUNT          68
 
 /*
  * syscall_frame_t
