@@ -51,7 +51,7 @@ static char read_char(void)
 
 /*  Line editor — reads one line from stdin into buf        */
 
-/* ── history ── */
+/*  history  */
 #define HIST_SIZE 32
 #define HIST_LEN  256
 static char  hist_buf[HIST_SIZE][HIST_LEN];
@@ -85,7 +85,7 @@ static const char *hist_get(int idx)
     return hist_buf[slot];
 }
 
-/* ── redraw_line ──
+/*  redraw_line 
    Redraws the entire input buffer from scratch.
    cur_col : current screen cursor column relative to editable area start
    buf/len : full input buffer and its length
@@ -105,11 +105,11 @@ static void redraw_line(const char *buf, int len, int pos, int old_len, int cur_
     for (int i = len; i > pos; i--) write(STDOUT_FILENO, "\b", 1);
 }
 
-/* ── cursor blink helpers ──
-   তোমার VGA driver ANSI escape বোঝে না।
-   তাই cursor character সরাসরি print করি:
-   cursor_on  : '_' print করে backspace দিয়ে ফিরি
-   cursor_off : space print করে backspace দিয়ে ফিরি
+/*  cursor blink helpers 
+    VGA driver ANSI escape 
+    cursor character  print:
+   cursor_on  : '_' print  backspace
+   cursor_off : space print backspac
 */
 static void cursor_on(void)
 {
@@ -135,7 +135,7 @@ static int read_line(char *buf, int max)
     cur_visible = 1;
 
     while (1) {
-        /* ── non-blocking read ── */
+        /*  non-blocking read  */
         char c = 0;
         int got = (int)read(STDIN_FILENO, &c, 1);
 
@@ -153,7 +153,7 @@ static int read_line(char *buf, int max)
         /* got a key — hide cursor while processing, redraw after */
         if (cur_visible) { cursor_off(); cur_visible = 0; }
 
-        /* ── ESC sequence ── */
+        /*  ESC sequence  */
         if (c == 0x1B) {
             char c2 = read_char();
             if (c2 != '[') goto redraw;   /* ignore unknown ESC sequences */
@@ -385,7 +385,8 @@ static void cmd_help(void)
     println("  cnsl-list          List all blocked IPs with TTL");
     println("  cnsl-unblock <ip>  Manually unblock an IP from CNSL");
     println("  cnsl-ttl <ip>      Seconds until IP auto-unblocks");
-    println("  alien-gui       Launch graphical interface");
+    println("  alien           Switch to GUI mode (compositor + windows)");
+    println("  stopalien       Return to text console mode");
     println("  ys <script>     Run a Yolish script");
 }
 
@@ -960,7 +961,7 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
            "A capability-based reactive microkernel.",
            rgb(170,150,255), bg);
     fb_rect(wx+1, ty+158, ww-2, 1, rgb(30,20,60));
-    fb_str(tx, ty+166, "star@exploidus:~$ alien-gui",
+    fb_str(tx, ty+166, "star@exploidus:~$ alien",
            rgb(80,170,255), bg);
     fb_str(tx+8, ty+182,
            "Launching graphical environment...",
@@ -1039,454 +1040,7 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
 
 
 /*  Window state  */
-typedef struct {
-    int x, y, w, h;          /* current position/size  */
-    int px, py, pw, ph;      /* saved (for restore)    */
-    int visible;              /* 0=closed 1=normal      */
-    int minimized;            /* 1=minimized to taskbar */
-    int maximized;            /* 1=fullscreen           */
 
-    const char *title;
-    uint32_t border_col;
-    uint8_t  tr,tg,tb;       /* titlebar gradient top  */
-    uint8_t  tr2,tg2,tb2;    /* titlebar gradient bot  */
-    uint32_t body_col;
-} win_t;
-
-/* circle hit test */
-static int hit_circle(int mx, int my, int cx, int cy, int r)
-{
-    int dx = mx-cx, dy = my-cy;
-    return dx*dx + dy*dy <= r*r;
-}
-
-/* title bar hit (excluding buttons) */
-static int hit_titlebar(int mx, int my, win_t *w)
-{
-    return mx >= w->x+2 && mx <= w->x+w->w-65
-        && my >= w->y   && my <= w->y+28;
-}
-
-/*  Draw background + sidebar + taskbar  */
-static void draw_bg(uint32_t W, uint32_t H, win_t *wins, int nwins)
-{
-    /* background gradient */
-    for (uint32_t y = 0; y < H-40; y++) {
-        uint8_t r=(uint8_t)(6+y*12/H);
-        uint8_t g=(uint8_t)(3+y*6/H);
-        uint8_t b=(uint8_t)(22+y*35/H);
-        fb_rect(0,y,W,1,rgb(r,g,b));
-    }
-
-
-
-    /* taskbar */
-    grad_rect(0,H-40,W,40, 10,8,28, 16,12,36);
-    fb_rect(0,H-41,W,1,rgb(110,75,220));
-    fb_rect(0,H-40,W,1,rgb(55,35,130));
-
-    /* start button */
-    fb_rrect(4,(int)(H-35),88,26,8,rgb(65,42,158));
-    grad_rect(5,H-34,86,24, 80,55,185, 58,35,148);
-    fb_rect(4,H-35,88,1,rgb(160,130,255));
-    fb_str(12,H-27,"* Exploidus",rgb(225,215,255),rgb(0,0,0));
-
-    /* taskbar tabs for each window */
-    int tx=96;
-    for (int i=0; i<nwins; i++) {
-        win_t *wn=&wins[i];
-        if (!wn->visible) continue;
-
-        int active = !wn->minimized;
-        uint32_t fill   = active ? rgb(38,30,80)  : rgb(14,14,30);
-        uint32_t top    = active ? rgb(120,90,235): rgb(60,40,120);
-        uint32_t txtcol = active ? rgb(205,190,255):rgb(140,130,180);
-        uint32_t uline  = active ? rgb(130,100,245):rgb(0,0,0);
-
-        fb_rrect(tx,(int)(H-35),128,26,13,fill);
-        fb_rect(tx,H-35,128,1,top);
-        if (active) fb_rect(tx,H-10,128,2,uline);
-        fb_str((uint32_t)(tx+14),H-27,wn->title,txtcol,rgb(0,0,0));
-        tx+=134;
-    }
-
-    /* clock */
-    fb_str(W-72,H-27,"00:00:00",rgb(190,175,255),rgb(0,0,0));
-}
-
-/*  Draw one window  */
-static void draw_win_frame(win_t *w)
-{
-    if (!w->visible || w->minimized) return;
-
-    /* shadow */
-    draw_shadow((uint32_t)w->x,(uint32_t)w->y,
-                (uint32_t)w->w,(uint32_t)w->h);
-
-    /* body */
-    fb_rrect(w->x,w->y,w->w,w->h,10,w->body_col);
-
-    /* title bar */
-    fb_rrect(w->x,w->y,w->w,30,10,
-             rgb((uint8_t)((w->tr+w->tr2)/2),
-                 (uint8_t)((w->tg+w->tg2)/2),
-                 (uint8_t)((w->tb+w->tb2)/2)));
-    grad_rect((uint32_t)(w->x+1),(uint32_t)(w->y+1),
-              (uint32_t)(w->w-2),28,
-              w->tr,w->tg,w->tb, w->tr2,w->tg2,w->tb2);
-
-    /* separator */
-    fb_rect((uint32_t)(w->x+1),(uint32_t)(w->y+29),
-            (uint32_t)(w->w-2),1,
-            rgb(w->tr2/3,w->tg2/3,w->tb2/3));
-
-    /* accent stripe */
-    fb_rrect(w->x+6,w->y+7,4,14,2,
-             rgb((uint8_t)(w->tr+60<255?w->tr+60:255),
-                 (uint8_t)(w->tg+30<255?w->tg+30:255),
-                 (uint8_t)(w->tb+60<255?w->tb+60:255)));
-
-    /* title */
-    fb_str((uint32_t)(w->x+16),(uint32_t)(w->y+9),
-           w->title,rgb(225,215,255),rgb(0,0,0));
-
-    /* traffic light circles */
-    int bx=w->x+w->w, by=w->y+15;
-    fb_circle(bx-52,by,7,rgb(240,165,20));   /* min   */
-    fb_circle(bx-34,by,7,rgb(40,200,40));    /* max   */
-    fb_circle(bx-16,by,7,rgb(220,50,50));    /* close */
-
-    /* outer border */
-    fb_rect((uint32_t)w->x,(uint32_t)w->y,(uint32_t)w->w,1,w->border_col);
-    fb_rect((uint32_t)w->x,(uint32_t)w->y,1,(uint32_t)w->h,w->border_col);
-    fb_rect((uint32_t)(w->x+w->w-1),(uint32_t)w->y,1,(uint32_t)w->h,
-            rgb(((w->border_col>>16)&0xFF)/2,
-                ((w->border_col>>8 )&0xFF)/2,
-                ( w->border_col     &0xFF)/2));
-    fb_rect((uint32_t)w->x,(uint32_t)(w->y+w->h-1),(uint32_t)w->w,1,
-            rgb(((w->border_col>>16)&0xFF)/3,
-                ((w->border_col>>8 )&0xFF)/3,
-                ( w->border_col     &0xFF)/3));
-}
-
-/*  Terminal content  */
-static void draw_terminal_content(win_t *w)
-{
-    if (!w->visible || w->minimized) return;
-    int tx=w->x+12, ty=w->y+36;
-    uint32_t bg=w->body_col;
-
-    fb_str((uint32_t)tx,(uint32_t)ty,
-           "Exploidus v0.1.0  --  exploish",rgb(80,255,80),bg);
-    fb_str((uint32_t)tx,(uint32_t)(ty+16),
-           "Copyright (c) Exploidus Project. MIT License.",rgb(70,70,120),bg);
-    fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+30),(uint32_t)(w->w-2),1,rgb(30,20,60));
-    fb_str((uint32_t)tx,(uint32_t)(ty+38),
-           "star@exploidus:~$ uname -a",rgb(80,170,255),bg);
-    fb_str((uint32_t)(tx+8),(uint32_t)(ty+54),
-           "Exploidus 0.1.0 x86_64 Reactive-Capability-Kernel",rgb(200,200,200),bg);
-    fb_str((uint32_t)tx,(uint32_t)(ty+74),
-           "star@exploidus:~$ ls /",rgb(80,170,255),bg);
-    fb_str((uint32_t)(tx+8),(uint32_t)(ty+90),
-           "bin/   etc/   home/   lib/   tmp/   var/",rgb(200,200,200),bg);
-    fb_str((uint32_t)tx,(uint32_t)(ty+110),
-           "star@exploidus:~$ cat /etc/motd",rgb(80,170,255),bg);
-    fb_str((uint32_t)(tx+8),(uint32_t)(ty+126),
-           "Welcome to Exploidus OS!",rgb(255,200,60),bg);
-    fb_str((uint32_t)(tx+8),(uint32_t)(ty+142),
-           "A capability-based reactive microkernel.",rgb(170,150,255),bg);
-    fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+158),(uint32_t)(w->w-2),1,rgb(30,20,60));
-    fb_str((uint32_t)tx,(uint32_t)(ty+166),
-           "star@exploidus:~$ alien-gui",rgb(80,170,255),bg);
-    fb_str((uint32_t)(tx+8),(uint32_t)(ty+182),
-           "Launching graphical environment...",rgb(80,255,80),bg);
-    fb_rect((uint32_t)(w->x+1),(uint32_t)(ty+198),(uint32_t)(w->w-2),1,rgb(30,20,60));
-    fb_str((uint32_t)tx,(uint32_t)(ty+206),
-           "star@exploidus:~$ ",rgb(80,170,255),bg);
-    fb_rect((uint32_t)(tx+144),(uint32_t)(ty+206),8,14,rgb(100,180,255));
-}
-
-/*  System Info content  */
-static void draw_sysinfo_content(win_t *w)
-{
-    if (!w->visible || w->minimized) return;
-    uint32_t bg2=w->body_col;
-    int sx=w->x+12, sy=w->y+36;
-
-    fb_str((uint32_t)sx,(uint32_t)sy,
-           "OS       Exploidus v0.1.0",rgb(80,255,80),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+14),
-           "Kernel   Reactive Capability Kernel",rgb(60,210,60),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+28),
-           "Shell    exploish v0.1.0",rgb(60,210,60),bg2);
-    fb_rect((uint32_t)sx,(uint32_t)(sy+42),(uint32_t)(w->w-24),1,rgb(25,50,25));
-    fb_str((uint32_t)sx,(uint32_t)(sy+50),
-           "RAM      256 MiB",rgb(80,180,255),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+64),
-           "CPU      x86_64  qemu64",rgb(80,180,255),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+78),
-           "Video    VESA 800x600x32",rgb(80,180,255),bg2);
-    fb_rect((uint32_t)sx,(uint32_t)(sy+92),(uint32_t)(w->w-24),1,rgb(25,50,25));
-    fb_str((uint32_t)sx,(uint32_t)(sy+100),
-           "Capability System   Active",rgb(190,90,255),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+114),
-           "Audit Ring          Online",rgb(190,90,255),bg2);
-    fb_str((uint32_t)sx,(uint32_t)(sy+128),
-           "Intent Engine       Running",rgb(190,90,255),bg2);
-}
-
-/*  Full redraw  */
-static void redraw_all(uint32_t W, uint32_t H, win_t *wins, int nwins)
-{
-    draw_bg(W, H, wins, nwins);
-    /* back window first */
-    draw_win_frame(&wins[1]);
-    draw_sysinfo_content(&wins[1]);
-    /* front window */
-    draw_win_frame(&wins[0]);
-    draw_terminal_content(&wins[0]);
-}
-
-/* cmd_gfx()  */
-static void cmd_gfx(void)
-{
-    uint32_t W, H, active;
-    if (fb_info(&W, &H, &active) < 0 || !active) {
-        println("alien-gui: no framebuffer");
-        return;
-    }
-
-    /*  Initial window states  */
-    win_t wins[2];
-
-    /* Terminal window */
-    wins[0].x=108; wins[0].y=8;
-    wins[0].w=(int)W-116; wins[0].h=((int)H-40)*6/10;
-    wins[0].visible=1; wins[0].minimized=0; wins[0].maximized=0;
-    wins[0].title="Terminal";
-    wins[0].border_col=rgb(110,70,230);
-    wins[0].tr=52;  wins[0].tg=22;  wins[0].tb=120;
-    wins[0].tr2=36; wins[0].tg2=14; wins[0].tb2=80;
-    wins[0].body_col=rgb(10,10,20);
-
-    /* System Info window */
-    wins[1].x=108; wins[1].y=8+wins[0].h+8;
-    wins[1].w=(int)W-116; wins[1].h=((int)H-40)-wins[0].h-24;
-    wins[1].visible=1; wins[1].minimized=0; wins[1].maximized=0;
-    wins[1].title="Sys Info";
-    wins[1].border_col=rgb(50,180,50);
-    wins[1].tr=18;  wins[1].tg=32;  wins[1].tb=18;
-    wins[1].tr2=12; wins[1].tg2=22; wins[1].tb2=12;
-    wins[1].body_col=rgb(8,16,8);
-    /* Boot splash */
-    fb_clear(rgb(0,0,0));
-    {
-        uint32_t cx=W/2, cy=H/2;
-        uint32_t pw=340, ph=160;
-        uint32_t px2=cx-pw/2, py2=cy-ph/2;
-        for (uint32_t i=0; i<ph; i++) {
-            uint8_t r2=(uint8_t)(8+i*6/ph);
-            uint8_t g2=(uint8_t)(4+i*3/ph);
-            uint8_t b2=(uint8_t)(25+i*15/ph);
-            fb_rect(px2,py2+i,pw,1,rgb(r2,g2,b2));
-        }
-        fb_rect(px2-4,py2-4,pw+8,ph+8,rgb(20,10,55));
-        fb_rect(px2-2,py2-2,pw+4,ph+4,rgb(35,18,90));
-        for (uint32_t i=0; i<ph; i++) {
-            uint8_t r2=(uint8_t)(8+i*6/ph);
-            uint8_t g2=(uint8_t)(4+i*3/ph);
-            uint8_t b2=(uint8_t)(25+i*15/ph);
-            fb_rect(px2,py2+i,pw,1,rgb(r2,g2,b2));
-        }
-        fb_rect(px2,py2,pw,2,rgb(100,60,255));
-        fb_rect(px2,py2+ph-2,pw,2,rgb(40,20,120));
-        fb_rect(px2,py2,2,ph,rgb(80,50,200));
-        fb_rect(px2+pw-2,py2,2,ph,rgb(40,20,120));
-        fb_rect(px2,py2,16,2,rgb(160,120,255));
-        fb_rect(px2,py2,2,16,rgb(160,120,255));
-        fb_rect(px2+pw-16,py2,16,2,rgb(160,120,255));
-        fb_rect(px2+pw-2,py2,2,16,rgb(160,120,255));
-        uint32_t tbg=rgb(8,4,25);
-        fb_str(cx-48,py2+20,"EXPLOIDUS  OS",rgb(200,175,255),tbg);
-        fb_str(cx-20,py2+36,"v 0.1.0",rgb(100,80,180),tbg);
-        fb_rect(px2+16,py2+52,pw-32,1,rgb(70,45,180));
-        fb_str(cx-88,py2+62,"Reactive Capability Kernel",rgb(80,170,255),tbg);
-        fb_str(cx-68,py2+78,"x86_64  |  MIT License",rgb(50,50,100),tbg);
-        fb_rect(px2+16,py2+96,pw-32,1,rgb(40,25,100));
-        fb_str(cx-48,py2+106,"Loading desktop...",rgb(80,255,80),tbg);
-        fb_rect(px2,py2+ph-20,pw,20,rgb(12,6,35));
-        fb_rect(px2,py2+ph-20,pw,1,rgb(55,35,140));
-        fb_str(px2+8,py2+ph-14,"exploidus.os",rgb(50,50,100),rgb(12,6,35));
-        fb_flip();
-        uint64_t t0=uptime();
-        while(uptime()-t0 < 2) yield();
-    }
-
-    redraw_all(W, H, wins, 2);
-    fb_flip();
-
-    /*  Drag state  */
-    uint64_t prev_secs=0xFFFFFFFFFFFFFFFFULL;
-    int drag_win=-1;         /* which window being dragged */
-    int drag_ox=0, drag_oy=0; /* offset within title bar  */
-    int32_t prev_btn=0;
-
-    for (;;) {
-        int32_t mx, my, btn;
-        mouse_pos(&mx, &my, &btn);
-
-        int left_down  = (btn&1) && !(prev_btn&1);  /* press  */
-        int left_held  = (btn&1);                    /* hold   */
-        int left_up    = !(btn&1) && (prev_btn&1);  /* release */
-
-        /*  Mouse press  */
-        if (left_down) {
-            int handled=0;
-
-            /* check windows front→back */
-            for (int i=0; i<2 && !handled; i++) {
-                win_t *wn=&wins[i];
-                if (!wn->visible || wn->minimized) continue;
-
-                int bx=wn->x+wn->w, by=wn->y+15;
-
-                /* CLOSE */
-                if (hit_circle(mx,my,bx-16,by,9)) {
-                    wn->visible=0;
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-                /* MINIMIZE */
-                else if (hit_circle(mx,my,bx-52,by,9)) {
-                    wn->minimized=1;
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-                /* MAXIMIZE / RESTORE */
-                else if (hit_circle(mx,my,bx-34,by,9)) {
-                    if (!wn->maximized) {
-                        /* save */
-                        wn->px=wn->x; wn->py=wn->y;
-                        wn->pw=wn->w; wn->ph=wn->h;
-                        /* fullscreen (inside sidebar+taskbar) */
-                        wn->x=101; wn->y=0;
-                        wn->w=(int)W-102; wn->h=(int)H-41;
-                        wn->maximized=1;
-                    } else {
-                        /* restore */
-                        wn->x=wn->px; wn->y=wn->py;
-                        wn->w=wn->pw; wn->h=wn->ph;
-                        wn->maximized=0;
-                    }
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-                /* TITLE BAR → start drag */
-                else if (hit_titlebar(mx,my,wn) && !wn->maximized) {
-                    drag_win=i;
-                    drag_ox=mx-wn->x;
-                    drag_oy=my-wn->y;
-                    handled=1;
-                }
-            }
-
-            /* check sidebar icons */
-            if (!handled) {
-                /* Term icon */
-                if (mx>=14 && mx<=84 && my>=45 && my<=125) {
-                    wins[0].minimized=0;
-                    wins[0].visible=1;
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-                /* Files icon */
-                else if (mx>=14 && mx<=84 && my>=155 && my<=235) {
-                    wins[1].minimized=0;
-                    wins[1].visible=1;
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-                /* Start button */
-                else if (mx>=4 && mx<=92 && my>=(int)(H-35) && my<=(int)(H-9)) {
-                    wins[0].minimized=0; wins[0].visible=1;
-                    wins[1].minimized=0; wins[1].visible=1;
-                    redraw_all(W,H,wins,2);
-                    fb_flip();
-                    handled=1;
-                }
-            }
-
-            /* check taskbar tabs → restore minimized */
-            if (!handled) {
-                int tx=96;
-                for (int i=0; i<2; i++) {
-                    win_t *wn=&wins[i];
-                    if (!wn->visible) { tx+=134; continue; }
-                    if (my>=(int)(H-35) && my<=(int)(H-10)
-                        && mx>=tx && mx<=tx+128) {
-                        wn->minimized=0;
-                        redraw_all(W,H,wins,2);
-                        fb_flip();
-                        break;
-                    }
-                    tx+=134;
-                }
-            }
-        }
-
-        /*  Drag move  */
-        if (left_held && drag_win>=0) {
-            win_t *wn=&wins[drag_win];
-            int nx=mx-drag_ox;
-            int ny=my-drag_oy;
-            /* clamp inside screen */
-            if (nx<0) nx=0;
-            if (ny<0)   ny=0;
-            if (nx+wn->w>(int)W) nx=(int)W-wn->w;
-            if (ny+wn->h>(int)(H-40)) ny=(int)(H-40)-wn->h;
-            if (nx!=wn->x || ny!=wn->y) {
-                wn->x=nx; wn->y=ny;
-                redraw_all(W,H,wins,2);
-                fb_flip();
-            }
-        }
-
-        /*  Release  */
-        if (left_up) { drag_win=-1; fb_flip(); }
-
-        /*  Clock update (only clock area)  */
-        {
-            uint64_t secs=uptime();
-            if (secs != prev_secs) {
-                prev_secs=secs;
-                uint64_t hh=secs/3600, mm=(secs%3600)/60, ss=secs%60;
-                char clk[9];
-                clk[0]='0'+(char)(hh/10); clk[1]='0'+(char)(hh%10);
-                clk[2]=':';
-                clk[3]='0'+(char)(mm/10); clk[4]='0'+(char)(mm%10);
-                clk[5]=':';
-                clk[6]='0'+(char)(ss/10); clk[7]='0'+(char)(ss%10);
-                clk[8]=0;
-                fb_rect(W-80,H-35,80,20,rgb(10,8,28));
-                fb_str(W-72,H-27,clk,rgb(190,175,255),rgb(0,0,0));
-                fb_flip();
-            }
-        }
-
-        /* right click = exit */
-        if (btn&2) break;
-        prev_btn=btn;
-        yield();
-    }
-
-    fb_clear(rgb(0,0,0));
-    println("alien-gui: exited.");
-}
 
 
 
@@ -1523,7 +1077,7 @@ static void cmd_shutdown(void)
     uint32_t white = rgb(220, 230, 255);
     uint32_t dim   = rgb(40, 60, 120);
 
-    /* Phase 1 — glitch scanlines */
+    /* glitch scanlines */
     for (int f = 0; f < 25; f++) {
         fb_clear(navy);
         for (int i = 0; i < 18; i++) {
@@ -1543,11 +1097,11 @@ static void cmd_shutdown(void)
         sleep_ticks(2);
     }
 
-    /* Phase 2 — fade to navy */
+    /* fade to navy */
     fb_clear(navy);
     sleep_ticks(15);
 
-    /* Phase 3 — big title */
+    /*  big title */
     uint32_t cx = w / 2;
     uint32_t cy = h / 2;
 
@@ -1607,7 +1161,7 @@ static void cmd_reboot(void)
     uint32_t cx = w / 2;
     uint32_t cy = h / 2;
 
-    /* Phase 1: screen wipe */
+    /*  screen wipe */
     for (uint32_t y = 0; y < h; y += 4) {
         fb_rect(0, y, w, 4, rgb(0, 0, 0));
         if (y % 20 == 0) fb_flip();
@@ -1617,7 +1171,7 @@ static void cmd_reboot(void)
     fb_flip();
     sleep_ticks(10);
 
-    /* Phase 2: glitch - amber/orange theme for reboot */
+    /*  glitch - amber/orange theme for reboot */
     for (int f = 0; f < 20; f++) {
         for (int i = 0; i < 12; i++) {
             uint32_t y  = rng() % h;
@@ -1632,7 +1186,7 @@ static void cmd_reboot(void)
         fb_clear(rgb(0, 0, 0));
     }
 
-    /* Phase 3: center panel */
+    /* center panel */
     uint32_t pw = 320, ph = 140;
     uint32_t px = cx - pw/2, py = cy - ph/2;
     uint32_t title_bg = rgb(30, 10, 5);
@@ -1688,7 +1242,7 @@ static void cmd_reboot(void)
     }
     fb_flip();
 
-    /* Phase 5: status messages */
+    /*  status messages */
     sleep_ticks(8);
     fb_str(cx-68, py+58, "Saving system state...",   rgb(100, 200, 100), title_bg);
     fb_flip();
@@ -1705,7 +1259,7 @@ static void cmd_reboot(void)
     fb_str(cx-52, py+112, "See you soon!", rgb(80, 80, 80), title_bg);
     fb_flip();
 
-    /* Phase 6: wipe out */
+    /*  wipe out */
     sleep_ticks(40);
     for (uint32_t y = 0; y < h; y += 2) {
         fb_rect(0, y,   w, 1, rgb(0,0,0));
@@ -1829,7 +1383,7 @@ static void cmd_ping(const char *arg)
 
 static void cmd_clear(void)
 {
-    /* VGA console ANSI বোঝে না — অনেক newline দিয়ে scroll করি */
+    /* VGA console ANSI newline scroll */
     for (int i = 0; i < 40; i++) putc('\n');
 }
 
@@ -2024,35 +1578,26 @@ static void dispatch(const char *line)
         cmd_ext_head(skip_spaces(l + 4));
     } else if (str_starts(l, "xxd")) {
         cmd_ext_xxd(skip_spaces(l + 3));
-    /*  new Unix commands  */
-    } else if (str_starts(l, "cat")) {
-        cmd_ext_cat(skip_spaces(l + 3));
-    } else if (str_starts(l, "touch")) {
-        cmd_ext_touch(skip_spaces(l + 5));
-    } else if (str_starts(l, "cp ")) {
-        cmd_ext_cp(skip_spaces(l + 3));
-    } else if (str_starts(l, "mv ")) {
-        cmd_ext_mv(skip_spaces(l + 3));
-    } else if (str_starts(l, "tail")) {
-        cmd_ext_tail(skip_spaces(l + 4));
-    } else if (str_starts(l, "find")) {
-        cmd_ext_find(skip_spaces(l + 4));
-    } else if (str_starts(l, "sed ")) {
-        cmd_ext_sed(skip_spaces(l + 4));
-    } else if (str_starts(l, "chmod")) {
-        cmd_ext_chmod(skip_spaces(l + 5));
-    } else if (str_eq(l, "env")) {
-        cmd_ext_env();
-    } else if (str_eq(l, "clear")) {
-        cmd_ext_clear();
-    } else if (str_starts(l, "tee ")) {
-        cmd_ext_tee(skip_spaces(l + 4));
-    } else if (str_starts(l, "cmp ")) {
-        cmd_ext_cmp(skip_spaces(l + 4));
     } else if (str_starts(l, "ping ")) {
         cmd_ping(skip_spaces(l + 5));
-    } else if (str_eq(l, "alien-gui")) {
-        cmd_gfx();
+    } else if (str_eq(l, "alien")) {
+        /* Disable text console, spawn compositor + gui_demo */
+        println("alien: switching to GUI mode...");
+        syscall1(68, 0);   /* SYS_FB_CONSOLE_SET=68, 0=disable */
+        int64_t cp = spawn("/bin/compositor");
+        if (cp < 0) {
+            syscall1(68, 1);
+            println("alien: compositor failed to start");
+        } else {
+            sleep_ticks(30);
+            spawn("/bin/gui_demo");
+            println("alien: GUI active. Type 'stopalien' to return.");
+        }
+    } else if (str_eq(l, "stopalien")) {
+        syscall1(68, 1);   /* SYS_FB_CONSOLE_SET=68, 1=enable */
+        fb_clear(0x000000);
+        println("stopalien: text mode restored.");
+        println("GUI compositor still running in background.");
     } else if (str_starts(l, "rahu")) {
         cmd_rahu(skip_spaces(l + 4));
     } else if (str_eq(l, "cnsl-list")) {

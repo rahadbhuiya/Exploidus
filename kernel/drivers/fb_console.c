@@ -11,6 +11,11 @@
 
 static uint32_t g_col = 0;
 static uint32_t g_row = 0;
+static int      g_enabled = 1;   /* 1 = text console active, 0 = GUI mode */
+
+void fb_console_enable(void)  { g_enabled = 1; }
+void fb_console_disable(void) { g_enabled = 0; }
+int  fb_console_enabled(void) { return g_enabled; }
 
 void fb_console_init(void)
 {
@@ -33,6 +38,7 @@ static void scroll_up(void)
 void fb_console_putc(char c)
 {
     if (!g_fb.active) return;
+    if (!g_enabled)   return;   /* GUI mode — suppress text output */
 
     if (c == '\n') {
         g_col = 0;

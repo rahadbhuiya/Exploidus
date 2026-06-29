@@ -65,7 +65,7 @@
 #define SYS_HTTP_DOWNLOAD  59   /* stream URL directly to file */
 #define SYS_EXECV          60   /* execve with argv array */
 
-/*  GUI Phase 1: IPC & Shared Memory  */
+/*  GUI: IPC & Shared Memory  */
 #define SYS_IPC_SEND       61   /* send message to a process            */
 #define SYS_IPC_RECV       62   /* receive message (blocking)           */
 #define SYS_IPC_RECV_NB    63   /* receive message (non-blocking)       */
@@ -73,8 +73,10 @@
 #define SYS_SHM_MAP        65   /* map shared region into address space */
 #define SYS_SHM_UNMAP      66   /* unmap shared region                  */
 #define SYS_SHM_DESTROY    67   /* free shared region                   */
+#define SYS_FB_CONSOLE_SET 68   /* 0=disable (GUI mode) 1=enable        */
 
-#define SYS_COUNT          68
+#define SYS_COUNT          69
+
 
 /*
  * syscall_frame_t

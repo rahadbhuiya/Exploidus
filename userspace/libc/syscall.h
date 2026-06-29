@@ -464,7 +464,7 @@ static inline void fb_rrect(int x, int y, int w, int h, int r, uint32_t color)
              (uint64_t)(int64_t)r, (uint64_t)color);
 }
 
-/*  GUI : IPC  */
+/*  GUI: IPC  */
 
 /*
  * ipc_msg_t — userspace mirror of kernel ipc_msg_t.
@@ -569,3 +569,17 @@ static inline int64_t shm_destroy(uint32_t shm_id)
 #define IPC_MSG_KEY_UP        0x31   /* compositor → app: key released   */
 #define IPC_MSG_MOUSE_MOVE    0x32   /* compositor → app: mouse moved    */
 #define IPC_MSG_MOUSE_BTN     0x33   /* compositor → app: button event   */
+
+/*  GUI syscall numbers  */
+#define SYS_FB_CONSOLE_SET 68
+
+/*  GUI mode control  */
+/*
+ * fb_console_set(0) — disable text console, compositor owns screen
+ * fb_console_set(1) — re-enable text console (server/fallback mode)
+ * Returns previous state.
+ */
+static inline int64_t fb_console_set(int enable)
+{
+    return syscall1(SYS_FB_CONSOLE_SET, (uint64_t)(enable ? 1 : 0));
+}

@@ -118,7 +118,13 @@ rahu_dir_block = alloc_block()
 rahu_inode = make_inode(0o755, 0, [rahu_dir_block])
 write_inode(4, rahu_inode)
 
-# Root directory — add bin/ and var/ entries
+# tmp directory inode — runtime temp files (e.g. compositor.pid)
+tmp_dir_block = alloc_block()
+tmp_inode = make_inode(0o777, 0, [tmp_dir_block])
+write_inode(5, tmp_inode)
+write_block(tmp_dir_block, bytearray(BLOCK_SIZE))  # empty dir
+
+# Root directory — add bin/, var/, tmp/
 root_dir_data = bytearray(BLOCK_SIZE)
 # bin entry
 de_bin = struct.pack("<QHBB256s", 1, 3, 1, 0, b'bin'+b'\x00'*253)
@@ -126,6 +132,9 @@ root_dir_data[0:len(de_bin)] = de_bin
 # var entry
 de_var = struct.pack("<QHBB256s", 2, 3, 1, 0, b'var'+b'\x00'*253)
 root_dir_data[len(de_bin):len(de_bin)+len(de_var)] = de_var
+# tmp entry
+de_tmp = struct.pack("<QHBB256s", 5, 3, 1, 0, b'tmp'+b'\x00'*253)
+root_dir_data[len(de_bin)+len(de_var):len(de_bin)+len(de_var)+len(de_tmp)] = de_tmp
 write_block(root_dir_block, root_dir_data)
 
 # var directory — add log/ and rahu/
@@ -137,19 +146,20 @@ var_dir_data[len(de_log):len(de_log)+len(de_rahu)] = de_rahu
 write_block(var_dir_block, var_dir_data)
 
 # Write ELF files into /bin/
-next_ino = 5
+next_ino = 6
 bin_dir_data = bytearray(BLOCK_SIZE)
 bin_dir_offset = 0
 
 # Map of ELF filename → disk name
 NAME_MAP = {
-    'exploish.elf':  'exploish',
-    'auditd.elf':    'auditd',
-    'init.elf':      'init',
-    'hello.elf':     'hello',
-    'httpd.elf':     'httpd',
-    'ys.elf':        'ys',
-
+    'exploish.elf':   'exploish',
+    'auditd.elf':     'auditd',
+    'init.elf':       'init',
+    'hello.elf':      'hello',
+    'httpd.elf':      'httpd',
+    'ys.elf':         'ys',
+    'compositor.elf': 'compositor',
+    'gui_demo.elf':   'gui_demo',
 }
 
 for elf_path in elf_paths:
