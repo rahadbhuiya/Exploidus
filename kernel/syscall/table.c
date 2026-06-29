@@ -18,6 +18,7 @@
 #include "../mm/kmalloc.h"
 #include "../elf/elf.h"
 #include "../ipc/ipc.h"
+#include "../drivers/fb_console.h"
 #include "../shm/shm.h"
 extern int64_t vfs_readdir(int fd, void *buf, uint64_t max);
 extern int vfs_create(const char *path, uint8_t type);
@@ -918,7 +919,7 @@ static __attribute__((unused)) int64_t sys_ipc_recv_nb(syscall_frame_t *f)
 }
 
 
-/*  GUI : SHM syscalls  */
+/*  GUI: SHM syscalls  */
 
 static __attribute__((unused)) int64_t sys_shm_create(syscall_frame_t *f)
 {
@@ -945,6 +946,22 @@ static __attribute__((unused)) int64_t sys_shm_destroy(syscall_frame_t *f)
 {
     uint32_t pid = g_current_proc ? g_current_proc->pid : 0;
     return (int64_t)shm_destroy((uint32_t)f->rdi, pid);
+}
+
+/*
+ * SYS_FB_CONSOLE_SET(68)
+ *   rdi = 0 → disable fb_console (GUI mode, compositor owns screen)
+ *   rdi = 1 → enable  fb_console (text mode, default)
+ * Returns previous state (0 or 1).
+ */
+static __attribute__((unused)) int64_t sys_fb_console_set(syscall_frame_t *f)
+{
+    int prev = fb_console_enabled();
+    if (f->rdi == 0)
+        fb_console_disable();
+    else
+        fb_console_enable();
+    return (int64_t)prev;
 }
 
 
@@ -1020,6 +1037,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_SHM_MAP]      = sys_shm_map,
     [SYS_SHM_UNMAP]    = sys_shm_unmap,
     [SYS_SHM_DESTROY]  = sys_shm_destroy,
+    /* GUI Phase 2 */
+    [SYS_FB_CONSOLE_SET] = sys_fb_console_set,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)
