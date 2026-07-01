@@ -160,6 +160,7 @@ NAME_MAP = {
     'ys.elf':         'ys',
     'compositor.elf': 'compositor',
     'gui_demo.elf':   'gui_demo',
+    'terminal.elf':   'terminal',
 }
 
 for elf_path in elf_paths:

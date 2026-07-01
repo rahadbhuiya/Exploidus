@@ -93,11 +93,27 @@ static int64_t kernel_write(int fd, const void *buf, uint64_t len)
 
 extern bool keyboard_read(char *out);
 
+/*
+ * g_kbd_owner: when non-zero, keyboard_read in kernel_read (fd=0) is
+ * suppressed so only the compositor can read keys via SYS_KBD_READ_NB.
+ * Set to compositor PID by SYS_KBD_OWNER_SET.  Set to 0 to restore
+ * normal blocking reads (text mode).
+ */
+static uint32_t g_kbd_owner = 0;
+
 static int64_t kernel_read(int fd, void *buf, uint64_t len)
 {
     if (fd != 0) return -1;
     if (!len) return 0;
     if (!buf) return -1;
+
+    /* In GUI mode the compositor owns the keyboard — block console reads */
+    if (g_kbd_owner != 0) {
+        /* Return 0 bytes so callers don't spin; they will yield/sleep */
+        __asm__ volatile ("sti; hlt; cli" ::: "memory");
+        return 0;
+    }
+
     char    *p = (char *)buf;
     uint64_t n = 0;
     while (n == 0) {
@@ -964,6 +980,46 @@ static __attribute__((unused)) int64_t sys_fb_console_set(syscall_frame_t *f)
     return (int64_t)prev;
 }
 
+/*
+ * SYS_KBD_READ_NB(69) — non-blocking keyboard poll.
+ *   rdi = pointer to a single char output buffer
+ * Returns 1 if a key was read, 0 if no key available, -1 on bad pointer.
+ * Used by the compositor to poll keyboard without blocking its event loop.
+ */
+static __attribute__((unused)) int64_t sys_kbd_read_nb(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+
+    /* Only the registered keyboard owner can poll keys */
+    if (g_kbd_owner != 0 && g_current_proc &&
+        g_current_proc->pid != g_kbd_owner)
+        return 0;  /* not the owner — return "no key" */
+
+    char *out = (char *)(uintptr_t)f->rdi;
+    char c;
+    if (keyboard_read(&c)) {
+        *out = c;
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * SYS_KBD_OWNER_SET(70)
+ *   rdi = PID to give exclusive keyboard ownership (0 = release, text mode)
+ * Only the current process or PID 0 can call this.
+ * Returns previous owner PID.
+ */
+static __attribute__((unused)) int64_t sys_kbd_owner_set(syscall_frame_t *f)
+{
+    uint32_t prev = g_kbd_owner;
+    g_kbd_owner   = (uint32_t)f->rdi;
+    serial_print("[KBD ] owner set to PID ");
+    serial_printhex((uint64_t)g_kbd_owner);
+    serial_print("\n");
+    return (int64_t)prev;
+}
+
 
 /*  Dispatch table  */
 
@@ -1039,6 +1095,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_SHM_DESTROY]  = sys_shm_destroy,
     /* GUI Phase 2 */
     [SYS_FB_CONSOLE_SET] = sys_fb_console_set,
+    [SYS_KBD_READ_NB]    = sys_kbd_read_nb,
+    [SYS_KBD_OWNER_SET]  = sys_kbd_owner_set,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

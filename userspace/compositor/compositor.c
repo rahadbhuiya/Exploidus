@@ -186,7 +186,7 @@ static void draw_wallpaper(void)
     }
 }
 
-/*   menu bar  */
+/*  menu bar  */
 
 static void draw_menubar(void)
 {
@@ -326,7 +326,6 @@ static void composite_frame(void)
     draw_menubar();
 
     /* Draw windows back-to-front (painter's algorithm) */
-    /* For now: draw in registration order, focused last */
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!g_windows[i].valid) continue;
         if (i == g_focused) continue;
@@ -343,7 +342,7 @@ static void composite_frame(void)
     }
 
     draw_dock();
-    fb_flip();
+    /* NOTE: NO fb_flip() here — caller draws cursor then flips once */
 }
 
 /*  IPC message handlers  */
@@ -486,6 +485,23 @@ static void route_mouse(int32_t mx, int32_t my, int32_t btn,
     }
 }
 
+/*  keyboard event routing  */
+
+static void route_key(char c)
+{
+    if (g_focused < 0) return;
+    window_t *fw = &g_windows[g_focused];
+    if (!fw->valid) return;
+
+    ipc_msg_t ev;
+    ev.type = IPC_MSG_KEY_DOWN;
+    ev.len  = sizeof(key_msg_t);
+    key_msg_t *k = (key_msg_t *)ev.data;
+    k->scancode = 0;            /* we only have ASCII from keyboard_read */
+    k->ascii    = (uint8_t)c;
+    ipc_send(fw->owner_pid, &ev);
+}
+
 /*  main loop  */
 
 void main(void)
@@ -524,6 +540,9 @@ void main(void)
 
     _println("[COMP] Compositor ready. Entering event loop.");
 
+    /* Claim exclusive keyboard ownership so shell doesn't compete */
+    syscall1(SYS_KBD_OWNER_SET, (uint64_t)getpid());
+
     /* Draw initial desktop so screen isn't blank */
     draw_wallpaper();
     draw_menubar();
@@ -532,10 +551,14 @@ void main(void)
 
     int32_t prev_mx = 0, prev_my = 0, prev_btn = 0;
     uint64_t frame_tick = 0;
-    uint8_t  needs_redraw = 1;
+    uint8_t  needs_full_redraw = 1;  /* full scene repaint needed */
+    uint8_t  needs_cursor_update = 0; /* just move cursor, no scene rebuild */
+
+    /* Track current mouse pos for cursor draw */
+    int32_t cur_mx = 0, cur_my = 0;
 
     for (;;) {
-        /* ── 1. Drain IPC inbox (non-blocking) ── */
+        /*  1. Drain IPC inbox (non-blocking)  */
         ipc_msg_t msg;
         int got_msg = 0;
         while (ipc_recv_nb(&msg) == 0) {
@@ -543,19 +566,19 @@ void main(void)
             switch (msg.type) {
             case IPC_MSG_WIN_CREATE:
                 handle_win_create(&msg);
-                needs_redraw = 1;
+                needs_full_redraw = 1;
                 break;
             case IPC_MSG_WIN_DESTROY:
                 handle_win_destroy(&msg);
-                needs_redraw = 1;
+                needs_full_redraw = 1;
                 break;
             case IPC_MSG_DAMAGE:
                 handle_damage(&msg);
-                needs_redraw = 1;
+                needs_full_redraw = 1;
                 break;
             case IPC_MSG_WIN_MOVE:
                 handle_win_move(&msg);
-                needs_redraw = 1;
+                needs_full_redraw = 1;
                 break;
             case IPC_MSG_PING: {
                 ipc_msg_t pong;
@@ -572,30 +595,55 @@ void main(void)
         /*  2. Poll mouse  */
         int32_t mx, my, btn;
         mouse_pos(&mx, &my, &btn);
-        if (mx != prev_mx || my != prev_my || btn != prev_btn) {
+        if (mx != prev_mx || my != prev_my) {
+            cur_mx = mx; cur_my = my;
+            needs_cursor_update = 1;
+            prev_mx = mx; prev_my = my;
+        }
+        if (btn != prev_btn) {
             route_mouse(mx, my, btn, prev_btn);
-            prev_mx = mx; prev_my = my; prev_btn = btn;
-
-            /* Redraw cursor area */
-            needs_redraw = 1;
+            prev_btn = btn;
+            needs_full_redraw = 1;  /* click may change focus/window state */
         }
 
-        /*  3. Redraw frame  */
+        /*  2b. Poll keyboard (non-blocking)  */
+        char kc;
+        while (kbd_read_nb(&kc) == 1) {
+            route_key(kc);
+            got_msg = 1;
+        }
+
+        /*  3. Redraw  */
         frame_tick++;
-        if (needs_redraw && (frame_tick % FRAME_TICKS == 0)) {
+
+        if (needs_full_redraw && (frame_tick % FRAME_TICKS == 0)) {
+            /* Full scene composite + cursor + single flip */
             composite_frame();
-
-            /* Draw cursor on top */
-            draw_rect(mx,     my,     2, 10, COL_TEXT_PRI);
-            draw_rect(mx,     my,     10, 2, COL_TEXT_PRI);
-            draw_rect(mx + 1, my + 1, 1,  8, 0x000000);
-            draw_rect(mx + 1, my + 1, 8,  1, 0x000000);
-
+            draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
+            draw_rect(cur_mx,     cur_my,     10, 2,  COL_TEXT_PRI);
+            draw_rect(cur_mx + 1, cur_my + 1, 1,  8,  0x000000);
+            draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
             fb_flip();
-            needs_redraw = 0;
+            needs_full_redraw  = 0;
+            needs_cursor_update = 0;
+
+        } else if (needs_cursor_update && (frame_tick % FRAME_TICKS == 0)) {
+            /* Cursor-only update — just flip current back-buffer with new cursor */
+            /* Repaint small patch around old cursor with background color */
+            draw_rect(prev_mx - 1, prev_my - 1, 12, 12, COL_DESKTOP);
+            /* Redraw any window pixels the old cursor was covering */
+            /* (simplified: just redraw entire scene since we need
+             *  to restore what was under the cursor anyway)        */
+            composite_frame();
+            draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
+            draw_rect(cur_mx,     cur_my,     10, 2,  COL_TEXT_PRI);
+            draw_rect(cur_mx + 1, cur_my + 1, 1,  8,  0x000000);
+            draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
+            fb_flip();
+            needs_cursor_update = 0;
         }
 
         /*  4. Yield if nothing to do  */
-        if (!got_msg && !needs_redraw) yield();
+        if (!got_msg && !needs_full_redraw && !needs_cursor_update) yield();
     }
 }

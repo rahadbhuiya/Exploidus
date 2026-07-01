@@ -73,6 +73,7 @@ HTTPT_C_SRCS   := userspace/bin/httptest.c
 RAHU_C_SRCS    := userspace/bin/rahu.c
 COMP_C_SRCS    := userspace/compositor/compositor.c
 GUI_DEMO_C_SRCS := userspace/bin/gui_demo.c
+TERMINAL_C_SRCS := userspace/bin/terminal.c
 SHELL_ASM_SRCS := userspace/libc/crt0.asm
 
 LIBC_C_SRCS := \
@@ -95,6 +96,7 @@ HTT_OBJS := $(patsubst %.c,   build/%.o, $(HTTPT_C_SRCS))
 RH_OBJS  := $(patsubst %.c,   build/%.o, $(RAHU_C_SRCS))
 COMP_OBJS     := $(patsubst %.c, build/%.o, $(COMP_C_SRCS))
 GUI_DEMO_OBJS := $(patsubst %.c, build/%.o, $(GUI_DEMO_C_SRCS))
+TERMINAL_OBJS := $(patsubst %.c, build/%.o, $(TERMINAL_C_SRCS))
 SA_OBJS  := $(patsubst %.asm, build/%.o, $(SHELL_ASM_SRCS))
 # CRT + libc for bin/* programs
 BIN_OBJS := $(SA_OBJS) $(LIBC_OBJS)
@@ -108,7 +110,7 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf
+all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
 
 build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/auditd.ld
 	@mkdir -p $(dir $@)
@@ -157,6 +159,12 @@ build/userspace/bin/gui_demo.elf: $(BIN_OBJS) $(GUI_DEMO_OBJS) userspace/bin/aud
 	@mkdir -p $(dir $@)
 	@echo "[LD]  gui_demo -> $@"
 	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(GUI_DEMO_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/terminal.elf: $(BIN_OBJS) $(TERMINAL_OBJS) userspace/bin/auditd.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  terminal -> $@"
+	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(TERMINAL_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o linker.ld
@@ -297,11 +305,11 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf
+build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img

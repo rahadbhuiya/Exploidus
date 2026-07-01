@@ -108,8 +108,8 @@ static void redraw_line(const char *buf, int len, int pos, int old_len, int cur_
 /*  cursor blink helpers 
     VGA driver ANSI escape 
     cursor character  print:
-   cursor_on  : '_' print  backspace
-   cursor_off : space print backspac
+   cursor_on  : '_' print  backspace  
+   cursor_off : space print backspace  
 */
 static void cursor_on(void)
 {
@@ -299,7 +299,7 @@ static int read_line(char *buf, int max)
             goto redraw;
         }
 
-        /* ── Printable — insert at pos ── */
+        /*  Printable — insert at pos  */
         if ((unsigned char)c >= 0x20 && len < max - 1) {
             for (int i = len; i > pos; i--) buf[i] = buf[i-1];
             buf[pos] = c;
@@ -1077,7 +1077,7 @@ static void cmd_shutdown(void)
     uint32_t white = rgb(220, 230, 255);
     uint32_t dim   = rgb(40, 60, 120);
 
-    /* glitch scanlines */
+    /* Phase 1 — glitch scanlines */
     for (int f = 0; f < 25; f++) {
         fb_clear(navy);
         for (int i = 0; i < 18; i++) {
@@ -1097,11 +1097,11 @@ static void cmd_shutdown(void)
         sleep_ticks(2);
     }
 
-    /* fade to navy */
+    /* Phase 2 — fade to navy */
     fb_clear(navy);
     sleep_ticks(15);
 
-    /*  big title */
+    /* Phase 3 — big title */
     uint32_t cx = w / 2;
     uint32_t cy = h / 2;
 
@@ -1161,7 +1161,7 @@ static void cmd_reboot(void)
     uint32_t cx = w / 2;
     uint32_t cy = h / 2;
 
-    /*  screen wipe */
+    /* Phase 1: screen wipe */
     for (uint32_t y = 0; y < h; y += 4) {
         fb_rect(0, y, w, 4, rgb(0, 0, 0));
         if (y % 20 == 0) fb_flip();
@@ -1171,7 +1171,7 @@ static void cmd_reboot(void)
     fb_flip();
     sleep_ticks(10);
 
-    /*  glitch - amber/orange theme for reboot */
+    /* Phase 2: glitch - amber/orange theme for reboot */
     for (int f = 0; f < 20; f++) {
         for (int i = 0; i < 12; i++) {
             uint32_t y  = rng() % h;
@@ -1186,7 +1186,7 @@ static void cmd_reboot(void)
         fb_clear(rgb(0, 0, 0));
     }
 
-    /* center panel */
+    /* Phase 3: center panel */
     uint32_t pw = 320, ph = 140;
     uint32_t px = cx - pw/2, py = cy - ph/2;
     uint32_t title_bg = rgb(30, 10, 5);
@@ -1242,7 +1242,7 @@ static void cmd_reboot(void)
     }
     fb_flip();
 
-    /*  status messages */
+    /* Phase 5: status messages */
     sleep_ticks(8);
     fb_str(cx-68, py+58, "Saving system state...",   rgb(100, 200, 100), title_bg);
     fb_flip();
@@ -1259,7 +1259,7 @@ static void cmd_reboot(void)
     fb_str(cx-52, py+112, "See you soon!", rgb(80, 80, 80), title_bg);
     fb_flip();
 
-    /*  wipe out */
+    /* Phase 6: wipe out */
     sleep_ticks(40);
     for (uint32_t y = 0; y < h; y += 2) {
         fb_rect(0, y,   w, 1, rgb(0,0,0));
@@ -1383,7 +1383,7 @@ static void cmd_ping(const char *arg)
 
 static void cmd_clear(void)
 {
-    /* VGA console ANSI newline scroll */
+    /* VGA console ANSI বোঝে না — অনেক newline দিয়ে scroll করি */
     for (int i = 0; i < 40; i++) putc('\n');
 }
 
@@ -1581,7 +1581,7 @@ static void dispatch(const char *line)
     } else if (str_starts(l, "ping ")) {
         cmd_ping(skip_spaces(l + 5));
     } else if (str_eq(l, "alien")) {
-        /* Disable text console, spawn compositor + gui_demo */
+        /* Disable text console, spawn compositor + terminal */
         println("alien: switching to GUI mode...");
         syscall1(68, 0);   /* SYS_FB_CONSOLE_SET=68, 0=disable */
         int64_t cp = spawn("/bin/compositor");
@@ -1590,10 +1590,11 @@ static void dispatch(const char *line)
             println("alien: compositor failed to start");
         } else {
             sleep_ticks(30);
-            spawn("/bin/gui_demo");
+            spawn("/bin/terminal");
             println("alien: GUI active. Type 'stopalien' to return.");
         }
     } else if (str_eq(l, "stopalien")) {
+        syscall1(70, 0);   /* SYS_KBD_OWNER_SET=70, 0=release */
         syscall1(68, 1);   /* SYS_FB_CONSOLE_SET=68, 1=enable */
         fb_clear(0x000000);
         println("stopalien: text mode restored.");
