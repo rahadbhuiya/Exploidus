@@ -74,8 +74,10 @@
 #define SYS_SHM_UNMAP      66   /* unmap shared region                  */
 #define SYS_SHM_DESTROY    67   /* free shared region                   */
 #define SYS_FB_CONSOLE_SET 68   /* 0=disable (GUI mode) 1=enable        */
+#define SYS_KBD_READ_NB    69   /* non-blocking keyboard read (1 char)  */
+#define SYS_KBD_OWNER_SET  70   /* set exclusive keyboard owner PID     */
 
-#define SYS_COUNT          69
+#define SYS_COUNT          71
 
 
 /*

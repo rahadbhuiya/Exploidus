@@ -15,17 +15,16 @@
 #define PT_IDX(a)   (((a) >> 12) & 0x1FF)
 
 /*
- * ASLR_MASK: bits [27:12] of RDRAND output, producing a page-aligned
- * random base offset in the range [0, 256 MB).
+ * ASLR_MASK: bits [27:12] of RDRAND output, producing a 2MB-aligned
+ * random offset in the range [0, 256 MB).
  *
- * Safety guarantee: binaries are linked at 0x1000000 (16 MB). The
- * maximum final load address is 0x1000000 + 0x0FFFF000 = 0x10FFF000
- * (~272 MB), which is well within PDPT[0] (0–1 GB) and above the
- * kernel-reserved pd0 entries (indices 0–7, covering 0–16 MB). All
- * user-range pd0 entries are already zeroed by make_isolated_pml4, so
- * map_page allocates fresh page tables at any offset.
+ * ASLR_MIN_BASE: 32 MB minimum -- safely above the kernel-reserved
+ * pd0 entries (indices 0-7, covering 0-16 MB huge pages). Adding
+ * ASLR_MIN_BASE guarantees the final base is always in [32MB, 288MB),
+ * all of which is in the user-zeroed pd0 region of the isolated PML4.
  */
-#define ASLR_MASK 0x000000000FFFF000ULL
+#define ASLR_MASK     0x000000000FFFF000ULL
+#define ASLR_MIN_BASE 0x0000000002000000ULL  /* 32 MB */
 
 /*
  * aslr_rdrand — generate a hardware-random 64-bit value.
@@ -119,7 +118,7 @@ static uint64_t make_isolated_pml4(void)
         uint64_t *pd0 = (uint64_t *)(uintptr_t)pd0_phys;
 
         for (int i = 0; i < 512; i++)
-            pd0[i] = (i < 8) ? kpd0[i] : 0;  /* keep kernel 0-16MB, clear user range */
+            pd0[i] = (i < 16) ? kpd0[i] : 0; /* keep kernel 0-32MB, clear user range */
 
         pdpt[0] = pd0_phys | (kpdpt[0] & 0xFFF);
     }
@@ -212,15 +211,14 @@ bool elf_load(const uint8_t *data, uint64_t size,
      */
     uint64_t aslr_base = 0;
     if (h->type == ELF_TYPE_DYN) {
-        aslr_base = aslr_rdrand() & ASLR_MASK;
-        aslr_base = (aslr_base & ~0x1FFFFFULL) + 0x400000ULL;
+        /* 2MB-aligned random offset + 32MB minimum */
+        aslr_base = (aslr_rdrand() & ASLR_MASK & ~0x1FFFFFULL) + ASLR_MIN_BASE;
         serial_print("[ELF] ET_DYN ASLR base=");
         serial_printhex(aslr_base);
         serial_print("\n");
     } else if (h->entry < 0x100000ULL) {
-        aslr_base = aslr_rdrand() & ASLR_MASK;
-        /* Ensure base is well above huge page boundaries (multiples of 2MB) */
-        aslr_base = (aslr_base & ~0x1FFFFFULL) + 0x400000ULL;
+        /* ET_EXEC linked at low addr — apply ASLR with 32MB minimum */
+        aslr_base = (aslr_rdrand() & ASLR_MASK & ~0x1FFFFFULL) + ASLR_MIN_BASE;
         serial_print("[ELF] ET_EXEC ASLR base=");
         serial_printhex(aslr_base);
         serial_print("\n");

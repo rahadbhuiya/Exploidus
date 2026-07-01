@@ -583,3 +583,27 @@ static inline int64_t fb_console_set(int enable)
 {
     return syscall1(SYS_FB_CONSOLE_SET, (uint64_t)(enable ? 1 : 0));
 }
+
+#define SYS_KBD_READ_NB 69
+
+/*
+ * kbd_read_nb — non-blocking keyboard poll.
+ * Returns 1 if a key was read into *out, 0 if no key available.
+ */
+static inline int kbd_read_nb(char *out)
+{
+    return (int)syscall1(SYS_KBD_READ_NB, (uint64_t)(uintptr_t)out);
+}
+
+#define SYS_KBD_OWNER_SET 70
+
+/*
+ * kbd_owner_set — give exclusive keyboard ownership to a PID.
+ * Pass 0 to release ownership (return to text mode).
+ * Returns previous owner PID.
+ * Called by compositor at startup (own PID) and stopalien (0).
+ */
+static inline uint32_t kbd_owner_set(uint32_t pid)
+{
+    return (uint32_t)syscall1(SYS_KBD_OWNER_SET, (uint64_t)pid);
+}
