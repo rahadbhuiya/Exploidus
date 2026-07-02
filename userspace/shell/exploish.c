@@ -909,7 +909,7 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
     fb_rect(99,  0, 1, h-40, rgb(70,45,130));
     fb_rect(100, 0, 1, h-40, rgb(20,10,45));
 
-    /* ── Sidebar icons (circle style) ── */
+    /*  Sidebar icons (circle style)  */
     draw_icon(14,  45, ">_", "sh",  "Term",
               rgb(80,120,220), rgb(14,14,38),
               rgb(120,230,120), rgb(70,160,70), desk_bg);
@@ -1383,7 +1383,7 @@ static void cmd_ping(const char *arg)
 
 static void cmd_clear(void)
 {
-    /* VGA console ANSI বোঝে না — অনেক newline দিয়ে scroll করি */
+    /* VGA console ANSI   —  newline  scroll  */
     for (int i = 0; i < 40; i++) putc('\n');
 }
 

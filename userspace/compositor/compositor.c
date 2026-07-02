@@ -81,6 +81,11 @@ static window_t g_windows[MAX_WINDOWS];
 static int      g_win_count  = 0;
 static int      g_focused    = -1;  /* index of focused window          */
 
+/*  drag state  */
+static int      g_drag_win   = -1;  /* window index being dragged, -1=none */
+static int32_t  g_drag_off_x = 0;  /* mouse offset from window origin   */
+static int32_t  g_drag_off_y = 0;
+
 static uint32_t g_screen_w   = 0;
 static uint32_t g_screen_h   = 0;
 static uint32_t g_fb_active  = 0;
@@ -186,7 +191,7 @@ static void draw_wallpaper(void)
     }
 }
 
-/*  menu bar  */
+/* menu bar  */
 
 static void draw_menubar(void)
 {
@@ -213,7 +218,7 @@ static void draw_menubar(void)
     draw_rect(0, mh - 1, (int)g_screen_w, 1, COL_BORDER);
 }
 
-/*  dock  */
+/* dock  */
 
 static void draw_dock(void)
 {
@@ -400,13 +405,34 @@ static void handle_win_destroy(ipc_msg_t *msg)
 
     if (g_focused == (int)(w - g_windows)) {
         g_focused = -1;
-        /* Give focus to the next valid window */
         for (int i = 0; i < MAX_WINDOWS; i++) {
             if (g_windows[i].valid && &g_windows[i] != w) {
                 g_focused = i; break;
             }
         }
     }
+    free_win(w);
+    g_win_count--;
+}
+
+/* Close button: destroy by window index (compositor-side force close) */
+static void handle_win_destroy_by_idx(int idx)
+{
+    if (idx < 0 || idx >= MAX_WINDOWS) return;
+    window_t *w = &g_windows[idx];
+    if (!w->valid) return;
+
+    _puts("[COMP] CLOSE '"); _puts(w->title); _println("'");
+
+    if (g_focused == idx) {
+        g_focused = -1;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            if (g_windows[i].valid && i != idx) {
+                g_focused = i; break;
+            }
+        }
+    }
+    if (g_drag_win == idx) g_drag_win = -1;
     free_win(w);
     g_win_count--;
 }
@@ -433,7 +459,34 @@ static void handle_win_move(ipc_msg_t *msg)
 static void route_mouse(int32_t mx, int32_t my, int32_t btn,
                         int32_t prev_btn)
 {
-    /* Find which window the mouse is over */
+    int left_down    = (btn & 1) && !(prev_btn & 1);   /* left just pressed  */
+    int left_up      = !(btn & 1) && (prev_btn & 1);   /* left just released */
+    int left_held    = (btn & 1);
+
+    /*  Dragging: mouse button still held and we started a drag  */
+    if (left_held && g_drag_win >= 0) {
+        window_t *dw = &g_windows[g_drag_win];
+        if (dw->valid) {
+            dw->x = mx - g_drag_off_x;
+            dw->y = my - g_drag_off_y;
+            /* Clamp to screen */
+            if (dw->x < 0) dw->x = 0;
+            if (dw->y < TITLEBAR_H + 22) dw->y = TITLEBAR_H + 22;
+            if (dw->x + (int32_t)dw->w > (int32_t)g_screen_w)
+                dw->x = (int32_t)g_screen_w - (int32_t)dw->w;
+            if (dw->y + (int32_t)dw->h > (int32_t)g_screen_h - DOCK_H)
+                dw->y = (int32_t)g_screen_h - DOCK_H - (int32_t)dw->h;
+        }
+        return;
+    }
+
+    /*  Release drag  */
+    if (left_up && g_drag_win >= 0) {
+        g_drag_win = -1;
+        return;
+    }
+
+    /*  Find which window the mouse is over  */
     int hit = -1;
     for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
         if (!g_windows[i].valid) continue;
@@ -447,40 +500,59 @@ static void route_mouse(int32_t mx, int32_t my, int32_t btn,
 
     if (hit < 0) return;
 
-    /* Click → focus */
-    if ((btn & 1) && !(prev_btn & 1)) {
+    /*  Left button pressed  */
+    if (left_down) {
         g_focused = hit;
-
-        /* Check title bar drag area — just focus for now */
         window_t *hw = &g_windows[hit];
-        int tby = hw->y - TITLEBAR_H;
-        if (my >= tby && my < hw->y) {
-            /* Title bar click — future: start drag */
+        int tby = hw->y - TITLEBAR_H;   /* top of title bar */
+        int btn_y = tby + TITLEBAR_H / 2;
+
+        /*  Close button (red circle at wx+14, btn_y)  */
+        int dx_close = mx - (hw->x + 14);
+        int dy_close = my - btn_y;
+        if (dx_close*dx_close + dy_close*dy_close <= 25) {
+            /* Send destroy signal to the window's owner */
+            ipc_msg_t ev;
+            ev.type = IPC_MSG_WIN_BLUR;  /* reuse as "close" hint */
+            ev.len  = 0;
+            ipc_send(hw->owner_pid, &ev);
+            /* Force-remove from compositor side immediately */
+            handle_win_destroy_by_idx(hit);
             return;
         }
-    }
 
-    /* Forward to focused window */
-    if (g_focused < 0) return;
-    window_t *fw = &g_windows[g_focused];
-    if (!fw->valid) return;
+        /*  Title bar drag area  */
+        if (my >= tby && my < hw->y) {
+            g_drag_win   = hit;
+            g_drag_off_x = mx - hw->x;
+            g_drag_off_y = my - (hw->y - TITLEBAR_H);
+            return;
+        }
 
-    ipc_msg_t ev;
-    if ((btn & 1) != (prev_btn & 1)) {
+        /*  Client area click → forward to app  */
+        ipc_msg_t ev;
         ev.type = IPC_MSG_MOUSE_BTN;
         ev.len  = sizeof(mouse_btn_msg_t);
         mouse_btn_msg_t *m = (mouse_btn_msg_t *)ev.data;
-        m->x       = mx - fw->x;
-        m->y       = my - fw->y;
+        m->x       = mx - hw->x;
+        m->y       = my - hw->y;
         m->button  = 1;
-        m->pressed = (uint8_t)((btn & 1) ? 1 : 0);
-        ipc_send(fw->owner_pid, &ev);
-    } else {
-        ev.type = IPC_MSG_MOUSE_MOVE;
-        ev.len  = sizeof(mouse_move_msg_t);
-        mouse_move_msg_t *m = (mouse_move_msg_t *)ev.data;
-        m->x = mx - fw->x;
-        m->y = my - fw->y;
+        m->pressed = 1;
+        ipc_send(hw->owner_pid, &ev);
+        return;
+    }
+
+    /*  Left button released in client area  */
+    if (left_up) {
+        if (g_focused < 0) return;
+        window_t *fw = &g_windows[g_focused];
+        if (!fw->valid) return;
+        ipc_msg_t ev;
+        ev.type = IPC_MSG_MOUSE_BTN;
+        ev.len  = sizeof(mouse_btn_msg_t);
+        mouse_btn_msg_t *m = (mouse_btn_msg_t *)ev.data;
+        m->x = mx - fw->x; m->y = my - fw->y;
+        m->button = 1; m->pressed = 0;
         ipc_send(fw->owner_pid, &ev);
     }
 }
@@ -597,7 +669,13 @@ void main(void)
         mouse_pos(&mx, &my, &btn);
         if (mx != prev_mx || my != prev_my) {
             cur_mx = mx; cur_my = my;
-            needs_cursor_update = 1;
+            if (g_drag_win >= 0) {
+                /* Dragging — route mouse to update window position */
+                route_mouse(mx, my, btn, prev_btn);
+                needs_full_redraw = 1;
+            } else {
+                needs_cursor_update = 1;
+            }
             prev_mx = mx; prev_my = my;
         }
         if (btn != prev_btn) {
