@@ -33,10 +33,6 @@ Exploidus treats it as a foundation.
 - auditd — kernel audit ring poller, logs to /var/log/audit.log
 - httpd — HTTP server on port 80
 
-### Linux Compatibility Layer
-- `userspace/musl/` — Linux syscall → Exploidus syscall shim (50+ syscalls mapped)
-- Ready for musl libc porting — enables Linux software to run on Exploidus
-- argv/envp passing via System V ABI stack layout
 
 ## Roadmap
 
@@ -44,10 +40,8 @@ Exploidus treats it as a foundation.
 - [x] HuddleCluster integration — built-in auto load balancing
 - [x] ASLR — all userspace binaries randomised on boot
 - [x] yolish intent syscall — @intent annotation wired to kernel scheduler
-- [x] Linux compat layer skeleton (userspace/musl/)
 - [x] lseek, stat, fstat, dup, dup2 syscalls
 - [x] argv/envp passing (System V ABI)
-- [ ] musl libc port — compile and run Linux software natively
 - [ ] exec with argv passing (full execve)
 - [ ] yolish — add more builtins (file I/O, networking)
 - [ ] Optional GUI — enable/disable on demand
