@@ -139,13 +139,20 @@ static int term_starts(const char *s, const char *prefix)
 
 static void cmd_help(void)
 {
-    grid_puts("Built-in commands:\n");
-    grid_puts("  help    - this message\n");
-    grid_puts("  clear   - clear screen\n");
-    grid_puts("  echo X  - print X\n");
-    grid_puts("  pwd     - print working directory\n");
-    grid_puts("  ls      - list current directory\n");
-    grid_puts("  exit    - close terminal window\n");
+    grid_puts("Commands:\n");
+    grid_puts("  help            this message\n");
+    grid_puts("  clear           clear screen\n");
+    grid_puts("  echo <text>     print text\n");
+    grid_puts("  pwd             working directory\n");
+    grid_puts("  cd <dir>        change directory\n");
+    grid_puts("  ls [dir]        list directory\n");
+    grid_puts("  cat <file>      print file\n");
+    grid_puts("  mkdir <dir>     create directory\n");
+    grid_puts("  rm <file>       remove file\n");
+    grid_puts("  open <app>      launch GUI app\n");
+    grid_puts("  ps              list processes\n");
+    grid_puts("  uptime          system uptime\n");
+    grid_puts("  exit            close terminal\n");
 }
 
 static void cmd_clear(void)
@@ -160,49 +167,142 @@ static void cmd_pwd(void)
 {
     char buf[256];
     if (getcwd(buf, sizeof(buf)) >= 0) {
-        grid_puts(buf);
-        grid_putc('\n');
+        grid_puts(buf); grid_putc('\n');
     } else {
         grid_puts("pwd: error\n");
     }
 }
 
-static void cmd_ls(void)
+static void cmd_cd(const char *path)
 {
-    int fd = open(".", O_RDONLY);
-    if (fd < 0) { grid_puts("ls: cannot open .\n"); return; }
-    dirent_t ents[32];
-    int64_t n;
+    if (!path || !*path) path = "/";
+    if (chdir(path) < 0) {
+        grid_puts("cd: cannot cd to: "); grid_puts(path); grid_putc('\n');
+    }
+}
+
+static void cmd_ls(const char *path)
+{
+    if (!path || !*path) path = ".";
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { grid_puts("ls: cannot open: "); grid_puts(path); grid_putc('\n'); return; }
+    dirent_t ents[32]; int64_t n; int col = 0;
     while ((n = readdir(fd, ents, 32)) > 0) {
         for (int64_t i = 0; i < n; i++) {
             grid_puts(ents[i].name);
-            grid_putc(' ');
+            /* padding to 16 chars for alignment */
+            int len = 0; const char *p = ents[i].name; while(*p++) len++;
+            for (int s = len; s < 16; s++) grid_putc(' ');
+            col++;
+            if (col % 4 == 0) grid_putc('\n');
         }
     }
-    grid_putc('\n');
+    if (col % 4 != 0) grid_putc('\n');
     close(fd);
 }
 
+static void cmd_cat(const char *path)
+{
+    if (!path || !*path) { grid_puts("cat: missing file\n"); return; }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { grid_puts("cat: cannot open: "); grid_puts(path); grid_putc('\n'); return; }
+    char buf[512]; int64_t n;
+    while ((n = read(fd, buf, sizeof(buf) - 1)) > 0) {
+        buf[n] = 0;
+        grid_puts(buf);
+    }
+    close(fd);
+    grid_putc('\n');
+}
+
+static void cmd_mkdir(const char *path)
+{
+    if (!path || !*path) { grid_puts("mkdir: missing name\n"); return; }
+    if (fs_create(path, 1) < 0) {
+        grid_puts("mkdir: failed: "); grid_puts(path); grid_putc('\n');
+    }
+}
+
+static void cmd_rm(const char *path)
+{
+    if (!path || !*path) { grid_puts("rm: missing file\n"); return; }
+    if (unlink(path) < 0) {
+        grid_puts("rm: failed: "); grid_puts(path); grid_putc('\n');
+    }
+}
+
+static void cmd_open(const char *app)
+{
+    if (!app || !*app) { grid_puts("open: missing app path\n"); return; }
+    int64_t pid = spawn(app);
+    if (pid < 0) {
+        grid_puts("open: failed: "); grid_puts(app); grid_putc('\n');
+    } else {
+        grid_puts("open: launched "); grid_puts(app); grid_putc('\n');
+    }
+}
+
+static void cmd_ps(void)
+{
+    proc_info_t procs[16]; int64_t n = getprocs(procs, 16);
+    if (n <= 0) { grid_puts("ps: error\n"); return; }
+    grid_puts("PID  STATE  TICKS\n");
+    for (int64_t i = 0; i < n; i++) {
+        /* print pid */
+        char nb[8]; int ni = 0; uint32_t tmp = procs[i].pid;
+        if (!tmp) nb[ni++]='0';
+        else { while(tmp){nb[ni++]='0'+tmp%10;tmp/=10;} }
+        for(int a=0,b=ni-1;a<b;a++,b--){char t=nb[a];nb[a]=nb[b];nb[b]=t;}
+        nb[ni]=0; grid_puts(nb);
+        grid_puts("    ");
+        const char *st = procs[i].state==1?"RUN":
+                         procs[i].state==2?"RDY":
+                         procs[i].state==3?"BLK":"ZMB";
+        grid_puts(st); grid_putc('\n');
+    }
+}
+
+static void cmd_uptime(void)
+{
+    uint64_t secs = uptime();
+    char nb[16]; int ni = 0;
+    if (!secs) nb[ni++]='0';
+    else { uint64_t t=secs; while(t){nb[ni++]='0'+t%10;t/=10;} }
+    for(int a=0,b=ni-1;a<b;a++,b--){char t=nb[a];nb[a]=nb[b];nb[b]=t;}
+    nb[ni]=0;
+    grid_puts("uptime: "); grid_puts(nb); grid_puts(" seconds\n");
+}
+
 static int g_should_exit = 0;
+
+/*  skip leading spaces  */
+static const char *term_skip(const char *s)
+{
+    while (*s == ' ') s++;
+    return s;
+}
 
 static void execute_line(const char *line)
 {
     if (!line[0]) return;
 
-    if (term_streq(line, "help")) { cmd_help(); return; }
-    if (term_streq(line, "clear")) { cmd_clear(); return; }
-    if (term_streq(line, "pwd")) { cmd_pwd(); return; }
-    if (term_streq(line, "ls")) { cmd_ls(); return; }
-    if (term_streq(line, "exit")) { g_should_exit = 1; return; }
-    if (term_starts(line, "echo ")) {
-        grid_puts(line + 5);
-        grid_putc('\n');
-        return;
-    }
+    if (term_streq(line, "help"))   { cmd_help(); return; }
+    if (term_streq(line, "clear"))  { cmd_clear(); return; }
+    if (term_streq(line, "pwd"))    { cmd_pwd(); return; }
+    if (term_streq(line, "ps"))     { cmd_ps(); return; }
+    if (term_streq(line, "uptime")) { cmd_uptime(); return; }
+    if (term_streq(line, "exit"))   { g_should_exit = 1; return; }
+    if (term_streq(line, "ls"))     { cmd_ls("."); return; }
 
-    grid_puts("unknown command: ");
-    grid_puts(line);
-    grid_putc('\n');
+    if (term_starts(line, "echo "))  { grid_puts(line + 5); grid_putc('\n'); return; }
+    if (term_starts(line, "cd "))    { cmd_cd(term_skip(line + 3)); return; }
+    if (term_starts(line, "ls "))    { cmd_ls(term_skip(line + 3)); return; }
+    if (term_starts(line, "cat "))   { cmd_cat(term_skip(line + 4)); return; }
+    if (term_starts(line, "mkdir ")) { cmd_mkdir(term_skip(line + 6)); return; }
+    if (term_starts(line, "rm "))    { cmd_rm(term_skip(line + 3)); return; }
+    if (term_starts(line, "open "))  { cmd_open(term_skip(line + 5)); return; }
+
+    grid_puts("unknown: "); grid_puts(line); grid_putc('\n');
 }
 
 /*  prompt  */
