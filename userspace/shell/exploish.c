@@ -106,10 +106,10 @@ static void redraw_line(const char *buf, int len, int pos, int old_len, int cur_
 }
 
 /*  cursor blink helpers 
-    VGA driver ANSI escape 
+    VGA driver ANSI escape  
     cursor character  print:
    cursor_on  : '_' print  backspace  
-   cursor_off : space print backspace  
+   cursor_off : space print  backspace  
 */
 static void cursor_on(void)
 {
@@ -299,7 +299,7 @@ static int read_line(char *buf, int max)
             goto redraw;
         }
 
-        /*  Printable — insert at pos  */
+        /* ── Printable — insert at pos ── */
         if ((unsigned char)c >= 0x20 && len < max - 1) {
             for (int i = len; i > pos; i--) buf[i] = buf[i-1];
             buf[pos] = c;
@@ -387,6 +387,7 @@ static void cmd_help(void)
     println("  cnsl-ttl <ip>      Seconds until IP auto-unblocks");
     println("  alien           Switch to GUI mode (compositor + windows)");
     println("  stopalien       Return to text console mode");
+    println("  open <app>      Launch a GUI app (e.g. open /bin/terminal)");
     println("  ys <script>     Run a Yolish script");
 }
 
@@ -909,7 +910,7 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
     fb_rect(99,  0, 1, h-40, rgb(70,45,130));
     fb_rect(100, 0, 1, h-40, rgb(20,10,45));
 
-    /*  Sidebar icons (circle style)  */
+    /* ── Sidebar icons (circle style) ── */
     draw_icon(14,  45, ">_", "sh",  "Term",
               rgb(80,120,220), rgb(14,14,38),
               rgb(120,230,120), rgb(70,160,70), desk_bg);
@@ -1599,6 +1600,26 @@ static void dispatch(const char *line)
         fb_clear(0x000000);
         println("stopalien: text mode restored.");
         println("GUI compositor still running in background.");
+    } else if (str_starts(l, "open ")) {
+        /* Spawn a GUI app into the running compositor */
+        const char *app = skip_spaces(l + 5);
+        if (!*app) {
+            println("open: usage: open <path>  e.g. open /bin/terminal");
+        } else {
+            int64_t pid = spawn(app);
+            if (pid < 0) {
+                puts("open: failed to launch: "); println(app);
+            } else {
+                puts("open: launched "); puts(app);
+                puts(" PID=");
+                /* print pid */
+                char nb[12]; int ni = 0; int64_t tmp = pid;
+                if (!tmp) { nb[ni++]='0'; }
+                else { while(tmp>0){nb[ni++]='0'+tmp%10;tmp/=10;} }
+                for(int a=0,b=ni-1;a<b;a++,b--){char t=nb[a];nb[a]=nb[b];nb[b]=t;}
+                nb[ni]=0; puts(nb); putc('\n');
+            }
+        }
     } else if (str_starts(l, "rahu")) {
         cmd_rahu(skip_spaces(l + 4));
     } else if (str_eq(l, "cnsl-list")) {

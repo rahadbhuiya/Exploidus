@@ -21,7 +21,7 @@
 /*  tunables  */
 #define MAX_WINDOWS      16
 #define FRAME_TICKS      2      /* repaint every N scheduler ticks (~50fps at 100Hz) */
-#define TITLEBAR_H       28     /* px — macOS-style compact title bar  */
+#define TITLEBAR_H       28     /* px — compact title bar  */
 #define DOCK_H           56     /* px — bottom dock height             */
 #define DOCK_ICON_SZ     40     /* dock icon size                      */
 #define SHADOW_BLUR      6      /* window drop shadow radius           */
@@ -80,6 +80,10 @@ typedef struct {
 static window_t g_windows[MAX_WINDOWS];
 static int      g_win_count  = 0;
 static int      g_focused    = -1;  /* index of focused window          */
+
+/*  cascade position for new windows  */
+static int32_t  g_cascade_x  = 40;
+static int32_t  g_cascade_y  = 50;
 
 /*  drag state  */
 static int      g_drag_win   = -1;  /* window index being dragged, -1=none */
@@ -220,30 +224,61 @@ static void draw_menubar(void)
 
 /* dock  */
 
+/* Dock app definitions — label, color, binary path */
+typedef struct {
+    const char *label;
+    uint32_t    col;
+    const char *path;
+} dock_item_t;
+
+#define DOCK_ITEMS 3
+static const dock_item_t g_dock_items[DOCK_ITEMS] = {
+    { "T", COL_ACCENT_PUR, "/bin/terminal" },
+    { "F", COL_ACCENT_GRN, "/bin/exploish" },
+    { "S", COL_ACCENT_BLU, "/bin/gui_demo" },
+};
+
+/* dock geometry — computed once, used for hit testing */
+static int g_dock_dx = 0, g_dock_dy = 0;
+static int g_dock_dw = 200, g_dock_spacing = 0;
+
 static void draw_dock(void)
 {
     int dy = (int)g_screen_h - DOCK_H;
     int dw = 200;
     int dx = ((int)g_screen_w - dw) / 2;
+    int spacing = dw / (DOCK_ITEMS + 1);
+
+    /* Save geometry for hit testing */
+    g_dock_dx = dx; g_dock_dy = dy;
+    g_dock_dw = dw; g_dock_spacing = spacing;
 
     /* Dock background — frosted pill */
     draw_rrect(dx, dy + 6, dw, DOCK_H - 8, 10, 0x1F2937);
-    draw_rrect(dx, dy + 6, dw, DOCK_H - 8, 10, 0x30363D);  /* border */
+    draw_rrect(dx, dy + 6, dw, DOCK_H - 8, 10, 0x30363D);
 
-    /* Dock icons — Terminal, Files, Settings */
-    struct { uint32_t col; const char *label; } icons[] = {
-        { COL_ACCENT_PUR, "T" },
-        { COL_ACCENT_GRN, "F" },
-        { COL_ACCENT_BLU, "S" },
-    };
-    int n = 3;
-    int spacing = dw / (n + 1);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < DOCK_ITEMS; i++) {
         int ix = dx + spacing * (i + 1) - DOCK_ICON_SZ / 2;
         int iy = dy + (DOCK_H - DOCK_ICON_SZ) / 2;
-        draw_rrect(ix, iy, DOCK_ICON_SZ, DOCK_ICON_SZ, 8, icons[i].col);
-        draw_str(ix + 14, iy + 12, icons[i].label, COL_TEXT_PRI, icons[i].col);
+        draw_rrect(ix, iy, DOCK_ICON_SZ, DOCK_ICON_SZ, 8, g_dock_items[i].col);
+        draw_str(ix + 14, iy + 12, g_dock_items[i].label,
+                 COL_TEXT_PRI, g_dock_items[i].col);
     }
+}
+
+/* dock_hit — returns dock item index (0-based) if click is on a dock icon,
+ * or -1 if no hit. */
+static int dock_hit(int32_t mx, int32_t my)
+{
+    int dy = g_dock_dy;
+    int iy = dy + (DOCK_H - DOCK_ICON_SZ) / 2;
+    if (my < iy || my >= iy + DOCK_ICON_SZ) return -1;
+
+    for (int i = 0; i < DOCK_ITEMS; i++) {
+        int ix = g_dock_dx + g_dock_spacing * (i + 1) - DOCK_ICON_SZ / 2;
+        if (mx >= ix && mx < ix + DOCK_ICON_SZ) return i;
+    }
+    return -1;
 }
 
 /*  window chrome (title bar + buttons)  */
@@ -367,8 +402,20 @@ static void handle_win_create(ipc_msg_t *msg)
     if (!w) { _println("[COMP] window table full"); return; }
 
     w->shm_id    = p->shm_id;
-    w->x         = p->x;
-    w->y         = p->y + TITLEBAR_H;   /* reserve space for title bar  */
+    /* If app passes x=0,y=0 use cascade position, else use app's position */
+    if (p->x == 0 && p->y == 0) {
+        w->x = g_cascade_x;
+        w->y = g_cascade_y + TITLEBAR_H;
+        /* Advance cascade — diagonal step */
+        g_cascade_x += 30;
+        g_cascade_y += 30;
+        /* Wrap cascade so windows don't go off screen */
+        if (g_cascade_x > (int32_t)g_screen_w - 200) g_cascade_x = 40;
+        if (g_cascade_y > (int32_t)g_screen_h - 200) g_cascade_y = 50;
+    } else {
+        w->x = p->x;
+        w->y = p->y + TITLEBAR_H;
+    }
     w->w         = p->w;
     w->h         = p->h;
     w->flags     = p->flags | WIN_FLAG_DECORATED;
@@ -486,6 +533,16 @@ static void route_mouse(int32_t mx, int32_t my, int32_t btn,
         return;
     }
 
+    /*  Dock click  */
+    if (left_down) {
+        int ditem = dock_hit(mx, my);
+        if (ditem >= 0) {
+            /* Spawn the dock app */
+            spawn(g_dock_items[ditem].path);
+            return;
+        }
+    }
+
     /*  Find which window the mouse is over  */
     int hit = -1;
     for (int i = MAX_WINDOWS - 1; i >= 0; i--) {
@@ -561,6 +618,29 @@ static void route_mouse(int32_t mx, int32_t my, int32_t btn,
 
 static void route_key(char c)
 {
+    /* Tab = cycle focus between windows */
+    if (c == '\t') {
+        if (g_win_count > 1) {
+            int next = g_focused + 1;
+            for (int i = 0; i < MAX_WINDOWS; i++) {
+                int idx = (next + i) % MAX_WINDOWS;
+                if (g_windows[idx].valid) {
+                    /* Notify old focused window */
+                    if (g_focused >= 0 && g_windows[g_focused].valid) {
+                        ipc_msg_t blur; blur.type = IPC_MSG_WIN_BLUR; blur.len = 0;
+                        ipc_send(g_windows[g_focused].owner_pid, &blur);
+                    }
+                    g_focused = idx;
+                    /* Notify new focused window */
+                    ipc_msg_t focus; focus.type = IPC_MSG_WIN_FOCUS; focus.len = 0;
+                    ipc_send(g_windows[g_focused].owner_pid, &focus);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
     if (g_focused < 0) return;
     window_t *fw = &g_windows[g_focused];
     if (!fw->valid) return;
@@ -569,7 +649,7 @@ static void route_key(char c)
     ev.type = IPC_MSG_KEY_DOWN;
     ev.len  = sizeof(key_msg_t);
     key_msg_t *k = (key_msg_t *)ev.data;
-    k->scancode = 0;            /* we only have ASCII from keyboard_read */
+    k->scancode = 0;
     k->ascii    = (uint8_t)c;
     ipc_send(fw->owner_pid, &ev);
 }
