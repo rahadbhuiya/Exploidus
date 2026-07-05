@@ -19,10 +19,19 @@ A custom x86-64 operating system kernel built from scratch.
 - BLAKE3 capability token system with RDRAND seeding
 - Intent-based preemptive scheduler (5 priority classes)
 - Blocking waitpid (no busy-spin)
+- Crash isolation — a fault in a userspace process kills only that
+  process; the kernel keeps running (kernel-mode faults still halt)
+- Kernel synchronization primitives: IRQ-safe spinlocks, blocking
+  mutexes/semaphores (kernel/sync/)
+- Additive driver registry (kernel/drivers/driver.c) tracking every
+  hardware driver initialized at boot
 - VFS + ExFS filesystem with provenance records
 - TCP/IP network stack (e1000, ARP, IP fragment reassembly, TCP, UDP, ICMP)
-- 58 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net)
+- 72 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net/fb_blit)
 - exploish interactive shell with real ps and audit commands
+- Userspace compositor (`alien` command) with double-buffered
+  rendering, dirty-region-aware redraws, single-syscall window
+  blitting (SYS_FB_BLIT), and real-time-paced frame pacing
 
 ---
 
@@ -133,20 +142,23 @@ Terminal 2:
 ## Project Structure
 
     exploidus/
-    kernel/arch/x86_64/    GDT, IDT, IRQ, ISR stubs
+    kernel/arch/x86_64/    GDT, IDT, IRQ, ISR stubs, crash-isolating fault handler
     kernel/boot/           Multiboot2 entry, long mode
-    kernel/mm/             PMM, VMM, kmalloc
+    kernel/mm/             PMM, VMM, kmalloc (spinlock-protected heap)
     kernel/cap/            BLAKE3 capability tokens
     kernel/audit/          Ring-buffer audit log
     kernel/proc/           Process table, scheduler, fork/exec
-    kernel/syscall/        58 syscalls
-    kernel/drivers/        VGA, serial, keyboard, ATA
+    kernel/sync/           Spinlock, mutex, semaphore primitives
+    kernel/syscall/        72 syscalls
+    kernel/drivers/        VGA, serial, keyboard, mouse, ATA, framebuffer,
+                           driver.c (hardware driver registry)
     kernel/fs/vfs/         Virtual filesystem
     kernel/fs/exfs/        ExFS + provenance
     kernel/elf/            ELF64 loader
     kernel/net/            TCP/IP stack
     userspace/libc/        syscall wrappers, crt0
     userspace/shell/       exploish shell
+    userspace/compositor/  Windowing compositor (`alien` GUI mode)
     linker.ld              Kernel linker script
     Makefile               Build system
     setup.sh               Cross-compiler installer
@@ -183,7 +195,68 @@ Build fails:
 WSL2 no GUI window:
     Use make qemu — no window needed for serial output.
 
+GUI (`alien`)/mouse feels slow or stuttery:
+    All qemu-disk/qemu-gui targets now pass -accel kvm:tcg, which uses
+    KVM hardware acceleration when available and falls back to plain
+    software emulation (TCG) otherwise. Check whether KVM is actually
+    available on your host:
+        ls -la /dev/kvm
+    If that file doesn't exist, QEMU is running the CPU in pure
+    software emulation, which can be dramatically (10-50x) slower than
+    real hardware — enough on its own to make interrupt-heavy code
+    (mouse polling, the compositor) feel laggy no matter how optimized
+    the OS code is. If you're inside a VM (VMware/VirtualBox/cloud),
+    enable nested virtualization for the guest (e.g. VMware: VM
+    Settings -> Processor -> "Virtualize Intel VT-x/EPT or AMD-V/RVI";
+    VirtualBox: Settings -> System -> Processor -> "Enable Nested
+    VT-x/AMD-V") and make sure the kvm kernel module is loaded
+    (`sudo modprobe kvm_intel` or `kvm_amd`).
+
 
 ## Author Rahad Bhuiya
 
 ## License MIT
+
+---
+
+## Recent Stability Fixes
+
+A round of fixes to the GUI/compositor path and kernel core:
+
+- **Mouse cursor race**: the kernel's PS/2 IRQ handler no longer draws
+  its own cursor directly on the framebuffer while the compositor owns
+  the screen (`fb_console_enabled()` gates it) — it was racing with
+  the compositor's double-buffered draw and flip.
+- **fb_blend_pixel double-buffer bug**: shadows/blends were being
+  written straight to the front buffer, bypassing double buffering,
+  which caused visible flicker on every composite.
+- **SYS_FB_BLIT**: a new syscall blits a whole window's ARGB buffer in
+  one call instead of one syscall per pixel (previously ~120,000
+  syscalls per window per frame for a typical window size).
+- **composite_frame_light()**: plain cursor movement no longer
+  triggers a full wallpaper gradient repaint; only the affected
+  windows/dock are redrawn.
+- **Software VSync**: the compositor paces repaints against real
+  elapsed time (`uptime()`), not a loop-iteration counter, so the
+  frame rate stays consistent regardless of other work happening in
+  the event loop.
+- **Crash isolation**: a fault (page fault, GPF, divide-by-zero, ...)
+  in userspace code now kills only that process, the same way
+  `sys_exit()` does, instead of halting the entire kernel. Faults in
+  kernel-mode code still halt, since kernel state may be corrupted.
+- **kmalloc/kfree race**: the heap free-list is now protected by an
+  IRQ-safe spinlock — previously an interrupt firing mid-allocation
+  could corrupt it.
+- **kernel/sync/**: new spinlock/mutex/semaphore primitives for future
+  use protecting shared kernel/driver state.
+- **Driver registry**: `kernel/drivers/driver.c` tracks every hardware
+  driver initialized at boot (additive — boot order is unchanged).
+- **Removed hot-path debug logging**: `unblock_sleepers()` (runs from
+  the timer IRQ at 100Hz) and `ipc_send()` (runs on every message)
+  used to `serial_print()` on every event. Serial writes busy-wait on
+  real UART timing, so this was stalling keyboard/mouse/scheduling
+  system-wide on every process wake-up or IPC message — likely the
+  single biggest contributor to perceived input lag.
+- **QEMU acceleration**: `qemu-disk`/`qemu-gui` now pass
+  `-accel kvm:tcg`, using KVM hardware acceleration when the host
+  supports it (see Troubleshooting if `/dev/kvm` isn't available).
