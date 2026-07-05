@@ -84,11 +84,11 @@ int ipc_send(uint32_t dst_pid, const ipc_msg_t *msg)
 
     __asm__ volatile ("sti" ::: "memory");
 
-    if (was_waiting) {
-        serial_print("[IPC ] woke PID ");
-        serial_printhex((uint64_t)dst_pid);
-        serial_print("\n");
-    }
+    /* NOTE: previously logged "[IPC ] woke PID ..." here on every
+     * message that woke a blocked receiver — that's every keystroke
+     * and every routed window event. Each serial_print busy-waits on
+     * real UART timing, so this was adding measurable per-keystroke
+     * latency system-wide. */
 
     return 0;
 }

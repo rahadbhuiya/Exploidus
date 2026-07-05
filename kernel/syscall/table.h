@@ -76,8 +76,9 @@
 #define SYS_FB_CONSOLE_SET 68   /* 0=disable (GUI mode) 1=enable        */
 #define SYS_KBD_READ_NB    69   /* non-blocking keyboard read (1 char)  */
 #define SYS_KBD_OWNER_SET  70   /* set exclusive keyboard owner PID     */
+#define SYS_FB_BLIT        71   /* blit whole ARGB buffer in one call   */
 
-#define SYS_COUNT          71
+#define SYS_COUNT          72
 
 
 /*

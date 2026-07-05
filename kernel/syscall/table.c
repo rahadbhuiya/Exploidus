@@ -531,6 +531,29 @@ static __attribute__((unused)) int64_t sys_fb_rrect(syscall_frame_t *f)
 static __attribute__((unused)) int64_t sys_fb_flip(syscall_frame_t *f)
 { (void)f; fb_flip(); return 0; }
 
+/*
+ * sys_fb_blit(dst_x, dst_y, w, h, src_ptr, bg_color)
+ * Blits a whole ARGB32 window buffer in one syscall instead of the
+ * caller doing one fb_pixel syscall per pixel (which was the main
+ * cost behind laggy/flickery window redraws and drags).
+ */
+static __attribute__((unused)) int64_t sys_fb_blit(syscall_frame_t *f)
+{
+    int32_t  dst_x = (int32_t)f->rdi;
+    int32_t  dst_y = (int32_t)f->rsi;
+    uint32_t w     = (uint32_t)f->rdx;
+    uint32_t h     = (uint32_t)f->r10;
+    uint64_t src   = f->r8;
+    uint32_t bg    = (uint32_t)f->r9;
+
+    if (w == 0 || h == 0) return 0;
+    uint64_t len = (uint64_t)w * (uint64_t)h * 4;
+    if (!uptr_ok(src, len)) return -1;
+
+    fb_blit(dst_x, dst_y, w, h, (const uint32_t *)(uintptr_t)src, bg);
+    return 0;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1097,6 +1120,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_FB_CONSOLE_SET] = sys_fb_console_set,
     [SYS_KBD_READ_NB]    = sys_kbd_read_nb,
     [SYS_KBD_OWNER_SET]  = sys_kbd_owner_set,
+    [SYS_FB_BLIT]        = sys_fb_blit,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

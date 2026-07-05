@@ -1,5 +1,6 @@
 #include "mouse.h"
 #include "fb.h"
+#include "fb_console.h"
 #include "../arch/x86_64/irq.h"
 #include "../drivers/serial.h"
 #include <stdint.h>
@@ -57,6 +58,11 @@ static const uint16_t cursor_shape[16] = {
 
 void mouse_draw_cursor(void)
 {
+    /* GUI mode: compositor owns the screen (double-buffered) and draws
+     * its own cursor as part of composite_frame()+fb_flip(). Drawing
+     * directly onto the front buffer here would race with that and
+     * make the screen appear to jump/flicker on every mouse move. */
+    if (!fb_console_enabled()) { g_cursor_sx = g_cursor_sy = -1; return; }
     if (!g_fb.active) return;
     int32_t x = g_mouse.x, y = g_mouse.y;
     g_cursor_sx = x; g_cursor_sy = y;
@@ -88,6 +94,7 @@ void mouse_draw_cursor(void)
 
 void mouse_erase_cursor(void)
 {
+    if (!fb_console_enabled()) return;
     if (!g_fb.active || g_cursor_sx < 0) return;
     int32_t x = g_cursor_sx, y = g_cursor_sy;
     for (int row = 0; row < 16; row++) {

@@ -9,7 +9,7 @@
  *   4. Each frame: composite all windows onto the framebuffer
  *      back-buffer, then fb_flip()
  *   5. Route mouse/keyboard events to the focused window
- *   6. Draw macOS-style desktop: wallpaper, dock, title bars
+ *   6. Draw desktop: wallpaper, dock, title bars
  *
  * Pixel format: 0x00RRGGBB (32-bit, top byte ignored / alpha blend)
  */
@@ -20,7 +20,7 @@
 
 /*  tunables  */
 #define MAX_WINDOWS      16
-#define FRAME_TICKS      2      /* repaint every N scheduler ticks (~50fps at 100Hz) */
+#define FRAME_TICKS      2      /* min ticks between repaints (~50fps at 100Hz PIT) */
 #define TITLEBAR_H       28     /* px — compact title bar  */
 #define DOCK_H           56     /* px — bottom dock height             */
 #define DOCK_ICON_SZ     40     /* dock icon size                      */
@@ -145,10 +145,6 @@ static void draw_rect(int x, int y, int w, int h, uint32_t col)
 }
 
 /* Draw a single pixel */
-static void draw_pixel(int x, int y, uint32_t col)
-{
-    fb_pixel((uint32_t)x, (uint32_t)y, col);
-}
 
 /* Draw a string */
 static void draw_str(int x, int y, const char *s, uint32_t fg, uint32_t bg)
@@ -328,34 +324,26 @@ static void blit_window(window_t *w)
 {
     if (!w->pixels) return;
 
-    uint32_t *src = w->pixels;
-    int32_t   sx  = w->x;
-    int32_t   sy  = w->y;
-    uint32_t  sw  = w->w;
-    uint32_t  sh  = w->h;
+    int32_t  sx = w->x;
+    int32_t  sy = w->y;
+    uint32_t sw = w->w;
+    uint32_t sh = w->h;
 
-    /* Clip to screen */
-    int32_t x0 = sx < 0 ? 0 : sx;
-    int32_t y0 = sy < 0 ? 0 : sy;
-    int32_t x1 = sx + (int32_t)sw;
-    int32_t y1 = sy + (int32_t)sh;
-    if (x1 > (int32_t)g_screen_w) x1 = (int32_t)g_screen_w;
-    if (y1 > (int32_t)g_screen_h - DOCK_H) y1 = (int32_t)g_screen_h - DOCK_H;
-
-    for (int32_t row = y0; row < y1; row++) {
-        for (int32_t col = x0; col < x1; col++) {
-            uint32_t pix = src[(row - sy) * sw + (col - sx)];
-            /* Check alpha channel (top byte) */
-            uint8_t a = (uint8_t)(pix >> 24);
-            if (a == 0) continue;
-            if (a == 0xFF) {
-                draw_pixel(col, row, pix & 0x00FFFFFF);
-            } else {
-                /* Alpha blend with whatever was drawn already */
-                draw_pixel(col, row, blend(COL_DESKTOP, pix & 0x00FFFFFF, a));
-            }
-        }
+    /* Don't let the window draw over the dock strip at the bottom —
+     * clip the blitted height so it stops there, same as before. */
+    int32_t max_y1 = (int32_t)g_screen_h - (int32_t)DOCK_H;
+    uint32_t h = sh;
+    if (sy + (int32_t)h > max_y1) {
+        int32_t clipped = max_y1 - sy;
+        h = clipped > 0 ? (uint32_t)clipped : 0;
     }
+    if (h == 0) return;
+
+    /* One syscall blits the whole window — previously this looped
+     * over every pixel and issued a separate fb_pixel/fb_blend_pixel
+     * syscall per pixel, which for a typical window meant tens or
+     * hundreds of thousands of syscalls on every single redraw. */
+    fb_blit(sx, sy, sw, h, w->pixels, COL_DESKTOP);
 }
 
 /*  full composite frame  */
@@ -383,6 +371,31 @@ static void composite_frame(void)
 
     draw_dock();
     /* NOTE: NO fb_flip() here — caller draws cursor then flips once */
+}
+
+/*
+ * Lightweight composite for pure cursor movement: repaints windows +
+ * dock only, skipping draw_wallpaper()'s gradient (many per-pixel
+ * circle draws). The caller is responsible for erasing the old cursor
+ * glyph with a flat COL_DESKTOP patch first — any window/dock content
+ * that belongs on top of that patch gets redrawn here.
+ */
+static void composite_frame_light(void)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!g_windows[i].valid) continue;
+        if (i == g_focused) continue;
+        if (g_windows[i].flags & WIN_FLAG_DECORATED)
+            draw_window_chrome(&g_windows[i]);
+        blit_window(&g_windows[i]);
+    }
+    if (g_focused >= 0 && g_windows[g_focused].valid) {
+        window_t *fw = &g_windows[g_focused];
+        if (fw->flags & WIN_FLAG_DECORATED)
+            draw_window_chrome(fw);
+        blit_window(fw);
+    }
+    draw_dock();
 }
 
 /*  IPC message handlers  */
@@ -687,6 +700,13 @@ void main(void)
     _puts("[COMP] Screen "); _print_uint(g_screen_w);
     _puts("x"); _print_uint(g_screen_h); _println("");
 
+    /* Tell the kernel the compositor now owns the screen: this stops
+     * the kernel's PS/2 IRQ handler from drawing its own cursor
+     * directly onto the front buffer, which used to race with our
+     * composite_frame()+fb_flip() cycle and make the screen appear to
+     * jump/flicker every time the mouse moved. */
+    fb_console_set(0);
+
     /* Clear window table */
     _memset(g_windows, 0, sizeof(g_windows));
 
@@ -702,12 +722,24 @@ void main(void)
     fb_flip();
 
     int32_t prev_mx = 0, prev_my = 0, prev_btn = 0;
-    uint64_t frame_tick = 0;
+    /* Last real wall-clock tick (from uptime(), driven by the 100Hz
+     * PIT) a frame was actually painted. Gating on real elapsed time
+     * instead of counting loop iterations means the frame rate stays
+     * consistent regardless of how much other work (IPC drain,
+     * keyboard polling, yields) happened in a given pass through the
+     * loop — this is the "software VSync": there's no real vertical
+     * blank signal from the virtual framebuffer to sync to, so we pace
+     * against the timer tick instead of flipping as fast as possible. */
+    uint64_t last_frame_tick = 0;
     uint8_t  needs_full_redraw = 1;  /* full scene repaint needed */
     uint8_t  needs_cursor_update = 0; /* just move cursor, no scene rebuild */
 
     /* Track current mouse pos for cursor draw */
     int32_t cur_mx = 0, cur_my = 0;
+    /* Where the cursor glyph was actually painted last time — used to
+     * erase the old glyph. This is NOT the same as prev_mx/prev_my,
+     * which get updated to the new position before the redraw runs. */
+    int32_t drawn_cx = 0, drawn_cy = 0;
 
     for (;;) {
         /*  1. Drain IPC inbox (non-blocking)  */
@@ -771,10 +803,11 @@ void main(void)
             got_msg = 1;
         }
 
-        /*  3. Redraw  */
-        frame_tick++;
+        /*  3. Redraw — paced to real elapsed time, not loop iterations  */
+        uint64_t now = uptime();
+        int frame_due = (now - last_frame_tick) >= FRAME_TICKS;
 
-        if (needs_full_redraw && (frame_tick % FRAME_TICKS == 0)) {
+        if (needs_full_redraw && frame_due) {
             /* Full scene composite + cursor + single flip */
             composite_frame();
             draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
@@ -784,24 +817,39 @@ void main(void)
             fb_flip();
             needs_full_redraw  = 0;
             needs_cursor_update = 0;
+            drawn_cx = cur_mx; drawn_cy = cur_my;
+            last_frame_tick = now;
 
-        } else if (needs_cursor_update && (frame_tick % FRAME_TICKS == 0)) {
-            /* Cursor-only update — just flip current back-buffer with new cursor */
-            /* Repaint small patch around old cursor with background color */
-            draw_rect(prev_mx - 1, prev_my - 1, 12, 12, COL_DESKTOP);
-            /* Redraw any window pixels the old cursor was covering */
-            /* (simplified: just redraw entire scene since we need
-             *  to restore what was under the cursor anyway)        */
-            composite_frame();
+        } else if (needs_cursor_update && frame_due) {
+            /* Cursor-only update. Do NOT call the full composite_frame()
+             * here — it redraws the whole gradient wallpaper (~30
+             * per-pixel circle draws) on every single mouse-move event,
+             * which is what was making the whole screen appear to
+             * flicker/flash while the mouse moved. Instead: erase the
+             * cursor glyph at the position it was ACTUALLY last drawn
+             * (drawn_cx/drawn_cy, not prev_mx/prev_my — those are
+             * already updated to the new position by this point), then
+             * repaint only windows + dock (cheap) on top, then draw the
+             * cursor at its new spot. */
+            draw_rect(drawn_cx - 1, drawn_cy - 1, 12, 12, COL_DESKTOP);
+            composite_frame_light();
             draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
             draw_rect(cur_mx,     cur_my,     10, 2,  COL_TEXT_PRI);
             draw_rect(cur_mx + 1, cur_my + 1, 1,  8,  0x000000);
             draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
             fb_flip();
             needs_cursor_update = 0;
+            drawn_cx = cur_mx; drawn_cy = cur_my;
+            last_frame_tick = now;
         }
 
-        /*  4. Yield if nothing to do  */
+        /*  4. Idle policy: only give up our timeslice when there is
+         *  truly nothing to do. Yielding even while a redraw is
+         *  pending (as a previous version of this did) hands the CPU
+         *  to other runnable processes before we even get to check
+         *  frame_due, which starves our own mouse-poll loop whenever
+         *  anything else is runnable — that's what caused the
+         *  stutter/"stopping" feel. */
         if (!got_msg && !needs_full_redraw && !needs_cursor_update) yield();
     }
 }

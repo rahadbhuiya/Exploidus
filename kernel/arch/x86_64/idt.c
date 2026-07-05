@@ -1,6 +1,8 @@
 #include "idt.h"
 #include "drivers/vga.h"
 #include "drivers/serial.h"
+#include "../../proc/process.h"
+#include "../../proc/scheduler.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -78,13 +80,16 @@ void exception_handler(interrupt_frame_t *frame)
 {
     uint64_t vec = frame->int_num;
 
-    serial_print("\n[EXPLOIDUS KERNEL PANIC]\n");
-    serial_print("Exception: ");
+    /* RPL (bottom 2 bits of CS) == 3 means the fault happened while
+     * running userspace code, not kernel code. */
+    int user_fault = (frame->cs & 0x3) == 0x3;
+
+    serial_print("\n[EXPLOIDUS] Exception: ");
     if (vec < 32)
         serial_print(g_exception_names[vec]);
     else
         serial_print("Unknown");
-    serial_print("\n");
+    serial_print(user_fault ? " (userspace)\n" : " (KERNEL)\n");
 
     serial_print("RIP="); serial_printhex(frame->rip); serial_print("\n");
     serial_print("RSP="); serial_printhex(frame->rsp); serial_print("\n");
@@ -94,6 +99,32 @@ void exception_handler(interrupt_frame_t *frame)
         uint64_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
         serial_print("CR2="); serial_printhex(cr2); serial_print("\n");
+    }
+
+    /*
+     * Crash isolation: a fault caused by a userspace process (bad
+     * pointer, divide-by-zero, illegal instruction, etc.) should only
+     * kill that one process — the same way sys_exit() does — instead
+     * of taking the whole kernel down. A fault while running KERNEL
+     * code is a different story: kernel state may be corrupted, so
+     * there's nothing safe to do except halt, same as before.
+     */
+    if (user_fault && g_current_proc) {
+        serial_print("[EXPLOIDUS] Killing faulting process PID=");
+        serial_printhex(g_current_proc->pid);
+        serial_print(" — rest of the system continues.\n");
+
+        proc_exit(g_current_proc->pid, -(int)vec);
+        sched_yield();
+
+        /* sched_yield() only returns here if, for whatever reason,
+         * this (now-zombie) process is still "current" — it will
+         * never be scheduled again, so just wait for the timer IRQ
+         * to switch away, exactly like sys_exit() does. */
+        __asm__ volatile ("sti");
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
     }
 
     vga_puts("\n\n  *** KERNEL PANIC ***\n");
