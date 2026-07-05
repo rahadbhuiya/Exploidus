@@ -75,8 +75,9 @@ void fb_blend_pixel(uint32_t x, uint32_t y, uint32_t color, uint8_t alpha)
     if (alpha == 255) { fb_put_pixel(x, y, color); return; }
     if (alpha == 0)   return;
 
-    uint32_t *pixel = (uint32_t *)(uintptr_t)
-                      (g_fb.addr + y * g_fb.pitch + x * (g_fb.bpp / 8));
+    uint32_t *pixel = g_back_buf
+        ? (uint32_t *)(g_back_buf + y * g_fb.pitch + x * 4)
+        : (uint32_t *)(uintptr_t)(g_fb.addr + y * g_fb.pitch + x * (g_fb.bpp / 8));
     uint32_t bg = *pixel;
 
     uint8_t sr = (color >> 16) & 0xFF;
@@ -446,4 +447,93 @@ void fb_flip(void)
     if (!g_back_buf || !g_fb.active) return;
     uint64_t size = (uint64_t)g_fb.pitch * g_fb.height;
     __builtin_memcpy((void *)(uintptr_t)g_fb.addr, g_back_buf, size);
+}
+
+/*
+ * Blit a whole ARGB32 buffer (top byte = alpha) into the framebuffer
+ * at (dst_x, dst_y), width x height, in ONE kernel-space loop.
+ *
+ * This exists because the previous approach — the caller looping over
+ * every pixel of a window and issuing one fb_put_pixel/fb_blend_pixel
+ * *syscall* per pixel — meant a single 400x300 window redraw cost
+ * ~120,000 syscalls (context switches) every frame. That overhead is
+ * what was making window drag/redraw look laggy and "flickery": doing
+ * the same loop here costs one syscall total, with the per-pixel work
+ * done in kernel space where it's cheap.
+ */
+/*
+ * NOTE on "zero-copy": a compositor is fundamentally combining
+ * multiple surfaces (windows + wallpaper + cursor) into one image, so
+ * there's no way to hand the display hardware a client's buffer
+ * directly the way a fullscreen, undecorated single-surface app could
+ * — that only becomes possible with hardware overlay planes / a real
+ * GPU, which this kernel doesn't have a driver for. What we CAN do
+ * cheaply is avoid redundant work on the one copy that does have to
+ * happen: resolve the destination pointer once per row instead of
+ * re-deriving it (and re-checking bounds/back-buffer selection) on
+ * every single pixel via fb_put_pixel, and memcpy contiguous runs of
+ * fully-opaque pixels — the common case for most window content —
+ * directly instead of storing them one at a time.
+ */
+void fb_blit(int32_t dst_x, int32_t dst_y, uint32_t w, uint32_t h,
+             const uint32_t *src, uint32_t bg_color)
+{
+    if (!g_fb.active || !src) return;
+
+    uint8_t br  = (uint8_t)(bg_color >> 16);
+    uint8_t bgc = (uint8_t)(bg_color >> 8);
+    uint8_t bb  = (uint8_t)(bg_color);
+
+    uint32_t stride_px = g_fb.pitch / 4; /* dest pixels per row */
+
+    for (uint32_t row = 0; row < h; row++) {
+        int32_t py = dst_y + (int32_t)row;
+        if (py < 0 || (uint32_t)py >= g_fb.height) continue;
+
+        /* Resolve the destination row base pointer ONCE (not per pixel) */
+        uint32_t *dst_row = g_back_buf
+            ? (uint32_t *)g_back_buf + (uint64_t)py * stride_px
+            : (uint32_t *)(uintptr_t)(g_fb.addr + (uint64_t)py * g_fb.pitch);
+
+        const uint32_t *src_row = src + (uint64_t)row * w;
+
+        uint32_t col = 0;
+        while (col < w) {
+            int32_t px = dst_x + (int32_t)col;
+            if (px < 0 || (uint32_t)px >= g_fb.width) { col++; continue; }
+
+            uint32_t pix = src_row[col];
+            uint8_t  a   = (uint8_t)(pix >> 24);
+
+            if (a == 0) { col++; continue; }
+
+            if (a == 0xFF) {
+                /* Find how far this fully-opaque, in-bounds run goes
+                 * and copy it in one shot instead of pixel-by-pixel. */
+                uint32_t run_start = col;
+                while (col < w) {
+                    int32_t rp = dst_x + (int32_t)col;
+                    if (rp < 0 || (uint32_t)rp >= g_fb.width) break;
+                    if ((uint8_t)(src_row[col] >> 24) != 0xFF) break;
+                    col++;
+                }
+                uint32_t run_len = col - run_start;
+                __builtin_memcpy(&dst_row[dst_x + (int32_t)run_start],
+                                  &src_row[run_start],
+                                  (uint64_t)run_len * 4);
+                continue;
+            }
+
+            /* Semi-transparent pixel: blend against bg_color */
+            uint32_t color = pix & 0x00FFFFFF;
+            uint8_t sr = (uint8_t)(color >> 16);
+            uint8_t sg = (uint8_t)(color >> 8);
+            uint8_t sb = (uint8_t)(color);
+            uint8_t r  = (uint8_t)((sr * a + br  * (255 - a)) / 255);
+            uint8_t g  = (uint8_t)((sg * a + bgc * (255 - a)) / 255);
+            uint8_t b  = (uint8_t)((sb * a + bb  * (255 - a)) / 255);
+            dst_row[px] = fb_rgb(r, g, b);
+            col++;
+        }
+    }
 }

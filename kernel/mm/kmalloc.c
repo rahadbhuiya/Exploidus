@@ -1,4 +1,5 @@
 #include "kmalloc.h"
+#include "../sync/sync.h"
 #include <string.h>
 
 #define ALIGN_UP(x, a)  (((x) + (a) - 1) & ~((a) - 1))
@@ -18,11 +19,13 @@ typedef struct block_header {
 static block_header_t *g_heap_head = NULL;
 static uint64_t g_heap_start = 0;
 static uint64_t g_heap_end   = 0;
+static spinlock_t g_heap_lock;
 
 /*  INIT  */
 
 void kmalloc_init(uint64_t heap_start, uint64_t heap_size)
 {
+    spin_init(&g_heap_lock);
     g_heap_start = heap_start;
     g_heap_end   = heap_start + heap_size;
 
@@ -61,12 +64,15 @@ void *kmalloc(uint64_t size)
     if (size < MIN_ALLOC)
         size = MIN_ALLOC;
 
+    void *ret = NULL;
+    uint64_t irq_flags = spin_lock_irqsave(&g_heap_lock);
+
     block_header_t *cur = g_heap_head;
 
     while (cur) {
 
         if (!valid_hdr(cur))
-            return NULL;
+            goto out;
 
         if (cur->free && cur->size >= size) {
 
@@ -79,7 +85,7 @@ void *kmalloc(uint64_t size)
                     (block_header_t *)((uint8_t *)cur + HEADER_SIZE + size);
 
                 if (!in_heap(split))
-                    return NULL;
+                    goto out;
 
                 split->magic = HEAP_MAGIC;
                 split->size  = remaining - HEADER_SIZE;
@@ -93,14 +99,16 @@ void *kmalloc(uint64_t size)
             cur->free = 0;
 
             /* FIX 2: return cleaned pointer */
-            void *ret = (void *)((uint8_t *)cur + HEADER_SIZE);
-            return ret;
+            ret = (void *)((uint8_t *)cur + HEADER_SIZE);
+            goto out;
         }
 
         cur = cur->next;
     }
 
-    return NULL;
+out:
+    spin_unlock_irqrestore(&g_heap_lock, irq_flags);
+    return ret;
 }
 
 /*  CALLOC  */
@@ -126,11 +134,13 @@ void kfree(void *ptr)
     block_header_t *hdr =
         (block_header_t *)((uint8_t *)ptr - HEADER_SIZE);
 
+    uint64_t irq_flags = spin_lock_irqsave(&g_heap_lock);
+
     if (!valid_hdr(hdr))
-        return;
+        goto out;
 
     if (hdr->free)
-        return;
+        goto out;
 
     hdr->free = 1;
 
@@ -152,4 +162,7 @@ void kfree(void *ptr)
 
         cur = cur->next;
     }
+
+out:
+    spin_unlock_irqrestore(&g_heap_lock, irq_flags);
 }

@@ -23,6 +23,7 @@ extern void syscall_init_msr(void);
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
 #include "drivers/ata.h"
+#include "drivers/driver.h"
 #include "fs/vfs/vfs.h"
 #include "fs/exfs/exfs.h"
 #include "elf/elf.h"
@@ -168,12 +169,16 @@ static void kprint(const char *s)
 void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 {
     serial_init();
+    driver_register("serial");
+    driver_mark_initialized("serial");
     serial_print("\n");
     serial_print("==============================================\n");
     serial_print("  EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
     serial_print("==============================================\n");
 
     vga_init();
+    driver_register("vga");
+    driver_mark_initialized("vga");
     vga_set_color(10, 0);
 
     kprint("EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
@@ -229,18 +234,26 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[ATA ] Probing disk controller...\n");
     ata_init();
+    driver_register("ata");
+    driver_mark_initialized("ata");
 
     kprint("[KBD ] Registering PS/2 keyboard IRQ...\n");
     keyboard_init();
+    driver_register("keyboard");
+    driver_mark_initialized("keyboard");
 
     kprint("[MOUSE] Initializing PS/2 mouse...\n");
     mouse_init();
+    driver_register("mouse");
+    driver_mark_initialized("mouse");
 
     kprint("[VFS ] Initializing virtual filesystem layer...\n");
     vfs_init();
 
     kprint("[NET ] Initializing TCP/IP network stack...\n");
     net_init();
+    driver_register("e1000");
+    driver_mark_initialized("e1000");
     extern void arp_preload_qemu_gateway(void);
     arp_preload_qemu_gateway();
 
@@ -287,6 +300,8 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     }
 
     serial_print("[INIT] audit log active in kernel (auditd daemon deferred)\n");
+
+    driver_list_print();
 
     kprint("\nAll subsystems nominal.\n");
     kprint("Exploidus kernel ready.\n\n");

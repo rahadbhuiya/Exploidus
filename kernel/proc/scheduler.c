@@ -141,9 +141,13 @@ static void unblock_sleepers(void)
             p->wake_tick = 0;
             p->state     = PROC_READY;
             sched_enqueue(p);
-            serial_print("[SCHED] unblocked PID=");
-            serial_printhex((uint64_t)p->pid);
-            serial_print("\n");
+            /* NOTE: do NOT serial_print here. This function runs from
+             * the timer IRQ handler on every tick (100Hz) for every
+             * process that just woke up. serial_putc() busy-waits on
+             * real UART transmit timing (~90us/byte) — with interrupts
+             * effectively stalled for that whole time, every sleeping
+             * process waking up was enough to noticeably delay
+             * keyboard/mouse IRQs and scheduling system-wide. */
         }
     }
 }

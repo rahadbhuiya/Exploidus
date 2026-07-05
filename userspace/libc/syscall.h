@@ -607,3 +607,19 @@ static inline uint32_t kbd_owner_set(uint32_t pid)
 {
     return (uint32_t)syscall1(SYS_KBD_OWNER_SET, (uint64_t)pid);
 }
+
+#define SYS_FB_BLIT 71
+
+/*
+ * fb_blit — copy/alpha-blend a whole ARGB32 buffer into the
+ * framebuffer in one syscall, instead of one fb_pixel syscall per
+ * pixel. bg_color is used for blending semi-transparent pixels.
+ */
+static inline int64_t fb_blit(int32_t dst_x, int32_t dst_y,
+                               uint32_t w, uint32_t h,
+                               const uint32_t *src, uint32_t bg_color)
+{
+    return syscall6(SYS_FB_BLIT, (uint64_t)(int64_t)dst_x, (uint64_t)(int64_t)dst_y,
+                     (uint64_t)w, (uint64_t)h, (uint64_t)(uintptr_t)src,
+                     (uint64_t)bg_color);
+}
