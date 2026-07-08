@@ -24,6 +24,7 @@ extern void syscall_init_msr(void);
 #include "drivers/serial.h"
 #include "drivers/ata.h"
 #include "drivers/driver.h"
+#include "arch/x86_64/fpu.h"
 #include "fs/vfs/vfs.h"
 #include "fs/exfs/exfs.h"
 #include "elf/elf.h"
@@ -62,10 +63,26 @@ static void parse_framebuffer(uint64_t mb_info_phys)
     }
 }
 
+extern char _kernel_end[];
+
 static void parse_memory_map(uint64_t mb_info_phys,
                               uint64_t *out_base, uint64_t *out_size)
 {
-    *out_base = 0x200000;
+    /* Anything before the true end of the kernel's own loaded image
+     * (code + data + .bss, which includes the 4MB static heap array)
+     * is NOT free — handing it out to a process would let that
+     * process's memory silently alias and corrupt the running
+     * kernel's own state. The old hardcoded 0x200000 (2MB) cutoff
+     * was wrong: it didn't account for .bss/the heap array, so once
+     * a process needed enough physical pages (as Lua's ~60-page
+     * binary does, vs a handful for tiny test programs), PMM would
+     * eventually hand out a page that was still live kernel memory —
+     * exactly the kind of corruption that shows up later as an
+     * unrelated-looking kernel-mode page fault. */
+    uint64_t kernel_end = ((uint64_t)(uintptr_t)_kernel_end + 0xFFF) & ~0xFFFULL;
+    if (kernel_end < 0x200000) kernel_end = 0x200000; /* sane floor */
+
+    *out_base = kernel_end;
     *out_size = 0x4000000;
 
     if (!mb_info_phys) return;
@@ -88,8 +105,8 @@ static void parse_memory_map(uint64_t mb_info_phys,
                 if (e->type != MB2_MMAP_AVAILABLE) continue;
                 uint64_t base = e->base_addr;
                 uint64_t size = e->length;
-                if (base < 0x200000) {
-                    uint64_t skip = 0x200000 - base;
+                if (base < kernel_end) {
+                    uint64_t skip = kernel_end - base;
                     if (skip >= size) continue;
                     base += skip; size -= skip;
                 }
@@ -218,6 +235,11 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[CAP ] Seeding capability system (BLAKE3 + RDRAND)...\n");
     cap_subsystem_init();
+
+    kprint("[FPU ] Enabling SSE + capturing reset FXSAVE state...\n");
+    fpu_init();
+    driver_register("fpu");
+    driver_mark_initialized("fpu");
 
     kprint("[PROC] Initializing process table...\n");
     proc_init();

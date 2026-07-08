@@ -83,6 +83,18 @@ typedef struct process {
 
     /* GUI / IPC — added after sched_next so all prior offsets are unchanged */
     ipc_state_t   *ipc;            /* per-process IPC inbox, alloc'd at create */
+
+    /* Thread-local storage base (x86-64 FS segment base). Restored by
+     * the scheduler on every context switch via wrmsr so ported
+     * language runtimes (which almost universally expect TLS to work,
+     * even single-threaded) have somewhere to point %fs. Appended
+     * last for the same reason as ipc above — safe, no offset reuse. */
+    uint64_t       fs_base;
+
+    /* FXSAVE/FXRSTOR area (512 bytes, 16-byte aligned) — see
+     * kernel/arch/x86_64/fpu.h/.c. Appended last, same reasoning as
+     * ipc/fs_base above. */
+    uint8_t       *fpu_state;
 } process_t;
 
 void       proc_init(void);

@@ -8,9 +8,9 @@
 #include "syscall.h"
 
 /*  FILE objects for stdin/stdout/stderr  */
-static FILE _stdin  = { 0, 0, 0 };
-static FILE _stdout = { 1, 0, 0 };
-static FILE _stderr = { 2, 0, 0 };
+static FILE _stdin  = { 0, 0, 0, -1 };
+static FILE _stdout = { 1, 0, 0, -1 };
+static FILE _stderr = { 2, 0, 0, -1 };
 FILE *stdin  = &_stdin;
 FILE *stdout = &_stdout;
 FILE *stderr = &_stderr;
@@ -203,7 +203,7 @@ FILE *fopen(const char *path, const char *mode)
     if (fd < 0) return (FILE *)0;
     FILE *f = malloc(sizeof(FILE));
     if (!f) { close(fd); return (FILE *)0; }
-    f->fd = fd; f->error = 0; f->eof = 0;
+    f->fd = fd; f->error = 0; f->eof = 0; f->pushback = -1;
     return f;
 }
 
@@ -213,6 +213,145 @@ int fclose(FILE *f)
     int r = close(f->fd);
     free(f);
     return r;
+}
+
+/*
+ * freopen — closes the old fd and opens a new file into the SAME
+ * FILE* (matching the standard's contract). Exploidus doesn't
+ * distinguish text/binary mode (no CRLF translation ever happens),
+ * so this is mainly useful for Lua's precompiled-bytecode loading
+ * path (lauxlib.c reopens a script file in "rb" after detecting a
+ * binary signature) — functionally a no-op mode change here, but
+ * still needs to actually re-open the file correctly.
+ */
+FILE *freopen(const char *path, const char *mode, FILE *f)
+{
+    if (!f) return (FILE *)0;
+    close(f->fd); /* ignore close() errors, matching typical freopen behavior */
+
+    int flags = 0;
+    if (mode[0] == 'r') flags = 0;
+    else if (mode[0] == 'w') flags = 1;
+    else if (mode[0] == 'a') flags = 2;
+
+    int fd = open(path, flags);
+    if (fd < 0) { f->error = 1; return (FILE *)0; }
+
+    f->fd = fd; f->error = 0; f->eof = 0; f->pushback = -1;
+    return f;
+}
+
+/*
+ * tmpfile / tmpnam — no real /tmp convention or unlink-on-close in
+ * Exploidus's VFS yet, so these create a real file with a generated
+ * unique name; unlike POSIX tmpfile() it is NOT automatically deleted
+ * when closed (honest limitation — good enough for what Lua's
+ * io.tmpfile()/os.tmpname() are typically used for in scripts).
+ */
+static int g_tmp_counter = 0;
+
+char *tmpnam(char *s)
+{
+    static char buf[L_tmpnam];
+    char *p = s ? s : buf;
+    snprintf(p, L_tmpnam, "/tmp_%d.tmp", g_tmp_counter++);
+    return p;
+}
+
+FILE *tmpfile(void)
+{
+    char name[L_tmpnam];
+    tmpnam(name);
+    return fopen(name, "w");
+}
+
+/*
+ * system — Exploidus has no shell-command-execution path wired up
+ * for a non-interactive caller yet (spawn()/spawn_args() exist but
+ * launching + waiting on exploish with a one-off command line isn't
+ * implemented). Honest stub: report "not supported" rather than
+ * silently pretending success.
+ */
+int system(const char *cmd)
+{
+    if (!cmd) return 0; /* "is a command processor available?" -> no */
+    return -1;
+}
+
+int fgetc(FILE *f)
+{
+    if (f->pushback != -1) {
+        int c = f->pushback;
+        f->pushback = -1;
+        return c;
+    }
+    char c;
+    int64_t r = read(f->fd, &c, 1);
+    if (r <= 0) { f->eof = 1; return EOF; }
+    return (unsigned char)c;
+}
+
+int ungetc(int c, FILE *f)
+{
+    if (c == EOF) return EOF;
+    if (f->pushback != -1) return EOF; /* only one char of pushback supported */
+    f->pushback = (unsigned char)c;
+    f->eof = 0;
+    return (unsigned char)c;
+}
+
+void clearerr(FILE *f)
+{
+    f->error = 0;
+    f->eof = 0;
+}
+
+/*
+ * setvbuf — Exploidus's stdio does unbuffered fd-level I/O for every
+ * call already (see fread/fwrite/fgetc above), so there's no actual
+ * buffering mode to switch: accept any valid mode and succeed,
+ * matching the *behavior* callers asked for (or better) rather than
+ * genuinely implementing buffering.
+ */
+int setvbuf(FILE *f, char *buf, int mode, size_t size)
+{
+    (void)f; (void)buf; (void)size;
+    if (mode != _IONBF && mode != _IOFBF && mode != _IOLBF) return -1;
+    return 0;
+}
+
+int remove(const char *path)
+{
+    return unlink(path);
+}
+
+/*
+ * rename — no atomic rename syscall exists yet, so this is a
+ * best-effort copy-then-delete fallback: correct for regular files,
+ * just not atomic (a crash mid-rename could leave both copies, or
+ * neither, unlike a real rename()).
+ */
+int rename(const char *from, const char *to)
+{
+    FILE *src = fopen(from, "r");
+    if (!src) return -1;
+
+    FILE *dst = fopen(to, "w");
+    if (!dst) { fclose(src); return -1; }
+
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+        if (fwrite(buf, 1, n, dst) != n) {
+            fclose(src); fclose(dst);
+            return -1;
+        }
+    }
+
+    fclose(src);
+    fclose(dst);
+    unlink(from);
+    return 0;
 }
 
 size_t fread(void *buf, size_t sz, size_t n, FILE *f)

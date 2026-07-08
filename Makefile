@@ -23,7 +23,6 @@ SHELL_LDFLAGS := -T userspace/shell/shell.ld -nostdlib \
 # Shell-specific C flags (freestanding, no stdlib, debug info)
 SHELL_CFLAGS := -std=c11 -ffreestanding -fno-stack-protector \
                 -fPIC -mno-red-zone                            \
-                -mno-mmx -mno-sse -mno-sse2                   \
                 -Wall -Wextra -Werror -Wno-unused-parameter   \
                 -D__EXPLOIDUS_USERSPACE__                      \
                 -Iuserspace/libc -O2
@@ -35,13 +34,14 @@ KERNEL_C_SRCS := \
     kernel/main.c kernel/string.c \
     kernel/arch/x86_64/gdt.c kernel/arch/x86_64/idt.c \
     kernel/arch/x86_64/irq.c kernel/arch/x86_64/apic.c \
+    kernel/arch/x86_64/fpu.c \
     kernel/mm/pmm.c kernel/mm/vmm.c kernel/mm/kmalloc.c \
     kernel/cap/capability.c kernel/cap/broker.c \
     kernel/crypto/blake3.c kernel/audit/audit.c \
     kernel/proc/process.c kernel/proc/scheduler.c \
     kernel/proc/fork_exec.c kernel/syscall/table.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \
-    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c \
+    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c \
     kernel/fs/vfs/vfs.c kernel/fs/exfs/exfs.c \
     kernel/elf/elf.c \
     kernel/net/net.c kernel/net/netstack.c \
@@ -56,6 +56,7 @@ KERNEL_C_SRCS := \
     kernel/ipc/ipc.c \
     kernel/shm/shm.c \
     kernel/sync/sync.c \
+    kernel/sync/futex.c \
 
 KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \
@@ -67,6 +68,7 @@ KERNEL_ASM_SRCS := \
 
 SHELL_C_SRCS   := userspace/shell/exploish.c userspace/shell/exploish_cmds.c
 HELLO_C_SRCS   := userspace/bin/hello.c
+LUA_C_SRCS     := userspace/lua/lua-5.5.0/onelua.c
 AUDITD_C_SRCS  := userspace/bin/auditd.c
 INIT_C_SRCS    := userspace/bin/init.c
 HTTPD_C_SRCS   := userspace/bin/httpd.c
@@ -75,13 +77,21 @@ RAHU_C_SRCS    := userspace/bin/rahu.c
 COMP_C_SRCS    := userspace/compositor/compositor.c
 GUI_DEMO_C_SRCS := userspace/bin/gui_demo.c
 TERMINAL_C_SRCS := userspace/bin/terminal.c
-SHELL_ASM_SRCS := userspace/libc/crt0.asm
+SHELL_ASM_SRCS := userspace/libc/crt0.asm userspace/libc/setjmp.asm
 
 LIBC_C_SRCS := \
     userspace/libc/stdio.c  \
     userspace/libc/string.c \
     userspace/libc/stdlib.c \
-    userspace/libc/malloc.c
+    userspace/libc/malloc.c \
+    userspace/libc/math.c \
+    userspace/libc/errno.c \
+    userspace/libc/newlib_stubs.c \
+    userspace/libc/time.c \
+    userspace/libc/locale.c \
+    userspace/libc/signal.c \
+    userspace/libc/ctype.c \
+    userspace/libc/assert.c
 
 LIBC_OBJS := $(patsubst %.c, build/%.o, $(LIBC_C_SRCS))
 
@@ -90,6 +100,7 @@ KC_OBJS  := $(patsubst %.c,   build/%.o, $(KERNEL_C_SRCS))
 KA_OBJS  := $(patsubst %.asm, build/%.o, $(KERNEL_ASM_SRCS))
 SC_OBJS  := $(patsubst %.c,   build/%.o, $(SHELL_C_SRCS))
 HC_OBJS  := $(patsubst %.c,   build/%.o, $(HELLO_C_SRCS))
+LUA_OBJS := $(patsubst %.c,   build/%.o, $(LUA_C_SRCS))
 AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
 IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
 HT_OBJS  := $(patsubst %.c,   build/%.o, $(HTTPD_C_SRCS))
@@ -111,7 +122,7 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
+all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf
 
 build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/auditd.ld
 	@mkdir -p $(dir $@)
@@ -142,6 +153,12 @@ build/userspace/bin/hello.elf: $(BIN_OBJS) $(HC_OBJS) userspace/bin/hello.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  hello  -> $@"
 	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HC_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/lua/lua.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  lua    -> $@"
+	$(LD) -T userspace/lua/lua.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(LUA_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/auditd.ld
@@ -206,6 +223,14 @@ build/userspace/bin/%.o: userspace/bin/%.c
 	@mkdir -p $(dir $@)
 	@echo "[CC]  bin: $<"
 	$(CC) $(SHELL_CFLAGS) -c $< -o $@
+
+# Lua interpreter — onelua.c amalgamation, generic ISO-C fallback path
+# (no LUA_USE_LINUX/POSIX/WINDOWS defined). -Wno-error suppresses
+# warnings-as-errors from Lua's own code, which isn't ours to fix.
+build/userspace/lua/lua-5.5.0/%.o: userspace/lua/lua-5.5.0/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC]  lua: $<"
+	$(CC) $(SHELL_CFLAGS) -Wno-error -c $< -o $@
 
 # Compositor objects
 build/userspace/compositor/%.o: userspace/compositor/%.c
@@ -306,11 +331,11 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
+build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img
@@ -322,6 +347,7 @@ qemu-disk: build/exploidus.iso build/disk.img
 	    -m 256M \
 	    -device usb-ehci -device usb-tablet \
 	    -serial stdio \
+	    -accel kvm -accel tcg,thread=multi \
 	    -cpu qemu64,+rdrand \
 	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
 
@@ -335,6 +361,7 @@ qemu-gui: build/exploidus.iso build/disk.img
 	    -device usb-ehci -device usb-tablet \
 	    -vga virtio \
 	    -serial stdio \
+	    -accel kvm -accel tcg,thread=multi \
 	    -cpu qemu64,+rdrand \
 	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
 

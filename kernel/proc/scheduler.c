@@ -208,5 +208,37 @@ void sched_yield(void)
     if (next == prev)
         return;
 
+    /*
+     * Save/restore FPU-SSE state (FXSAVE/FXRSTOR) around the switch —
+     * same reasoning as the FS_BASE restore just above: done here in
+     * C, not in context_switch.asm, so the compiler resolves the
+     * fpu_state pointer's offset instead of it being hand-computed.
+     * Must happen before the FS_BASE/TLS restore is irrelevant here,
+     * but does need prev's save to happen while prev's FPU registers
+     * are still live (i.e. now, before anything below touches SSE —
+     * nothing here does).
+     */
+    if (prev && prev->fpu_state) {
+        __asm__ volatile ("fxsave (%0)" :: "r"(prev->fpu_state) : "memory");
+    }
+    if (next->fpu_state) {
+        __asm__ volatile ("fxrstor (%0)" :: "r"(next->fpu_state) : "memory");
+    }
+
+    /*
+     * Restore TLS base (FS_BASE MSR) for `next` before switching to it.
+     * Done here in C (compiler resolves the real struct offset) rather
+     * than in context_switch.asm, which hardcodes byte offsets for the
+     * fixed-layout prefix of process_t — fs_base was appended after
+     * that prefix specifically so nothing there needs to change.
+     * Safe to set before the actual switch: kernel code here doesn't
+     * use %fs itself, so changing it early doesn't affect `prev`.
+     */
+    {
+        uint32_t lo = (uint32_t)next->fs_base;
+        uint32_t hi = (uint32_t)(next->fs_base >> 32);
+        __asm__ volatile ("wrmsr" :: "c"(0xC0000100u), "a"(lo), "d"(hi));
+    }
+
     context_switch(prev, next);
 }

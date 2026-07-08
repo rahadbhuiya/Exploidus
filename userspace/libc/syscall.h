@@ -608,6 +608,68 @@ static inline uint32_t kbd_owner_set(uint32_t pid)
     return (uint32_t)syscall1(SYS_KBD_OWNER_SET, (uint64_t)pid);
 }
 
+#define SYS_SET_TLS 72
+
+/*
+ * set_tls — sets this process's thread-local-storage base (%fs).
+ * Native Exploidus syscall (not Linux's arch_prctl). A ported crt0/
+ * libc startup for any language runtime that needs TLS should call
+ * this once at startup with the address of its TLS block.
+ */
+static inline int64_t set_tls(uint64_t base)
+{
+    return syscall1(SYS_SET_TLS, base);
+}
+
+#define SYS_RTC_READ 75
+
+typedef struct {
+    uint16_t year;
+    uint8_t  month, day, hour, minute, second;
+} rtc_time_t;
+
+static inline void rtc_read(rtc_time_t *out)
+{
+    uint64_t packed = (uint64_t)syscall0(SYS_RTC_READ);
+    out->year   = (uint16_t)(packed >> 48);
+    out->month  = (uint8_t)(packed >> 40);
+    out->day    = (uint8_t)(packed >> 32);
+    out->hour   = (uint8_t)(packed >> 24);
+    out->minute = (uint8_t)(packed >> 16);
+    out->second = (uint8_t)(packed >> 8);
+}
+
+#define SYS_TTY_SET_RAW 76
+
+/*
+ * tty_set_raw(1) — opt this process out of kernel cooked-mode line
+ * editing (echo + backspace) for stdin, because it implements its own
+ * (like exploish's full line editor). tty_set_raw(0) opts back in.
+ * Everyone else gets normal terminal-style editing by default.
+ */
+static inline int64_t tty_set_raw(int raw)
+{
+    return syscall1(SYS_TTY_SET_RAW, (uint64_t)raw);
+}
+
+#define SYS_FUTEX_WAIT 73
+#define SYS_FUTEX_WAKE 74
+
+/*
+ * futex_wait/futex_wake — address-based wait/wake for building your
+ * own mutex/condvar/etc. on top, scoped to synchronization within
+ * your own process (see kernel/sync/futex.h for why).
+ */
+static inline void futex_wait(volatile uint32_t *addr, uint32_t expected)
+{
+    syscall2(SYS_FUTEX_WAIT, (uint64_t)(uintptr_t)addr, (uint64_t)expected);
+}
+
+static inline void futex_wake(volatile uint32_t *addr, uint32_t count)
+{
+    syscall2(SYS_FUTEX_WAKE, (uint64_t)(uintptr_t)addr, (uint64_t)count);
+}
+
 #define SYS_FB_BLIT 71
 
 /*
