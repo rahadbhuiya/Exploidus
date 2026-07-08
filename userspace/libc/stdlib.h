@@ -19,6 +19,7 @@ void  abort(void)    __attribute__((noreturn));
 int       atoi(const char *s);
 long      atol(const char *s);
 long long atoll(const char *s);
+double    strtod(const char *s, char **end);
 
 /* Sorting / searching */
 void  qsort(void *base, size_t nmemb, size_t size,

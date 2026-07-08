@@ -13,11 +13,17 @@ typedef struct {
     int fd;
     int error;
     int eof;
+    int pushback;      /* pending ungetc() char, or -1 if none */
 } FILE;
 
 extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
+
+#define BUFSIZ 512
+#define _IONBF 0
+#define _IOFBF 1
+#define _IOLBF 2
 
 /* printf family */
 int printf(const char *fmt, ...);
@@ -37,6 +43,11 @@ int fflush(FILE *f);
 
 /* File operations */
 FILE *fopen(const char *path, const char *mode);
+FILE *freopen(const char *path, const char *mode, FILE *f);
+FILE *tmpfile(void);
+#define L_tmpnam 32
+char *tmpnam(char *s);
+int   system(const char *cmd);
 int   fclose(FILE *f);
 size_t fread(void *buf, size_t sz, size_t n, FILE *f);
 size_t fwrite(const void *buf, size_t sz, size_t n, FILE *f);
@@ -46,6 +57,13 @@ int   feof(FILE *f);
 int   ferror(FILE *f);
 char *fgets(char *buf, int n, FILE *f);
 int   getchar(void);
+int   fgetc(FILE *f);
+#define getc(f) fgetc(f)
+int   ungetc(int c, FILE *f);
+void  clearerr(FILE *f);
+int   setvbuf(FILE *f, char *buf, int mode, size_t size);
+int   remove(const char *path);
+int   rename(const char *from, const char *to);
 
 /* Convenience macros */
 #define EOF (-1)

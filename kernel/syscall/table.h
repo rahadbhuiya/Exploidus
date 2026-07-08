@@ -77,8 +77,13 @@
 #define SYS_KBD_READ_NB    69   /* non-blocking keyboard read (1 char)  */
 #define SYS_KBD_OWNER_SET  70   /* set exclusive keyboard owner PID     */
 #define SYS_FB_BLIT        71   /* blit whole ARGB buffer in one call   */
+#define SYS_SET_TLS        72   /* set this process's FS_BASE (TLS pointer) */
+#define SYS_FUTEX_WAIT     73   /* block if *addr == expected */
+#define SYS_FUTEX_WAKE     74   /* wake up to N waiters on addr */
+#define SYS_RTC_READ       75   /* read CMOS real-time-clock date/time */
+#define SYS_TTY_SET_RAW    76   /* opt this pid out of kernel cooked-mode line editing */
 
-#define SYS_COUNT          72
+#define SYS_COUNT          77
 
 
 /*

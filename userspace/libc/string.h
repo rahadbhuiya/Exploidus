@@ -18,6 +18,11 @@ char  *strstr(const char *hay, const char *needle);
 char  *strdup(const char *s);
 char  *strtok(char *s, const char *delim);
 char  *strtok_r(char *s, const char *delim, char **saveptr);
+char  *strpbrk(const char *s, const char *accept);
+size_t strspn(const char *s, const char *accept);
+size_t strcspn(const char *s, const char *reject);
+int    strcoll(const char *a, const char *b);
+char  *strerror(int errnum);
 
 void  *memcpy(void *dst, const void *src, size_t n);
 void  *memmove(void *dst, const void *src, size_t n);

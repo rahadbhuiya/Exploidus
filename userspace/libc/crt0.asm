@@ -20,8 +20,10 @@ _start:
     lea  rsi, [rsp + 8]        ; argv
     lea  rdx, [rsi + rdi*8 + 8] ; envp
     call main
-    ; exit syscall (SYS_EXIT = 0)
-    xor  rdi, rdi      ; exit code = 0
+    ; exit syscall (SYS_EXIT = 0) — propagate main()'s real return
+    ; value (was hardcoded to 0 before, silently discarding it; Lua
+    ; and most real programs rely on this to signal success/failure)
+    mov  rdi, rax
     xor  rax, rax      ; SYS_EXIT = 0
     syscall
 .hang:

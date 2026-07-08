@@ -1696,6 +1696,11 @@ int main(void)
 {
     char line[256];
 
+    /* We do our own full line editing (history, cursor, arrow keys —
+     * see read_line() above) — opt out of the kernel's cooked-mode
+     * echo/backspace handling so it doesn't double up with ours. */
+    tty_set_raw(1);
+
     println("");
     println("Exploidus v0.1.0 -- exploish (Exploidus Interactive Shell)");
     println("Type 'help' for commands. Type 'exit' to quit.");

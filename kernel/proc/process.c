@@ -5,6 +5,7 @@
 #include "../drivers/serial.h"
 #include "../fs/vfs/vfs.h"
 #include "../ipc/ipc.h"
+#include "../arch/x86_64/fpu.h"
 #include <string.h>
 
 static process_t g_proc_table[MAX_PROCESSES];
@@ -85,6 +86,11 @@ process_t *proc_create(proc_intent_t intent, uint32_t parent_pid)
     p->ipc = ipc_alloc_state();
     /* Non-fatal if OOM — process will just have no IPC capability */
 
+    /* Allocate FPU/SSE state (FXSAVE area), reset-initialized */
+    p->fpu_state = fpu_alloc_state();
+    /* Non-fatal if OOM — process just can't safely use SSE yet;
+     * fpu_state NULL is checked before every FXSAVE/FXRSTOR */
+
     audit_record(AUDIT_PROC_FORK, p->pid, parent_pid, intent);
 
     serial_print("[PROC] created PID\n");
@@ -114,6 +120,12 @@ void proc_exit(uint32_t pid, int code)
     if (p->ipc) {
         ipc_free_state(p->ipc);
         p->ipc = NULL;
+    }
+
+    /* Release FPU state buffer */
+    if (p->fpu_state) {
+        fpu_free_state(p->fpu_state);
+        p->fpu_state = NULL;
     }
 
     /* Reclaim any fds this process never closed — otherwise the

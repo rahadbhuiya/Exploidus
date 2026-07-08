@@ -9,6 +9,8 @@ typedef signed int         int32_t;
 typedef signed long long   int64_t;
 typedef unsigned long long uintptr_t;
 typedef long long          intptr_t;
+typedef unsigned long long uintmax_t;
+typedef long long          intmax_t;
 
 #ifndef _SYSCALL_H_TYPES_DEFINED
 #define _SYSCALL_H_TYPES_DEFINED

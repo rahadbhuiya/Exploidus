@@ -194,3 +194,66 @@ long long strtoll(const char *s, char **end, int base)
 {
     return (long long)strtol(s, end, base);
 }
+
+char *strpbrk(const char *s, const char *accept)
+{
+    for (; *s; s++) {
+        for (const char *a = accept; *a; a++) {
+            if (*s == *a) return (char *)s;
+        }
+    }
+    return (char *)0;
+}
+
+size_t strspn(const char *s, const char *accept)
+{
+    size_t n = 0;
+    while (*s) {
+        const char *a = accept;
+        for (; *a; a++) if (*s == *a) break;
+        if (!*a) break; /* s char not found in accept */
+        n++; s++;
+    }
+    return n;
+}
+
+size_t strcspn(const char *s, const char *reject)
+{
+    size_t n = 0;
+    while (*s) {
+        const char *r = reject;
+        for (; *r; r++) if (*s == *r) break;
+        if (*r) break; /* s char found in reject */
+        n++; s++;
+    }
+    return n;
+}
+
+/* Exploidus only has the "C" locale, so collation == byte comparison. */
+int strcoll(const char *a, const char *b)
+{
+    return strcmp(a, b);
+}
+
+/* Minimal strerror — no per-errno message table, but returns a
+ * stable, non-null string (Lua's luaL_fileresult just wants
+ * something readable for error messages). */
+static char g_strerror_buf[32];
+char *strerror(int errnum)
+{
+    /* Reuse of sprintf-style formatting would need stdio.h here,
+     * creating a header-order dependency — keep this self-contained
+     * with simple manual itoa instead. */
+    const char *prefix = "error ";
+    size_t i = 0, n = 0;
+    while (prefix[i]) { g_strerror_buf[n++] = prefix[i++]; }
+
+    unsigned int v = (unsigned int)(errnum < 0 ? -errnum : errnum);
+    char digits[12]; int nd = 0;
+    if (v == 0) digits[nd++] = '0';
+    while (v > 0 && nd < (int)sizeof(digits)) { digits[nd++] = (char)('0' + v % 10); v /= 10; }
+    if (errnum < 0) g_strerror_buf[n++] = '-';
+    while (nd > 0) g_strerror_buf[n++] = digits[--nd];
+    g_strerror_buf[n] = '\0';
+    return g_strerror_buf;
+}

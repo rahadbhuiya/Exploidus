@@ -20,6 +20,8 @@
 #include "../ipc/ipc.h"
 #include "../drivers/fb_console.h"
 #include "../shm/shm.h"
+#include "../sync/futex.h"
+#include "../drivers/rtc.h"
 extern int64_t vfs_readdir(int fd, void *buf, uint64_t max);
 extern int vfs_create(const char *path, uint8_t type);
 #include "../mm/pmm.h"
@@ -101,6 +103,36 @@ extern bool keyboard_read(char *out);
  */
 static uint32_t g_kbd_owner = 0;
 
+/*
+ * g_console_raw_pid: pid (if any) that has opted OUT of the cooked-
+ * mode line editing below via SYS_TTY_SET_RAW — for a process (like
+ * exploish) that already does its own full echo/backspace/history
+ * line editing in userspace. Everyone else gets standard terminal
+ * canonical-mode behavior by default (see cooked-mode buffer below).
+ *
+ * Why this exists: before it, kernel_read() just handed back raw
+ * keyboard bytes with no echo and no backspace handling at all. That
+ * was invisible for exploish (which does its own full-screen editing
+ * and never noticed), but any ordinary program reading stdin the
+ * normal C way (Lua's REPL via fgetc(), for instance) got totally
+ * silent, uneditable input — typed characters never appeared, and a
+ * backspace became a literal byte embedded in the line instead of
+ * deleting the previous character, producing garbled input.
+ */
+static uint32_t g_console_raw_pid = 0;
+
+#define COOKED_BUF_SIZE 256
+static char g_cooked_buf[COOKED_BUF_SIZE];
+static int  g_cooked_len       = 0;  /* chars in the line being edited (not yet Enter'd) */
+static int  g_cooked_ready_len = 0;  /* length of a completed line waiting to be read, 0 = none */
+static int  g_cooked_read_pos  = 0;  /* how much of the ready line has been consumed so far */
+
+static void cooked_echo_putc(char c)
+{
+    if (fb_console_enabled()) fb_console_putc(c);
+    else vga_putc(c);
+}
+
 static int64_t kernel_read(int fd, void *buf, uint64_t len)
 {
     if (fd != 0) return -1;
@@ -114,18 +146,80 @@ static int64_t kernel_read(int fd, void *buf, uint64_t len)
         return 0;
     }
 
-    char    *p = (char *)buf;
-    uint64_t n = 0;
-    while (n == 0) {
-        while (n < len) {
-            char c;
-            if (!keyboard_read(&c)) break;
-            p[n++] = c;
+    bool raw = (g_current_proc && g_current_proc->pid == g_console_raw_pid);
+
+    if (raw) {
+        /* Old behavior, unchanged: hand back raw bytes, no echo/editing.
+         * This is what exploish opts into so its own line editor keeps
+         * working exactly as it did before this feature existed. */
+        char    *p = (char *)buf;
+        uint64_t n = 0;
+        while (n == 0) {
+            while (n < len) {
+                char c;
+                if (!keyboard_read(&c)) break;
+                p[n++] = c;
+            }
+            if (n == 0) {
+                __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            }
         }
-        if (n == 0) {
+        return (int64_t)n;
+    }
+
+    /* Cooked mode: echo + backspace-editable line buffering. */
+    char *p = (char *)buf;
+    uint64_t n = 0;
+
+    while (n == 0) {
+        /* Drain a completed line first, if one's waiting. */
+        if (g_cooked_ready_len > 0) {
+            while (n < len && g_cooked_read_pos < g_cooked_ready_len) {
+                p[n++] = g_cooked_buf[g_cooked_read_pos++];
+            }
+            if (g_cooked_read_pos >= g_cooked_ready_len) {
+                g_cooked_ready_len = 0;
+                g_cooked_read_pos  = 0;
+            }
+            if (n > 0) break;
+        }
+
+        /* No completed line yet — pull raw keys and edit the
+         * in-progress line until Enter completes one. */
+        bool got_key = false;
+        char c;
+        while (keyboard_read(&c)) {
+            got_key = true;
+            if (c == '\b' || c == 0x7F) {
+                if (g_cooked_len > 0) {
+                    g_cooked_len--;
+                    cooked_echo_putc('\b');
+                    cooked_echo_putc(' ');
+                    cooked_echo_putc('\b');
+                }
+                continue;
+            }
+            if (c == '\n' || c == '\r') {
+                cooked_echo_putc('\n');
+                if (g_cooked_len < COOKED_BUF_SIZE - 1) {
+                    g_cooked_buf[g_cooked_len++] = '\n';
+                }
+                g_cooked_ready_len = g_cooked_len;
+                g_cooked_read_pos  = 0;
+                g_cooked_len       = 0;
+                break; /* line complete — go drain it above */
+            }
+            if (g_cooked_len < COOKED_BUF_SIZE - 1) {
+                g_cooked_buf[g_cooked_len++] = c;
+                cooked_echo_putc(c);
+            }
+        }
+
+        if (!got_key) {
             __asm__ volatile ("sti; hlt; cli" ::: "memory");
         }
     }
+
     return (int64_t)n;
 }
 
@@ -551,6 +645,84 @@ static __attribute__((unused)) int64_t sys_fb_blit(syscall_frame_t *f)
     if (!uptr_ok(src, len)) return -1;
 
     fb_blit(dst_x, dst_y, w, h, (const uint32_t *)(uintptr_t)src, bg);
+    return 0;
+}
+
+/*
+ * sys_set_tls(base) — sets the calling process's thread-local-storage
+ * base (x86-64 FS_BASE). Native Exploidus syscall, not a Linux
+ * arch_prctl clone — deliberately simpler (always sets FS_BASE, no
+ * flag argument) since Exploidus doesn't need GS_BASE or the
+ * get-instead-of-set variants Linux's arch_prctl supports.
+ *
+ * Applied immediately via wrmsr (takes effect for the calling process
+ * right away) AND stored on process_t so the scheduler restores it on
+ * every future context switch back to this process.
+ */
+static __attribute__((unused)) int64_t sys_set_tls(syscall_frame_t *f)
+{
+    uint64_t base = f->rdi;
+    if (g_current_proc) g_current_proc->fs_base = base;
+
+    uint32_t lo = (uint32_t)base;
+    uint32_t hi = (uint32_t)(base >> 32);
+    __asm__ volatile ("wrmsr" :: "c"(0xC0000100u), "a"(lo), "d"(hi));
+    return 0;
+}
+
+/* sys_futex_wait(addr, expected) */
+static __attribute__((unused)) int64_t sys_futex_wait(syscall_frame_t *f)
+{
+    uint64_t addr     = f->rdi;
+    uint32_t expected = (uint32_t)f->rsi;
+    if (!uptr_ok(addr, 4)) return -1;
+    futex_wait(addr, expected);
+    return 0;
+}
+
+/* sys_futex_wake(addr, count) */
+static __attribute__((unused)) int64_t sys_futex_wake(syscall_frame_t *f)
+{
+    uint64_t addr  = f->rdi;
+    uint32_t count = (uint32_t)f->rsi;
+    if (!uptr_ok(addr, 4)) return -1;
+    futex_wake(addr, count);
+    return 0;
+}
+
+/*
+ * sys_rtc_read() — returns the CMOS RTC date/time packed into a
+ * single uint64: year(16) | month(8) | day(8) | hour(8) | min(8) | sec(8)
+ * Packing avoids needing a user-pointer-out-parameter + uptr_ok dance
+ * for six small fields.
+ */
+static __attribute__((unused)) int64_t sys_rtc_read(syscall_frame_t *f)
+{
+    (void)f;
+    rtc_time_t t;
+    rtc_read(&t);
+    uint64_t packed =
+        ((uint64_t)t.year   << 48) |
+        ((uint64_t)t.month  << 40) |
+        ((uint64_t)t.day    << 32) |
+        ((uint64_t)t.hour   << 24) |
+        ((uint64_t)t.minute << 16) |
+        ((uint64_t)t.second << 8);
+    return (int64_t)packed;
+}
+
+/*
+ * sys_tty_set_raw(raw) — opts the calling process out of (raw=1) or
+ * back into (raw=0) kernel-side cooked-mode line editing for stdin.
+ * exploish calls this once at startup since it already implements its
+ * own full line editor; every other program gets normal echo +
+ * backspace handling by default without needing to know this exists.
+ */
+static __attribute__((unused)) int64_t sys_tty_set_raw(syscall_frame_t *f)
+{
+    int raw = (int)f->rdi;
+    if (!g_current_proc) return -1;
+    g_console_raw_pid = raw ? g_current_proc->pid : 0;
     return 0;
 }
 
@@ -1121,6 +1293,11 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_KBD_READ_NB]    = sys_kbd_read_nb,
     [SYS_KBD_OWNER_SET]  = sys_kbd_owner_set,
     [SYS_FB_BLIT]        = sys_fb_blit,
+    [SYS_SET_TLS]        = sys_set_tls,
+    [SYS_FUTEX_WAIT]     = sys_futex_wait,
+    [SYS_FUTEX_WAKE]     = sys_futex_wake,
+    [SYS_RTC_READ]       = sys_rtc_read,
+    [SYS_TTY_SET_RAW]    = sys_tty_set_raw,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

@@ -4,6 +4,8 @@
 #include "stdlib.h"
 #include "string.h"
 #include "syscall.h"
+#include "ctype.h"
+#include "math.h"
 
 void exit(int code)
 {
@@ -80,3 +82,76 @@ char *getenv(const char *name)
 
 int  abs(int n)  { return n < 0 ? -n : n; }
 long labs(long n){ return n < 0 ? -n : n; }
+
+/*
+ * strtod — parses [sign] digits [. digits] [(e|E) [sign] digits],
+ * also accepting "inf"/"infinity"/"nan" (case-insensitive), matching
+ * the C standard's requirements. Precision is "good enough" (uses
+ * our own pow() for the exponent scaling) rather than
+ * bit-for-bit-correctly-rounded like a production libm's strtod —
+ * fine for a scripting language parsing source-code number literals.
+ */
+double strtod(const char *s, char **end)
+{
+    const char *p = s;
+    while (isspace((unsigned char)*p)) p++;
+
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+
+    /* inf / infinity / nan */
+    if ((p[0]=='i'||p[0]=='I') && (p[1]=='n'||p[1]=='N') && (p[2]=='f'||p[2]=='F')) {
+        const char *q = p + 3;
+        if ((q[0]=='i'||q[0]=='I') && (q[1]=='n'||q[1]=='N') &&
+            (q[2]=='i'||q[2]=='I') && (q[3]=='t'||q[3]=='T') &&
+            (q[4]=='y'||q[4]=='Y')) {
+            q += 5;
+        }
+        if (end) *end = (char *)q;
+        return neg ? -HUGE_VAL : HUGE_VAL;
+    }
+    if ((p[0]=='n'||p[0]=='N') && (p[1]=='a'||p[1]=='A') && (p[2]=='n'||p[2]=='N')) {
+        if (end) *end = (char *)(p + 3);
+        double zero = 0.0;
+        return zero / zero; /* NaN */
+    }
+
+    const char *digits_start = p;
+    double intpart = 0.0;
+    while (isdigit((unsigned char)*p)) { intpart = intpart * 10.0 + (*p - '0'); p++; }
+
+    double frac = 0.0, scale = 1.0;
+    if (*p == '.') {
+        p++;
+        while (isdigit((unsigned char)*p)) {
+            frac = frac * 10.0 + (*p - '0');
+            scale *= 10.0;
+            p++;
+        }
+    }
+
+    if (p == digits_start && *p != '.') {
+        /* no digits at all consumed — not a valid number */
+        if (end) *end = (char *)s;
+        return 0.0;
+    }
+
+    double result = intpart + frac / scale;
+
+    if (*p == 'e' || *p == 'E') {
+        const char *exp_start = p;
+        p++;
+        int exp_neg = 0;
+        if (*p == '+' || *p == '-') { exp_neg = (*p == '-'); p++; }
+        if (isdigit((unsigned char)*p)) {
+            int exp_val = 0;
+            while (isdigit((unsigned char)*p)) { exp_val = exp_val * 10 + (*p - '0'); p++; }
+            result *= pow(10.0, exp_neg ? -exp_val : exp_val);
+        } else {
+            p = exp_start; /* 'e'/'E' wasn't actually an exponent */
+        }
+    }
+
+    if (end) *end = (char *)p;
+    return neg ? -result : result;
+}

@@ -30,6 +30,9 @@ SECTIONS
         *(.bss*)
     }
 
+    . = ALIGN(4096);
+    _kernel_end = .;
+
     .debug_info    0 : { *(.debug_info)    }
     .debug_abbrev  0 : { *(.debug_abbrev)  }
     .debug_aranges 0 : { *(.debug_aranges) }
