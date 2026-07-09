@@ -82,8 +82,9 @@
 #define SYS_FUTEX_WAKE     74   /* wake up to N waiters on addr */
 #define SYS_RTC_READ       75   /* read CMOS real-time-clock date/time */
 #define SYS_TTY_SET_RAW    76   /* opt this pid out of kernel cooked-mode line editing */
+#define SYS_SIGACTION      77   /* register a signal handler with the kernel */
 
-#define SYS_COUNT          77
+#define SYS_COUNT          78
 
 
 /*

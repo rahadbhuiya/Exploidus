@@ -95,6 +95,11 @@ typedef struct process {
      * kernel/arch/x86_64/fpu.h/.c. Appended last, same reasoning as
      * ipc/fs_base above. */
     uint8_t       *fpu_state;
+
+    /* Registered signal handlers (userspace addresses), indexed by
+     * signal number — see kernel/arch/x86_64/idt.c for delivery.
+     * 0 = no handler registered (default action: kill the process). */
+    uint64_t       sig_handlers[16];
 } process_t;
 
 void       proc_init(void);
