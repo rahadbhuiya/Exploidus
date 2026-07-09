@@ -726,6 +726,23 @@ static __attribute__((unused)) int64_t sys_tty_set_raw(syscall_frame_t *f)
     return 0;
 }
 
+/*
+ * sys_sigaction(signum, handler_addr) — registers a userspace signal
+ * handler with the kernel, so idt.c's exception handler can redirect
+ * execution to it on a crash instead of unconditionally killing the
+ * process (see kernel/arch/x86_64/idt.c for the delivery side and its
+ * "handler must not return, only exit()" limitation).
+ */
+static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
+{
+    int      signum  = (int)f->rdi;
+    uint64_t handler = f->rsi;
+    if (!g_current_proc) return -1;
+    if (signum < 0 || signum >= 16) return -1;
+    g_current_proc->sig_handlers[signum] = handler;
+    return 0;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1298,6 +1315,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_FUTEX_WAKE]     = sys_futex_wake,
     [SYS_RTC_READ]       = sys_rtc_read,
     [SYS_TTY_SET_RAW]    = sys_tty_set_raw,
+    [SYS_SIGACTION]      = sys_sigaction,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

@@ -110,6 +110,48 @@ void exception_handler(interrupt_frame_t *frame)
      * there's nothing safe to do except halt, same as before.
      */
     if (user_fault && g_current_proc) {
+        /*
+         * Signal delivery: map the fault vector to the signal a real
+         * Unix would raise for it, and if the process registered a
+         * handler (via signal()), redirect execution there instead
+         * of killing it outright — same as real crash-handler
+         * semantics (log-and-exit, custom cleanup, etc.).
+         *
+         * Deliberate limitation: this does NOT support a handler
+         * that returns normally to resume the faulting code (that
+         * needs a full sigreturn trampoline, a bigger and riskier
+         * change) — a registered handler here is expected to end by
+         * calling exit() itself. If it doesn't, whatever runs after
+         * it falling off the end is undefined. Clear the handler
+         * before jumping to it so a second fault inside the handler
+         * itself falls through to the normal kill path instead of
+         * looping.
+         */
+        int sig = 0;
+        switch (vec) {
+            case 0:  sig = 8;  break; /* divide error -> SIGFPE  */
+            case 6:  sig = 4;  break; /* invalid opcode -> SIGILL */
+            case 13: sig = 11; break; /* GP fault -> SIGSEGV */
+            case 14: sig = 11; break; /* page fault -> SIGSEGV */
+            default: sig = 0;  break; /* no mapping -> default kill */
+        }
+
+        if (sig > 0 && sig < 16 && g_current_proc->sig_handlers[sig] != 0) {
+            uint64_t handler = g_current_proc->sig_handlers[sig];
+            g_current_proc->sig_handlers[sig] = 0; /* one-shot, see above */
+
+            serial_print("[EXPLOIDUS] Delivering signal ");
+            serial_printhex((uint64_t)sig);
+            serial_print(" to PID=");
+            serial_printhex(g_current_proc->pid);
+            serial_print(" handler=");
+            serial_printhex(handler);
+            serial_print("\n");
+
+            frame->rip = handler;
+            return; /* resumes userspace at the handler via IRET */
+        }
+
         serial_print("[EXPLOIDUS] Killing faulting process PID=");
         serial_printhex(g_current_proc->pid);
         serial_print(" — rest of the system continues.\n");

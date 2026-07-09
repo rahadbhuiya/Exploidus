@@ -652,6 +652,19 @@ static inline int64_t tty_set_raw(int raw)
     return syscall1(SYS_TTY_SET_RAW, (uint64_t)raw);
 }
 
+#define SYS_SIGACTION 77
+
+/*
+ * sigaction_raw — tells the kernel which userspace address to jump to
+ * when this process gets a given signal delivered on a hardware
+ * fault. Used internally by signal() in signal.c; most code should
+ * just call signal() instead.
+ */
+static inline int64_t sigaction_raw(int signum, uint64_t handler)
+{
+    return syscall2(SYS_SIGACTION, (uint64_t)signum, handler);
+}
+
 #define SYS_FUTEX_WAIT 73
 #define SYS_FUTEX_WAKE 74
 

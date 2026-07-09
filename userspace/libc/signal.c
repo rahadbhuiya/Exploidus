@@ -1,4 +1,5 @@
 #include "signal.h"
+#include "syscall.h"
 #include <stddef.h>
 
 #define MAX_SIGNALS 32
@@ -11,5 +12,15 @@ sighandler_t signal(int signum, sighandler_t handler)
     sighandler_t prev = g_handlers[signum];
     if (prev == NULL) prev = SIG_DFL; /* default until set otherwise */
     g_handlers[signum] = handler;
+
+    /* Tell the kernel too, so a hardware fault can actually redirect
+     * to this handler (see kernel/arch/x86_64/idt.c). SIG_DFL/SIG_IGN
+     * aren't real function addresses, so register 0 (no kernel-level
+     * handler) for those — default/kill behavior is what the kernel
+     * already does when nothing's registered. */
+    uint64_t kernel_handler =
+        (handler == SIG_DFL || handler == SIG_IGN) ? 0 : (uint64_t)(uintptr_t)handler;
+    sigaction_raw(signum, kernel_handler);
+
     return prev;
 }
