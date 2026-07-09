@@ -3,6 +3,7 @@
 #include <signal.h>
 
 /*
+
  * sigtest — verifies real signal delivery (kernel/arch/x86_64/idt.c)
  * actually works: registers a SIGSEGV handler, then deliberately
  * dereferences an invalid pointer. If the handler runs and exits
@@ -14,6 +15,7 @@
 
 void crash_handler(int sig)
 {
+
     printf("Caught signal %d! Handler is working.\n", sig);
     printf("Exiting cleanly from the handler (see the idt.c comment: \n");
     printf("handlers here must exit() themselves, not return).\n");
