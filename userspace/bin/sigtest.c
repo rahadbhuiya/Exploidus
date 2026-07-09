@@ -27,8 +27,11 @@ int main(void)
 
     printf("sigtest: about to dereference an invalid pointer on purpose...\n");
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
     volatile int *bad_ptr = (volatile int *)0x1;
     *bad_ptr = 42; /* deliberate crash: should trigger SIGSEGV */
+#pragma GCC diagnostic pop
 
     printf("sigtest: if you see this, the crash didn't happen — bug in the test.\n");
     return 1;
