@@ -157,10 +157,10 @@ build/userspace/bin/hello.elf: $(BIN_OBJS) $(HC_OBJS) userspace/bin/hello.ld
 	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HC_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/sigtest.elf: $(BIN_OBJS) $(ST_OBJS) userspace/bin/hello.ld
+build/userspace/bin/sigtest.elf: $(BIN_OBJS) $(ST_OBJS) userspace/bin/fixed.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  sigtest -> $@"
-	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(ST_OBJS)
+	$(LD) -T userspace/bin/fixed.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(ST_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/lua/lua.ld
