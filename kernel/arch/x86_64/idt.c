@@ -148,6 +148,7 @@ void exception_handler(interrupt_frame_t *frame)
             serial_printhex(handler);
             serial_print("\n");
 
+            frame->rdi = (uint64_t)sig; /* handler's first arg = signal number */
             frame->rip = handler;
             return; /* resumes userspace at the handler via IRET */
         }
