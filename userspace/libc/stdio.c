@@ -195,11 +195,19 @@ int snprintf(char *buf, size_t n, const char *fmt, ...)
 /*  File operations  */
 FILE *fopen(const char *path, const char *mode)
 {
-    int flags = 0;
-    if (mode[0] == 'r') flags = 0;      /* O_RDONLY */
-    else if (mode[0] == 'w') flags = 1; /* O_WRONLY */
-    else if (mode[0] == 'a') flags = 2; /* O_APPEND */
-    int fd = open(path, flags);
+    int flags;
+    if (mode[0] == 'r')      flags = O_RDONLY;
+    else if (mode[0] == 'w') flags = O_WRONLY | O_CREAT | O_TRUNC;
+    else if (mode[0] == 'a') flags = O_WRONLY | O_CREAT | O_APPEND;
+    else                     flags = O_RDONLY;
+
+    /* "r+"/"w+"/"a+" all mean read+write */
+    if (mode[1] == '+') {
+        flags &= ~(O_WRONLY);
+        flags |= O_RDWR;
+    }
+
+    int fd = open(path, (uint32_t)flags);
     if (fd < 0) return (FILE *)0;
     FILE *f = malloc(sizeof(FILE));
     if (!f) { close(fd); return (FILE *)0; }

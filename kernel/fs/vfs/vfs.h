@@ -22,6 +22,7 @@ typedef struct {
     int64_t    (*readdir)(vfs_node_t *dir, uint64_t offset, void *buf, uint64_t max);
     vfs_node_t *(*create) (vfs_node_t *dir, const char *name, uint8_t type);
     int      (*unlink)(vfs_node_t *dir, const char *name);
+    int      (*chmod) (vfs_node_t *node, uint32_t mode); /* persist mode to disk; NULL = unsupported */
 } vfs_ops_t;
 
 struct vfs_node {
@@ -32,6 +33,14 @@ struct vfs_node {
     const vfs_ops_t *ops;
     void            *fs_data;  /* filesystem-private pointer */
     vfs_node_t      *parent;
+
+    /* Unix-style permission bits (owner/group/other rwx), populated by
+     * whichever filesystem created this node. Default 0777 (fully
+     * permissive) for filesystems/pseudo-nodes that don't track modes,
+     * so this is purely additive — nothing that worked before is
+     * newly restricted unless a filesystem actually sets a tighter
+     * value (ExFS does, from its on-disk inode). */
+    uint32_t        mode;
 };
 
 void        vfs_init(void);
@@ -45,6 +54,7 @@ int         vfs_mount(const char *mountpoint, vfs_node_t *root);
 int64_t     vfs_readdir(int fd, void *buf, uint64_t max);
 int         vfs_create(const char *path, uint8_t type);
 int         vfs_unlink(const char *path);
+int         vfs_chmod(const char *path, uint32_t mode);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);
 vfs_node_t *vfs_get_cwd(void);

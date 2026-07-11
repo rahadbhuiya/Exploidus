@@ -260,3 +260,30 @@ A round of fixes to the GUI/compositor path and kernel core:
 - **QEMU acceleration**: `qemu-disk`/`qemu-gui` now pass
   `-accel kvm:tcg`, using KVM hardware acceleration when the host
   supports it (see Troubleshooting if `/dev/kvm` isn't available).
+
+## Known gotcha: function pointers + ASLR
+
+The ELF loader gives ET_EXEC binaries ASLR (random load base) by
+shifting the whole image, but doesn't process ELF relocations. Most
+code is fine — RIP-relative instructions self-correct under a pure
+shift — but an explicit function pointer **value** (a signal handler
+passed to `signal()`, a static table of callbacks, anything stored as
+data rather than computed at the call site) keeps its **link-time**
+(base-0) address instead of the real runtime one, and calling through
+it jumps to the wrong place.
+
+**Rule of thumb:** if your program takes the address of one of its own
+functions for any reason (`signal()`, callback tables, `qsort`/`bsearch`
+comparators stored somewhere, etc.), link it against
+`userspace/bin/fixed.ld` (fixed base, ASLR skipped) instead of
+`userspace/bin/hello.ld` (base 0, ASLR relocated). See `fixed.ld`'s own
+comments for the full explanation; `userspace/lua/lua.ld` and
+`userspace/bin/sigtest.c`'s build both use this pattern already.
+Programs that don't take function pointers (most simple utilities)
+don't need it and can keep using the ASLR'd base.
+
+The real, general fix — processing ELF relocations at load time so
+ASLR works correctly for everything — is a bigger, riskier change
+(switching to PIE binaries, `.rela.dyn`/`PT_DYNAMIC` parsing in the
+loader) that hasn't been done yet. `fixed.ld` is the safe workaround
+until it is.

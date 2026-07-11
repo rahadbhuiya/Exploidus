@@ -229,6 +229,15 @@ static int exfs_op_close(vfs_node_t *node)
     return 0;
 }
 
+static int exfs_op_chmod(vfs_node_t *node, uint32_t mode)
+{
+    exfs_node_data_t *nd = (exfs_node_data_t *)node->fs_data;
+    if (!nd) return -1;
+    nd->inode.mode = mode;
+    exfs_write_inode(nd->vol, nd->inode_num, &nd->inode);
+    return 0;
+}
+
 static int64_t exfs_op_read(vfs_node_t *node, uint64_t offset,
                              void *buf, uint64_t len)
 {
@@ -377,6 +386,7 @@ static vfs_node_t *exfs_op_lookup(vfs_node_t *dir, const char *name)
                 child->ops     = dir->ops;
                 child->fs_data = cnd;
                 child->parent  = dir;
+                child->mode    = child_inode.mode;
                 return child;
             }
 
@@ -506,6 +516,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     child->ops     = dir->ops;
     child->fs_data = cnd;
     child->parent  = dir;
+    child->mode    = new_inode.mode;
     return child;
 }
 
@@ -598,6 +609,7 @@ static const vfs_ops_t g_exfs_ops = {
     .readdir = exfs_op_readdir,
     .create  = exfs_op_create,
     .unlink  = exfs_op_unlink,
+    .chmod   = exfs_op_chmod,
 };
 
 
@@ -674,6 +686,7 @@ vfs_node_t *exfs_mount(uint32_t lba_base)
     root->ops     = &g_exfs_ops;
     root->fs_data = rnd;
     root->parent  = NULL;
+    root->mode    = rnd->inode.mode;
 
     serial_print("[ExFS] Root mounted\n");
     return root;
