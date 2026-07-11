@@ -165,6 +165,30 @@ int vfs_open(const char *path, uint32_t flags)
         return -1;
     }
 
+    /*
+     * Permission enforcement — this didn't exist before: node->mode
+     * was stored (set at file creation, see exfs.c) but nothing ever
+     * checked it, so any process could read or write any file
+     * regardless of its permission bits. Checks owner bits only —
+     * Exploidus doesn't have a multi-user/uid model yet, so "owner"
+     * is the only meaningful category right now.
+     */
+    {
+        uint32_t access = flags & 0x3; /* O_RDONLY=0, O_WRONLY=1, O_RDWR=2 */
+        bool wants_read  = (access == 0 /*O_RDONLY*/ || access == 2 /*O_RDWR*/);
+        bool wants_write = (access == 1 /*O_WRONLY*/ || access == 2 /*O_RDWR*/) ||
+                            (flags & 0x400 /*O_APPEND*/);
+
+        if (wants_read && !(node->mode & 0400)) {
+            if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+            return -1;
+        }
+        if (wants_write && !(node->mode & 0200)) {
+            if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+            return -1;
+        }
+    }
+
     for (int i = 3; i < VFS_MAX_FDS; i++) {
 
         if (!g_fds[i].active) {
@@ -363,6 +387,21 @@ int vfs_create(const char *path, uint8_t type)
 vfs_node_t *vfs_get_cwd(void)
 {
     return g_cwd;
+}
+
+int vfs_chmod(const char *path, uint32_t mode)
+{
+    vfs_node_t *node = vfs_lookup(path);
+    if (!node) return -1;
+
+    int result = -1;
+    if (node->ops && node->ops->chmod) {
+        result = node->ops->chmod(node, mode);
+        if (result == 0) node->mode = mode;
+    }
+
+    if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+    return result;
 }
 
 int vfs_unlink(const char *path)

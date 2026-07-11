@@ -121,6 +121,7 @@ static inline int64_t sleep_ticks(uint64_t t) { return syscall1(SYS_SLEEP,t); }
 #define O_RDWR    2
 #define O_CREAT   0x40
 #define O_TRUNC   0x200
+#define O_APPEND  0x400
 
 static inline int open(const char *path, int flags)
 {
@@ -663,6 +664,13 @@ static inline int64_t tty_set_raw(int raw)
 static inline int64_t sigaction_raw(int signum, uint64_t handler)
 {
     return syscall2(SYS_SIGACTION, (uint64_t)signum, handler);
+}
+
+#define SYS_CHMOD 78
+
+static inline int chmod(const char *path, uint32_t mode)
+{
+    return (int)syscall2(SYS_CHMOD, (uint64_t)(uintptr_t)path, (uint64_t)mode);
 }
 
 #define SYS_FUTEX_WAIT 73

@@ -743,6 +743,15 @@ static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
     return 0;
 }
 
+/* sys_chmod(path, mode) */
+static __attribute__((unused)) int64_t sys_chmod(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    uint32_t    mode = (uint32_t)f->rsi;
+    return vfs_chmod(path, mode);
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1316,6 +1325,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_RTC_READ]       = sys_rtc_read,
     [SYS_TTY_SET_RAW]    = sys_tty_set_raw,
     [SYS_SIGACTION]      = sys_sigaction,
+    [SYS_CHMOD]          = sys_chmod,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)
