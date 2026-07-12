@@ -673,6 +673,18 @@ static inline int chmod(const char *path, uint32_t mode)
     return (int)syscall2(SYS_CHMOD, (uint64_t)(uintptr_t)path, (uint64_t)mode);
 }
 
+#define SYS_RMDIR 79
+
+/*
+ * rmdir — removes an EMPTY directory. Returns -1 (not found / not a
+ * dir / read error), -2 (directory not empty), or -3 (target is not
+ * a directory) on failure — matching exfs_op_rmdir's return codes.
+ */
+static inline int rmdir(const char *path)
+{
+    return (int)syscall1(SYS_RMDIR, (uint64_t)(uintptr_t)path);
+}
+
 #define SYS_FUTEX_WAIT 73
 #define SYS_FUTEX_WAKE 74
 

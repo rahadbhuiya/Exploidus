@@ -101,6 +101,16 @@ void cmd_ext_mkdir(const char *path) {
     _print("created: "); _println(ap);
 }
 
+void cmd_ext_rmdir(const char *path) {
+    if (!*path) { _println("Usage: rmdir <dir>"); return; }
+    char ap[256]; _abs(path, ap, 256);
+    int r = rmdir(ap);
+    if (r == 0) { _print("removed: "); _println(ap); return; }
+    if (r == -2) { _println("rmdir: directory not empty"); return; }
+    if (r == -3) { _println("rmdir: not a directory"); return; }
+    _print("rmdir: failed: "); _println(ap);
+}
+
 void cmd_ext_rm(const char *path) {
     if (!*path) { _println("Usage: rm <file>"); return; }
     _println("rm: not yet implemented");
@@ -245,10 +255,11 @@ void cmd_ext_xxd(const char *path) {
     }
     close(fd);
 }
-/* 
+/*
  *  New Unix-style commands
- *  All use only Exploidus syscall wrappers — no Linux libc dependency.
- * ══════════════════════════════════════════════════════════════════════ */
+ *  All use only Exploidus syscall wrappers -- no Linux libc dependency.
+ * ==========================================================================
+ */
 
 /*  cat  */
 void cmd_ext_cat(const char *path)

@@ -752,6 +752,14 @@ static __attribute__((unused)) int64_t sys_chmod(syscall_frame_t *f)
     return vfs_chmod(path, mode);
 }
 
+/* sys_rmdir(path) — refuses non-empty directories (see vfs_rmdir/exfs_op_rmdir) */
+static __attribute__((unused)) int64_t sys_rmdir(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    return vfs_rmdir(path);
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1326,6 +1334,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_TTY_SET_RAW]    = sys_tty_set_raw,
     [SYS_SIGACTION]      = sys_sigaction,
     [SYS_CHMOD]          = sys_chmod,
+    [SYS_RMDIR]          = sys_rmdir,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

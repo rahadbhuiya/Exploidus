@@ -1561,6 +1561,8 @@ static void dispatch(const char *line)
         cmd_ext_hostname();
     } else if (str_starts(l, "mkdir ")) {
         cmd_ext_mkdir(skip_spaces(l + 6));
+    } else if (str_starts(l, "rmdir ")) {
+        cmd_ext_rmdir(skip_spaces(l + 6));
     } else if (str_starts(l, "rm ")) {
         cmd_ext_rm(skip_spaces(l + 3));
     } else if (str_eq(l, "free")) {

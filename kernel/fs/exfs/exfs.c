@@ -599,6 +599,106 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
     return -1;  /* not found */
 }
 
+/* Returns true if a directory inode has zero live entries in any of
+ * its allocated blocks (direct or indirect) — used by rmdir to
+ * refuse removing a non-empty directory. */
+static bool exfs_dir_is_empty(exfs_volume_t *vol, exfs_inode_t *in)
+{
+    static uint8_t buf[EXFS_BLOCK_SIZE];
+
+    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
+        if (!in->direct[b]) continue;
+        if (!exfs_read_block(vol, in->direct[b], buf)) return false; /* be safe: treat unreadable as non-empty */
+        uint64_t off = 0;
+        while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+            exfs_dirent_t *de = (exfs_dirent_t *)(buf + off);
+            if (de->inode_num) return false;
+            off += sizeof(exfs_dirent_t);
+        }
+    }
+
+    if (in->indirect) {
+        static uint8_t ind_buf[EXFS_BLOCK_SIZE];
+        if (exfs_read_block(vol, in->indirect, ind_buf)) {
+            uint64_t *ptrs = (uint64_t *)ind_buf;
+            uint64_t max_ptrs = EXFS_BLOCK_SIZE / sizeof(uint64_t);
+            for (uint64_t pi = 0; pi < max_ptrs; pi++) {
+                if (!ptrs[pi]) continue;
+                if (!exfs_read_block(vol, ptrs[pi], buf)) return false;
+                uint64_t off = 0;
+                while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+                    exfs_dirent_t *de = (exfs_dirent_t *)(buf + off);
+                    if (de->inode_num) return false;
+                    off += sizeof(exfs_dirent_t);
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+/*
+ * exfs_op_rmdir — removes an EMPTY directory. Refuses (-2) if it has
+ * any live entries, matching standard rmdir() semantics. Mirrors
+ * exfs_op_unlink's block-freeing/dirent-removal pattern, but for the
+ * file_type==1 (directory) case that unlink deliberately rejects.
+ */
+static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
+{
+    exfs_node_data_t *nd  = (exfs_node_data_t *)dir->fs_data;
+    exfs_volume_t    *vol = nd->vol;
+    exfs_inode_t     *din = &nd->inode;
+
+    uint64_t name_len = strlen(name);
+    if (!name_len || name_len > EXFS_NAME_MAX) return -1;
+    if (name_len == 1 && name[0] == '.') return -1;
+    if (name_len == 2 && name[0] == '.' && name[1] == '.') return -1;
+
+    static uint8_t block_buf[EXFS_BLOCK_SIZE];
+
+    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
+        if (!din->direct[b]) break;
+        if (!exfs_read_block(vol, din->direct[b], block_buf)) return -1;
+
+        uint64_t off = 0;
+        while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+            exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off);
+            if (!de->inode_num) { off += sizeof(exfs_dirent_t); continue; }
+
+            if (de->name_len == (uint16_t)name_len &&
+                memcmp(de->name, name, name_len) == 0)
+            {
+                if (de->file_type != 1) return -3; /* not a directory */
+
+                uint64_t child_ino = de->inode_num;
+                exfs_inode_t cin;
+                if (!exfs_read_inode(vol, child_ino, &cin)) return -1;
+
+                if (!exfs_dir_is_empty(vol, &cin)) return -2; /* not empty */
+
+                for (int db = 0; db < EXFS_DIRECT_BLOCKS; db++) {
+                    if (cin.direct[db]) exfs_free_block(vol, cin.direct[db]);
+                }
+                if (cin.indirect) exfs_free_block(vol, cin.indirect);
+
+                exfs_inode_t blank;
+                memset(&blank, 0, sizeof(blank));
+                exfs_write_inode(vol, child_ino, &blank);
+
+                memset(de, 0, sizeof(exfs_dirent_t));
+                exfs_write_block(vol, din->direct[b], block_buf);
+
+                return 0;
+            }
+
+            off += sizeof(exfs_dirent_t);
+        }
+    }
+
+    return -1; /* not found */
+}
+
 
 static const vfs_ops_t g_exfs_ops = {
     .open   = exfs_op_open,
@@ -609,6 +709,7 @@ static const vfs_ops_t g_exfs_ops = {
     .readdir = exfs_op_readdir,
     .create  = exfs_op_create,
     .unlink  = exfs_op_unlink,
+    .rmdir   = exfs_op_rmdir,
     .chmod   = exfs_op_chmod,
 };
 
