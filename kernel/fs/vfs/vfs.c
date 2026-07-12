@@ -443,6 +443,42 @@ int vfs_unlink(const char *path)
     return result;
 }
 
+int vfs_rmdir(const char *path)
+{
+    char parent[256]; int plen = 0;
+    const char *p = path;
+    const char *last_slash = path;
+    while (*p) { if (*p == '/') last_slash = p; p++; }
+    const char *name = (*last_slash == '/') ? last_slash + 1 : path;
+    if (!*name) return -1;
+    if (strlen(name) > VFS_NAME_MAX) return -1;
+
+    if (last_slash == path) {
+        parent[0] = '/'; parent[1] = '\0';
+    } else {
+        plen = (int)(last_slash - path);
+        if (plen >= 255) return -1;
+        for (int i = 0; i < plen; i++) parent[i] = path[i];
+        parent[plen] = '\0';
+    }
+
+    vfs_node_t *dir = vfs_lookup(parent);
+    if (!dir || dir->type != VFS_DIRECTORY) return -1;
+    if (!dir->ops || !dir->ops->rmdir) {
+        if (dir->parent != NULL) { kfree(dir->fs_data); kfree(dir); }
+        return -1;
+    }
+
+    int result = dir->ops->rmdir(dir, name);
+
+    if (dir->parent != NULL) {
+        kfree(dir->fs_data);
+        kfree(dir);
+    }
+
+    return result;
+}
+
 int vfs_chdir(const char *path)
 {
     static char abspath[512];
