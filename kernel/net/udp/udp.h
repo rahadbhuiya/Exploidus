@@ -13,6 +13,7 @@ typedef struct __attribute__((packed)) {
 /* Callback type for UDP listeners */
 typedef void (*udp_recv_fn)(netif_t *iface,
                              ip4_t src_ip, uint16_t src_port,
+                             uint16_t dst_port,
                              const uint8_t *data, uint16_t len);
 
 void udp_init(void);

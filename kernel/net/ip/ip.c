@@ -276,6 +276,24 @@ bool ip4_output(netif_t *iface, ip4_t dst_ip,
     hdr->dst          = htonl(dst_ip);
     hdr->checksum     = htons(inet_cksum(hdr, IP4_HDR_LEN));
 
+    /*
+     * Loopback: deliver straight to our own input path instead of
+     * transmitting over the wire. Without this, a packet addressed
+     * to 127.0.0.1 fell through to the normal ARP+Ethernet+NIC-
+     * transmit path below — but nothing on the network segment
+     * answers ARP for 127.0.0.1, so it was just dropped/never
+     * delivered. That silently broke ALL localhost communication
+     * (any socket connecting to 127.0.0.1, which is exactly the
+     * normal way to test the local stack without going over the
+     * network) even though ip4_input() already had loopback-address
+     * accept logic on the *receiving* side — packets just never
+     * actually got there.
+     */
+    if (dst_ip == IP4(127, 0, 0, 1)) {
+        ip4_input(iface, buf);
+        return true;
+    }
+
     /* Resolve next-hop MAC via ARP */
     ip4_t next_hop = dst_ip;
     /* If outside subnet, route via gateway */

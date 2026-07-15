@@ -88,6 +88,14 @@ typedef struct __attribute__((packed)) {
     char     name[EXFS_NAME_MAX + 1];
 } exfs_dirent_t;
 
+#define EXFS_CACHE_SIZE 64  /* 64 * 4096 = 256 KiB cache */
+
+typedef struct {
+    uint64_t block_idx;
+    bool     valid;
+    uint8_t  data[EXFS_BLOCK_SIZE];
+} exfs_cache_entry_t;
+
 /*
  * In-memory ExFS volume descriptor.
  */
@@ -96,6 +104,16 @@ typedef struct {
     uint8_t          *block_bitmap;  /* one bit per block */
     uint32_t          dev_lba_base;  /* LBA of first sector */
     bool              dirty;
+
+    /* Write-through block cache — every real disk block read before
+     * this was a full PIO ATA read (8 sectors) even for blocks
+     * re-read moments earlier (e.g. re-walking the same directory or
+     * inode-table block on every lookup). Write-through (not write-
+     * back) so there's no crash-consistency risk from caching: writes
+     * always hit disk immediately, the cache is purely a read
+     * accelerator. See exfs_read_block/exfs_write_block. */
+    exfs_cache_entry_t *cache;
+    uint32_t             cache_next_evict;
 } exfs_volume_t;
 
 /* Initialize ExFS on a block device starting at lba_base */

@@ -50,7 +50,7 @@ void udp_input(netif_t *iface, netbuf_t *buf, ip4_t src, ip4_t dst)
     /* Dispatch to registered listener */
     for (int i = 0; i < UDP_BINDINGS_MAX; i++) {
         if (g_bindings[i].active && g_bindings[i].port == dst_port) {
-            g_bindings[i].cb(iface, src, src_port, payload, payload_len);
+            g_bindings[i].cb(iface, src, src_port, dst_port, payload, payload_len);
             return;
         }
     }

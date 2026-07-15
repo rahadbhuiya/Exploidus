@@ -12,6 +12,17 @@
 static bool exfs_read_block(exfs_volume_t *vol, uint64_t block_idx,
                              void *buf)
 {
+    /* Cache check first — avoids a full PIO ATA read (8 sectors) for
+     * blocks that were recently read or written. */
+    if (vol->cache) {
+        for (uint32_t i = 0; i < EXFS_CACHE_SIZE; i++) {
+            if (vol->cache[i].valid && vol->cache[i].block_idx == block_idx) {
+                memcpy(buf, vol->cache[i].data, EXFS_BLOCK_SIZE);
+                return true;
+            }
+        }
+    }
+
     uint32_t base_lba = vol->dev_lba_base + (uint32_t)(block_idx * 8);
     uint8_t *dst      = (uint8_t *)buf;
     for (int s = 0; s < 8; s++) {
@@ -23,6 +34,17 @@ static bool exfs_read_block(exfs_volume_t *vol, uint64_t block_idx,
         }
         dst += ATA_SECTOR_SIZE;
     }
+
+    /* Populate the cache (simple round-robin eviction — good enough
+     * for a 64-entry cache; no access-frequency tracking needed). */
+    if (vol->cache) {
+        uint32_t slot = vol->cache_next_evict;
+        vol->cache_next_evict = (slot + 1) % EXFS_CACHE_SIZE;
+        vol->cache[slot].block_idx = block_idx;
+        vol->cache[slot].valid     = true;
+        memcpy(vol->cache[slot].data, buf, EXFS_BLOCK_SIZE);
+    }
+
     return true;
 }
 
@@ -40,6 +62,26 @@ static bool exfs_write_block(exfs_volume_t *vol, uint64_t block_idx,
         }
         src += ATA_SECTOR_SIZE;
     }
+
+    /* Write-through: keep any cached copy of this block in sync (or
+     * insert it) so a subsequent read doesn't return stale data. */
+    if (vol->cache) {
+        int slot = -1;
+        for (uint32_t i = 0; i < EXFS_CACHE_SIZE; i++) {
+            if (vol->cache[i].valid && vol->cache[i].block_idx == block_idx) {
+                slot = (int)i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            slot = (int)vol->cache_next_evict;
+            vol->cache_next_evict = ((uint32_t)slot + 1) % EXFS_CACHE_SIZE;
+        }
+        vol->cache[slot].block_idx = block_idx;
+        vol->cache[slot].valid     = true;
+        memcpy(vol->cache[slot].data, buf, EXFS_BLOCK_SIZE);
+    }
+
     return true;
 }
 
@@ -727,6 +769,14 @@ vfs_node_t *exfs_mount(uint32_t lba_base)
     if (!vol) return NULL;
 
     vol->dev_lba_base = lba_base;
+
+    /* Cache allocation failure is non-fatal — exfs_read_block/
+     * exfs_write_block both check vol->cache for NULL and just skip
+     * caching (falling back to always hitting disk) if it's not
+     * available, so a low-memory boot can still mount successfully,
+     * just without the speedup. */
+    vol->cache = kzalloc(sizeof(exfs_cache_entry_t) * EXFS_CACHE_SIZE);
+    vol->cache_next_evict = 0;
 
     /* Read superblock */
     static uint8_t sb_buf[EXFS_BLOCK_SIZE];
