@@ -49,14 +49,14 @@ static uint16_t dns_encode_name(const char *hostname, uint8_t *buf)
     return pos;
 }
 
-/* -----------------------------------------------------------------------
- * udp_bind callback — called from the interrupt/poll path when a UDP
- * packet arrives on DNS_SRC_PORT.
- * ----------------------------------------------------------------------- */
+/* 
+ udp_bind callback — called from the interrupt/poll path when a UDP
+ packet arrives on DNS_SRC_PORT.
+*/
 static void dns_recv_cb(netif_t *iface, ip4_t src_ip, uint16_t src_port,
-                        const uint8_t *data, uint16_t len)
+                        uint16_t dst_port, const uint8_t *data, uint16_t len)
 {
-    (void)iface; (void)src_ip; (void)src_port;
+    (void)iface; (void)src_ip; (void)src_port; (void)dst_port;
 
     /* Minimum DNS header: 12 bytes */
     if (len < 12) return;
@@ -129,9 +129,7 @@ static void dns_recv_cb(netif_t *iface, ip4_t src_ip, uint16_t src_port,
     g_dns_done = 1;  /* no A record found, but we did get a response */
 }
 
-/* -----------------------------------------------------------------------
- * Public API
- * ----------------------------------------------------------------------- */
+/* Public API */
 ip4_t dns_resolve(const char *hostname)
 {
     netif_t *iface = netif_default();

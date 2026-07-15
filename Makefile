@@ -70,6 +70,7 @@ SHELL_C_SRCS   := userspace/shell/exploish.c userspace/shell/exploish_cmds.c
 HELLO_C_SRCS   := userspace/bin/hello.c
 SIGTEST_C_SRCS := userspace/bin/sigtest.c
 CHMODTEST_C_SRCS := userspace/bin/chmodtest.c
+UDPTEST_C_SRCS := userspace/bin/udptest.c
 LUA_C_SRCS     := userspace/lua/lua-5.5.0/onelua.c
 AUDITD_C_SRCS  := userspace/bin/auditd.c
 INIT_C_SRCS    := userspace/bin/init.c
@@ -104,6 +105,7 @@ SC_OBJS  := $(patsubst %.c,   build/%.o, $(SHELL_C_SRCS))
 HC_OBJS  := $(patsubst %.c,   build/%.o, $(HELLO_C_SRCS))
 ST_OBJS  := $(patsubst %.c,   build/%.o, $(SIGTEST_C_SRCS))
 CT_OBJS  := $(patsubst %.c,   build/%.o, $(CHMODTEST_C_SRCS))
+UT_OBJS  := $(patsubst %.c,   build/%.o, $(UDPTEST_C_SRCS))
 LUA_OBJS := $(patsubst %.c,   build/%.o, $(LUA_C_SRCS))
 AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
 IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
@@ -126,7 +128,7 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf
+all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf
 
 build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/auditd.ld
 	@mkdir -p $(dir $@)
@@ -169,6 +171,12 @@ build/userspace/bin/chmodtest.elf: $(BIN_OBJS) $(CT_OBJS) userspace/bin/hello.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  chmodtest -> $@"
 	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(CT_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/udptest.elf: $(BIN_OBJS) $(UT_OBJS) userspace/bin/hello.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  udptest -> $@"
+	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(UT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/lua/lua.ld
@@ -347,11 +355,11 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf
+build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img

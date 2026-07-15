@@ -998,17 +998,35 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
     int sock=(int)net_socket(SOCK_TCP); if(sock<0) return -6;
     if(net_connect(sock,ip,port)<0){net_socket_close(sock);return -7;}
     char req[512]; uint32_t rlen=0;
-    const char *method="GET "; for(const char *s=method;*s;s++) req[rlen++]=*s;
-    for(const char *s=path;*s;s++) req[rlen++]=*s;
-    const char *ver=" HTTP/1.0\r\nHost: "; for(const char *s=ver;*s;s++) req[rlen++]=*s;
-    for(const char *s=host;*s;s++) req[rlen++]=*s;
-    const char *tail="\r\nConnection: close\r\n\r\n"; for(const char *s=tail;*s;s++) req[rlen++]=*s;
+#define REQ_APPEND(s) do { \
+        for (const char *_s = (s); *_s; _s++) { \
+            if (rlen >= sizeof(req) - 1) { net_socket_close(sock); return -9; } \
+            req[rlen++] = *_s; \
+        } \
+    } while (0)
+    REQ_APPEND("GET ");
+    REQ_APPEND(path);
+    REQ_APPEND(" HTTP/1.0\r\nHost: ");
+    REQ_APPEND(host);
+    REQ_APPEND("\r\nConnection: close\r\n\r\n");
+#undef REQ_APPEND
     net_send(sock,req,(uint16_t)rlen);
     static uint8_t rbuf[4096]; int64_t total=0; int headers_done=0; uint8_t hdr_buf[4]={0,0,0,0}; uint32_t empty_recvs=0;
     char status_line[32]; uint32_t status_len=0; int status_done=0; int http_status=0;
     while(1){
         int64_t n=net_recv(sock,rbuf,sizeof(rbuf));
-        if(n<=0){empty_recvs++;if(empty_recvs>500)break;continue;}
+        if(n<=0){
+            empty_recvs++;
+            if(empty_recvs>500)break;
+            /* Wait for the next interrupt (network data arriving,
+             * timer tick, ...) instead of immediately re-polling —
+             * this loop was busy-spinning up to 500 times back-to-back
+             * with nothing to yield the CPU, which could make the
+             * whole system sluggish for the duration of any HTTP
+             * request. Same wait idiom kernel_read() already uses. */
+            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            continue;
+        }
         empty_recvs=0;
         for(int64_t i=0;i<n;i++){
             uint8_t c=rbuf[i];
@@ -1080,11 +1098,18 @@ static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
     int sock=(int)net_socket(SOCK_TCP); if(sock<0){vfs_close(fd);return -6;}
     if(net_connect(sock,ip,port)<0){vfs_close(fd);net_socket_close(sock);return -7;}
     static char req[512]; uint32_t rlen=0;
-    const char *method="GET "; for(const char *s=method;*s;)req[rlen++]=*s++;
-    for(const char *s=path;*s;)req[rlen++]=*s++;
-    const char *ver=" HTTP/1.0\r\nHost: "; for(const char *s=ver;*s;)req[rlen++]=*s++;
-    for(const char *s=host;*s;)req[rlen++]=*s++;
-    const char *tail="\r\nConnection: close\r\n\r\n"; for(const char *s=tail;*s;)req[rlen++]=*s++;
+#define REQ_APPEND(s) do { \
+        for (const char *_s = (s); *_s; _s++) { \
+            if (rlen >= sizeof(req) - 1) { vfs_close(fd); net_socket_close(sock); return -10; } \
+            req[rlen++] = *_s; \
+        } \
+    } while (0)
+    REQ_APPEND("GET ");
+    REQ_APPEND(path);
+    REQ_APPEND(" HTTP/1.0\r\nHost: ");
+    REQ_APPEND(host);
+    REQ_APPEND("\r\nConnection: close\r\n\r\n");
+#undef REQ_APPEND
     net_send(sock,req,(uint16_t)rlen);
     static uint8_t rbuf[4096]; int64_t total=0; int headers_done=0; uint8_t hdr_buf[4]={0,0,0,0}; uint32_t empty_recvs=0;
     char status_line[32]; uint32_t status_len=0; int status_done=0; int http_status=0;
@@ -1092,7 +1117,15 @@ static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
     blake3_ctx_t hash_ctx; if(hash_out)blake3_init(&hash_ctx);
     while(1){
         int64_t n=net_recv(sock,rbuf,sizeof(rbuf));
-        if(n<=0){empty_recvs++;if(empty_recvs>500)break;continue;}
+        if(n<=0){
+            empty_recvs++;
+            if(empty_recvs>500)break;
+            /* Same fix as sys_http_get: wait for the next interrupt
+             * instead of busy-spinning up to 500 times with nothing
+             * to yield the CPU. */
+            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            continue;
+        }
         empty_recvs=0;
         for(int64_t i=0;i<n;i++){
             uint8_t c=rbuf[i];
