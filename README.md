@@ -2,7 +2,11 @@
 
 A custom x86-64 operating system kernel built from scratch.
 
+## About
 
+Exploidus is a personal operating system project developed in Bangladesh for operating system research and education.
+The project is built from scratch and continues to evolve with new kernel subsystems, userspace applications, networking, and graphics support.
+To the best of the author's knowledge, Exploidus is among the earliest publicly documented from-scratch operating system projects developed in Bangladesh. If you are aware of an earlier publicly documented project, please open an issue with supporting evidence.
 
 
 ## Demo
@@ -27,7 +31,7 @@ A custom x86-64 operating system kernel built from scratch.
   hardware driver initialized at boot
 - VFS + ExFS filesystem with provenance records
 - TCP/IP network stack (e1000, ARP, IP fragment reassembly, TCP, UDP, ICMP)
-- 72 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net/fb_blit)
+- 81 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net/fb_blit/sigaction/chmod/rmdir/rtc/futex/tls)
 - exploish interactive shell with real ps and audit commands
 - Userspace compositor (`alien` command) with double-buffered
   rendering, dirty-region-aware redraws, single-syscall window
@@ -149,7 +153,7 @@ Terminal 2:
     kernel/audit/          Ring-buffer audit log
     kernel/proc/           Process table, scheduler, fork/exec
     kernel/sync/           Spinlock, mutex, semaphore primitives
-    kernel/syscall/        72 syscalls
+    kernel/syscall/        81 syscalls
     kernel/drivers/        VGA, serial, keyboard, mouse, ATA, framebuffer,
                            driver.c (hardware driver registry)
     kernel/fs/vfs/         Virtual filesystem
@@ -261,7 +265,102 @@ A round of fixes to the GUI/compositor path and kernel core:
   `-accel kvm:tcg`, using KVM hardware acceleration when the host
   supports it (see Troubleshooting if `/dev/kvm` isn't available).
 
-## Known gotcha: function pointers + ASLR
+## Native Language-Porting Foundation + Lua 5.5.0
+
+Exploidus now has a real, working **Lua 5.5.0** port (`userspace/lua/`,
+run with `lua` from the shell) — the first third-party language
+runtime running on the OS. Built entirely on native Exploidus
+syscalls, not a Linux compatibility layer (see the syscall ABI
+discussion in project history for why). Getting there required a
+real libc foundation that mostly didn't exist before:
+
+- `setjmp`/`longjmp` (x86-64 asm), a real `<math.h>` (bit-trick +
+  Taylor-series based, no hardware libm dependency), `<errno.h>`,
+  `<ctype.h>`, `<assert.h>`, `<locale.h>`, real `<time.h>` (backed by
+  a new CMOS RTC driver, `kernel/drivers/rtc.c` — Exploidus had no
+  real calendar-time source before, only ticks-since-boot)
+- **FPU/SSE support**: userspace couldn't return a `double` at all
+  before (`-mno-sse` was set everywhere) — `kernel/arch/x86_64/fpu.c`
+  enables SSE and gives every process its own FXSAVE/FXRSTOR state,
+  saved/restored on every context switch
+- **Native `SYS_SET_TLS`** and **`SYS_FUTEX_WAIT`/`WAKE`** (intra-
+  process scope) for anything needing thread-local storage or a
+  wait/wake primitive to build synchronization on top of
+- A real PMM bug this surfaced: `parse_memory_map()` used a hardcoded
+  2MB "safe to allocate" cutoff that didn't account for the kernel's
+  own `.bss` (including its 4MB static heap array) extending well
+  past that — small test binaries never needed enough pages to hit
+  it, but Lua's ~60-page binary did, corrupting live kernel memory.
+  Fixed via a real `_kernel_end` linker symbol.
+- A second, general bug the Lua port surfaced: **any function pointer
+  in an ASLR-relocated binary holds its link-time address, not the
+  real runtime one** (the loader shifts binaries without processing
+  relocations) — see the dedicated section below.
+- **Real signal delivery**: `signal()` now actually works — a
+  hardware fault (SIGSEGV/SIGFPE/SIGILL) in a process with a
+  registered handler redirects execution there instead of always
+  killing the process. One-shot, and the handler must call `exit()`
+  itself (no sigreturn/resume support yet).
+- **Terminal echo + backspace-editable input**: `kernel_read()` had no
+  cooked-mode line editing at all — invisible while typing, and a
+  backspace became a literal embedded byte instead of deleting a
+  character. Fine for exploish (which does its own full editor) but
+  broke any ordinary program reading stdin normally (Lua's REPL,
+  `yolish`). New `SYS_TTY_SET_RAW` lets exploish opt out; everyone
+  else gets real echo/backspace by default now.
+
+## VFS / Filesystem
+
+- **Permission enforcement**: file mode bits were stored at creation
+  but never checked anywhere — any process could read/write any file
+  regardless of permissions. `vfs_open()` now actually enforces
+  owner read/write bits, and a new `chmod()` syscall lets you set
+  them.
+- **`rmdir()`**: was entirely missing (only `mkdir` existed). Refuses
+  non-empty directories.
+- **Write-through block cache**: ExFS did a full 8-sector PIO ATA read
+  for every single block access, even ones read moments earlier
+  (directory traversal, inode lookups). New 256 KiB write-through
+  cache in `exfs_volume_t`.
+- Fixed `fopen(path, "w")` never actually creating a new file — it
+  never passed `O_CREAT`, so it silently failed on any path that
+  didn't already exist. Not specific to any one program; anything
+  writing a new file via `fopen()` hit this.
+
+## Networking
+
+- Fixed busy-spin polling (no yield, up to 500 back-to-back retries)
+  and a silent stack-buffer-overflow risk in `http_get()`/
+  `http_download()`.
+- **UDP sockets could never receive any data, ever**: the
+  `net_socket(SOCK_UDP)` API's receive ring buffer existed but nothing
+  in the whole codebase ever wrote to it — went unnoticed because DNS
+  resolution bypasses the socket API via its own direct callback.
+  Bridged the two (`socket_udp_recv_cb` in `kernel/net/socket/socket.c`).
+- **No loopback interface existed**: `ip4_output()` had no special
+  case for `127.0.0.1` (or the interface's own IP) — such packets fell
+  through to real ARP+Ethernet+NIC transmission, which can never
+  succeed, so they were silently dropped. This broke all localhost
+  communication even though the *receiving* side already had
+  loopback-accept logic. Now delivers straight to `ip4_input()`
+  instead of transmitting, like a real OS's `lo` interface.
+- `net_connect()`/`net_recv()`'s TCP "timeout" was a loop-iteration
+  count, not real elapsed time (so it didn't reliably mean what it
+  claimed to). Converted to a real wall-clock deadline.
+
+## Process / Scheduling
+
+- Per-process CPU time accounting (`ticks_used`) was declared and
+  exposed via `ps`'s TICKS column but never actually incremented
+  anywhere — `ps` always showed 0. Now wired up in `sched_tick()`,
+  plus a CPU% column. Honest caveat: a process idly halted waiting
+  for keyboard input (`kernel_read()`'s wait loop) still counts as
+  "current" during that halt, so CPU% for an interactive shell reads
+  higher than its *actual* work would suggest — this is a real
+  scheduler-level idle-vs-running distinction Exploidus doesn't make
+  yet, not just a display bug.
+
+##  Known gotcha: function pointers + ASLR
 
 The ELF loader gives ET_EXEC binaries ASLR (random load base) by
 shifting the whole image, but doesn't process ELF relocations. Most

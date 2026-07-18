@@ -916,6 +916,8 @@ static __attribute__((unused)) int64_t sys_create(syscall_frame_t *f)
 extern uint64_t g_ticks;
 static __attribute__((unused)) int64_t sys_uptime(syscall_frame_t *f)
 { (void)f; return (int64_t)(g_ticks / 100); }
+static __attribute__((unused)) int64_t sys_uptime_ticks(syscall_frame_t *f)
+{ (void)f; return (int64_t)g_ticks; }
 static __attribute__((unused)) int64_t sys_poweroff(syscall_frame_t *f)
 {
     (void)f; serial_print("[SYS] Shutting down...\n");
@@ -1310,6 +1312,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_REBOOT]       = sys_reboot,
     [SYS_SPAWN]        = sys_spawn,
     [SYS_UPTIME]       = sys_uptime,
+    [SYS_UPTIME_TICKS] = sys_uptime_ticks,
     [SYS_MOUSE_POS]    = sys_mouse_pos,
     [SYS_FB_STR]       = sys_fb_str,
     [SYS_FB_PIXEL]     = sys_fb_pixel,
