@@ -441,7 +441,13 @@ static void cmd_ps(void)
 {
     proc_info_t procs[64];
     int64_t n = getprocs(procs, 64);
-    println("  PID  PPID  INTENT        ST  TICKS");
+    /* Raw tick count, not uptime()'s whole-seconds-truncated value —
+     * avoids the ~1s rounding margin that could otherwise show a
+     * process at just over 100%. */
+    uint64_t up = uptime_ticks();
+    if (up == 0) up = 1; /* avoid div-by-zero in the first tick of boot */
+
+    println("  PID  PPID  INTENT        ST  TICKS   CPU%");
     for (int64_t i = 0; i < n; i++) {
         print("  ");
         print_int((int64_t)procs[i].pid);
@@ -453,7 +459,15 @@ static void cmd_ps(void)
         print(state_name(procs[i].state));
         print("  ");
         print_int((int64_t)procs[i].ticks_used);
-        putc('\n');
+        print("   ");
+        /* one decimal place: (ticks_used*1000/up) gives per-mille,
+         * split into whole/tenths for a simple "N.N" display */
+        int64_t permille = (int64_t)((procs[i].ticks_used * 1000) / up);
+        if (permille > 1000) permille = 1000; /* clamp — see cmd_ps note above */
+        print_int(permille / 10);
+        putc('.');
+        print_int(permille % 10);
+        println("%");
     }
 }
 

@@ -155,6 +155,19 @@ static void unblock_sleepers(void)
 void sched_tick(void)
 {
     g_uptime_ticks++;
+
+    /*
+     * Per-process CPU time accounting — this field (ticks_used) was
+     * already declared on process_t and exposed to userspace via
+     * getprocs()/the 'ps' shell command's TICKS column, but nothing
+     * anywhere in the kernel ever incremented it, so 'ps' always
+     * showed 0 for every process no matter how much CPU it had
+     * actually used. Simple sampling: whichever process is current
+     * when each 100Hz timer tick fires gets credited one tick — the
+     * standard, lightweight way OS-level CPU-time accounting works.
+     */
+    if (g_current_proc) g_current_proc->ticks_used++;
+
     unblock_sleepers();
     unblock_waiters();
     /* Poll network on every tick so TCP/IP works while processes run */

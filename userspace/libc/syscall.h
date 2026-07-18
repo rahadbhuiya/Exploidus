@@ -314,6 +314,11 @@ static inline void mouse_pos(int32_t *x, int32_t *y, int32_t *btn)
 #define SYS_POWEROFF  32
 #define SYS_REBOOT    33
 static inline uint64_t uptime(void) { return (uint64_t)syscall0(SYS_UPTIME); }
+
+/* Raw 100Hz tick count (no whole-seconds truncation) — for precise
+ * CPU%-style math, since uptime() rounds down to whole seconds. */
+#define SYS_UPTIME_TICKS 80
+static inline uint64_t uptime_ticks(void) { return (uint64_t)syscall0(SYS_UPTIME_TICKS); }
 static inline void poweroff(void) { syscall0(SYS_POWEROFF); }
 static inline void reboot(void)   { syscall0(SYS_REBOOT); }
 
