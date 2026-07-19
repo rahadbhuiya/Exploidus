@@ -671,6 +671,21 @@ static inline int64_t sigaction_raw(int signum, uint64_t handler)
     return syscall2(SYS_SIGACTION, (uint64_t)signum, handler);
 }
 
+#define SYS_SIGRETURN 81
+
+/*
+ * sigreturn_raw -- tells the kernel to restore the register state it
+ * saved when it redirected execution into a signal handler, and
+ * resume the interrupted code. Called by sigreturn() in signal.c;
+ * most code should just call sigreturn() instead. Never returns on
+ * success (the kernel jumps straight back to the faulting
+ * instruction instead of returning through this syscall).
+ */
+static inline int64_t sigreturn_raw(void)
+{
+    return syscall0(SYS_SIGRETURN);
+}
+
 #define SYS_CHMOD 78
 
 static inline int chmod(const char *path, uint32_t mode)

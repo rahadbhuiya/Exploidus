@@ -62,6 +62,7 @@ KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \
     kernel/arch/x86_64/isr.asm \
     kernel/arch/x86_64/gdt_flush.asm \
+    kernel/arch/x86_64/sigreturn.asm \
     kernel/proc/context_switch.asm \
     kernel/proc/jump_userspace.asm \
     kernel/syscall/entry.asm

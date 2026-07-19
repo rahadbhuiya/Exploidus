@@ -22,6 +22,7 @@
 #include "../shm/shm.h"
 #include "../sync/futex.h"
 #include "../drivers/rtc.h"
+#include "../arch/x86_64/idt.h"
 extern int64_t vfs_readdir(int fd, void *buf, uint64_t max);
 extern int vfs_create(const char *path, uint8_t type);
 #include "../mm/pmm.h"
@@ -730,8 +731,9 @@ static __attribute__((unused)) int64_t sys_tty_set_raw(syscall_frame_t *f)
  * sys_sigaction(signum, handler_addr) — registers a userspace signal
  * handler with the kernel, so idt.c's exception handler can redirect
  * execution to it on a crash instead of unconditionally killing the
- * process (see kernel/arch/x86_64/idt.c for the delivery side and its
- * "handler must not return, only exit()" limitation).
+ * process (see kernel/arch/x86_64/idt.c for the delivery side). A
+ * handler can end by calling exit(), or by calling sigreturn() to
+ * resume the code the fault interrupted (see sys_sigreturn below).
  */
 static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
 {
@@ -741,6 +743,35 @@ static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
     if (signum < 0 || signum >= 16) return -1;
     g_current_proc->sig_handlers[signum] = handler;
     return 0;
+}
+
+/*
+ * sys_sigreturn() -- called by a userspace signal handler when it is
+ * done and wants to resume the code the fault interrupted, instead of
+ * calling exit(). Restores the full register state (including
+ * rip/rsp/rflags) idt.c saved at fault time and jumps straight back
+ * to the faulting instruction.
+ *
+ * This cannot return through the normal syscall path: entry.asm's
+ * epilogue only restores a handful of registers before sysret, not
+ * enough to resume arbitrary interrupted code. Instead it hands off
+ * to sigreturn_restore() (kernel/arch/x86_64/sigreturn.asm), which
+ * pops every register out of the saved frame and iret's back to
+ * userspace directly. That function never returns, so neither does
+ * this one on the success path.
+ */
+static __attribute__((unused)) int64_t sys_sigreturn(syscall_frame_t *f)
+{
+    (void)f;
+    if (!g_current_proc || !g_current_proc->sig_in_progress) {
+        return -1; /* not inside a handler, nothing to resume */
+    }
+
+    interrupt_frame_t restored = g_current_proc->sig_saved_frame;
+    g_current_proc->sig_in_progress = false;
+
+    sigreturn_restore(&restored);
+    __builtin_unreachable();
 }
 
 /* sys_chmod(path, mode) */
@@ -1371,6 +1402,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_SIGACTION]      = sys_sigaction,
     [SYS_CHMOD]          = sys_chmod,
     [SYS_RMDIR]          = sys_rmdir,
+    [SYS_SIGRETURN]      = sys_sigreturn,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

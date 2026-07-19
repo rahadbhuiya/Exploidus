@@ -117,15 +117,18 @@ void exception_handler(interrupt_frame_t *frame)
          * of killing it outright — same as real crash-handler
          * semantics (log-and-exit, custom cleanup, etc.).
          *
-         * Deliberate limitation: this does NOT support a handler
-         * that returns normally to resume the faulting code (that
-         * needs a full sigreturn trampoline, a bigger and riskier
-         * change) — a registered handler here is expected to end by
-         * calling exit() itself. If it doesn't, whatever runs after
-         * it falling off the end is undefined. Clear the handler
-         * before jumping to it so a second fault inside the handler
-         * itself falls through to the normal kill path instead of
-         * looping.
+         * The handler can end either way: it can call exit() itself,
+         * or it can call sigreturn() (see sys_sigreturn() in
+         * kernel/syscall/table.c and sigreturn_restore() in
+         * kernel/arch/x86_64/sigreturn.asm) to restore the full
+         * pre-fault register state and resume exactly where the fault
+         * happened. If the handler does neither and just falls off
+         * the end, whatever runs next is undefined, same risk as any
+         * signal handler that misbehaves.
+         *
+         * sig_in_progress guards the single saved-frame slot: a fault
+         * that happens while a handler is already running falls
+         * through to the normal kill path below instead of nesting.
          */
         int sig = 0;
         switch (vec) {
@@ -136,9 +139,12 @@ void exception_handler(interrupt_frame_t *frame)
             default: sig = 0;  break; /* no mapping -> default kill */
         }
 
-        if (sig > 0 && sig < 16 && g_current_proc->sig_handlers[sig] != 0) {
+        if (sig > 0 && sig < 16 && !g_current_proc->sig_in_progress &&
+            g_current_proc->sig_handlers[sig] != 0) {
             uint64_t handler = g_current_proc->sig_handlers[sig];
-            g_current_proc->sig_handlers[sig] = 0; /* one-shot, see above */
+
+            g_current_proc->sig_saved_frame = *frame;
+            g_current_proc->sig_in_progress = true;
 
             serial_print("[EXPLOIDUS] Delivering signal ");
             serial_printhex((uint64_t)sig);
