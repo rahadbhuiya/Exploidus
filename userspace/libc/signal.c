@@ -1,5 +1,6 @@
 #include "signal.h"
 #include "syscall.h"
+#include "stdlib.h"
 #include <stddef.h>
 
 #define MAX_SIGNALS 32
@@ -23,4 +24,14 @@ sighandler_t signal(int signum, sighandler_t handler)
     sigaction_raw(signum, kernel_handler);
 
     return prev;
+}
+
+void sigreturn(void)
+{
+    sigreturn_raw();
+
+    /* Only reached if the kernel refused the resume (no handler was
+     * actually in progress). There is no faulting context to go back
+     * to, so exit instead of returning into undefined state. */
+    exit(-1);
 }

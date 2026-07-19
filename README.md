@@ -360,7 +360,7 @@ real libc foundation that mostly didn't exist before:
   scheduler-level idle-vs-running distinction Exploidus doesn't make
   yet, not just a display bug.
 
-##  Known gotcha: function pointers + ASLR
+## Known gotcha: function pointers + ASLR
 
 The ELF loader gives ET_EXEC binaries ASLR (random load base) by
 shifting the whole image, but doesn't process ELF relocations. Most

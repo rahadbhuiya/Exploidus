@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "../cap/capability.h"
 #include "../ipc/ipc.h"     /* ipc_state_t */
+#include "../arch/x86_64/idt.h" /* interrupt_frame_t, for sig_saved_frame */
 
 #define MAX_PROCESSES     256
 #define MAX_CAPS_PER_PROC 64
@@ -100,6 +101,16 @@ typedef struct process {
      * signal number — see kernel/arch/x86_64/idt.c for delivery.
      * 0 = no handler registered (default action: kill the process). */
     uint64_t       sig_handlers[16];
+
+    /* Signal-resume state (see kernel/arch/x86_64/idt.c delivery and
+     * sys_sigreturn() in kernel/syscall/table.c). Only one saved
+     * frame slot exists, so sig_in_progress is the reentrancy guard:
+     * a fault that happens while a handler is already running always
+     * falls through to the kill path instead of nesting and
+     * clobbering the slot. Appended last, same reasoning as
+     * ipc/fs_base/fpu_state above: safe, no offset reuse. */
+    bool               sig_in_progress;
+    interrupt_frame_t  sig_saved_frame;
 } process_t;
 
 void       proc_init(void);
