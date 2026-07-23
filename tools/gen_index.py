@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gen_index.py — builds index.json for the rahu package registry.
+gen_index.py -- builds index.json for the rahu package registry.
 
 IMPORTANT: Exploidus's kernel/crypto/blake3.c is explicitly a
 "single-chunk" implementation (see its own comment: "Supports inputs
@@ -23,11 +23,16 @@ Usage:
 
 Defaults: packages_dir="packages", output_path="<packages_dir>/../index.json"
 
-Scans packages_dir for *.elf files and writes one line per package:
+Scans packages_dir for *.elf and *.fozu files and writes one line per
+package:
     <name> <64-char-hex-hash> - <size> bytes
 
+A .fozu file is a multi-file package archive (see tools/mkfozu.py); a
+bare .elf is still supported as a single-binary package installed
+straight to /bin/<name>, for backward compatibility.
+
 Serve the parent directory with: python3 -m http.server 9090
-(so /index.json and /packages/<name>.elf both resolve correctly)
+(so /index.json and /packages/<name>.fozu both resolve correctly)
 """
 import sys
 import os
@@ -152,13 +157,16 @@ def main():
 
     lines = []
     for fname in sorted(os.listdir(pkg_dir)):
-        if not fname.endswith(".elf"):
+        if not (fname.endswith(".elf") or fname.endswith(".fozu")):
             continue
         path = os.path.join(pkg_dir, fname)
         with open(path, "rb") as f:
             data = f.read()
         digest = kernel_blake3(data).hex()
-        name = fname[:-len(".elf")]
+        if fname.endswith(".fozu"):
+            name = fname[:-len(".fozu")]
+        else:
+            name = fname[:-len(".elf")]
         lines.append(f"{name} {digest} - {len(data)} bytes")
         flag = "  (over 1024B, kernel-quirk hash)" if len(data) > 1024 else ""
         print(f"  {name}: {len(data)} bytes -> {digest}{flag}")

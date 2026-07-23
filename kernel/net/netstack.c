@@ -99,5 +99,18 @@ void net_init(void)
 
 void net_poll(void)
 {
-    e1000_poll();
+    /*
+     * TEMPORARY: e1000_poll() is getting stuck in a cycle that never
+     * returns (observed via QEMU monitor: RIP parked forever at the
+     * E1000_RDH MMIO read right at the top of e1000_poll(), across
+     * multiple samples seconds apart, with interrupts still disabled
+     * -- meaning every timer tick calling this from sched_tick()
+     * never comes back, so no further tick can ever fire and the
+     * whole system freezes). Disabled here so fork()/kill()/signal
+     * work (which needs a live timer tick to schedule/wake sleeping
+     * processes) can be tested and verified independently of this.
+     * This is NOT a fix -- the actual e1000 bug still needs to be
+     * found and fixed, then this call restored.
+     */
+    (void)0;
 }

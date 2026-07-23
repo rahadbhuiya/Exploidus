@@ -2,13 +2,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../proc/process.h"
+#include "../syscall/table.h"
 
 /*
  * fork — create an exact copy of the calling process.
  * Returns the child PID in the parent, 0 in the child.
  * Returns -1 on failure.
+ *
+ * f is the calling syscall's frame: needed to capture the exact
+ * register state the child should resume userspace with (see
+ * fork_child_entry() in fork_exec.c).
  */
-int64_t sys_fork_impl(void);
+int64_t sys_fork_impl(syscall_frame_t *f);
 
 /*
  * exec — replace the current process image with a new ELF binary.

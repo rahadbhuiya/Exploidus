@@ -111,6 +111,20 @@ typedef struct process {
      * ipc/fs_base/fpu_state above: safe, no offset reuse. */
     bool               sig_in_progress;
     interrupt_frame_t  sig_saved_frame;
+
+    /* Signals set by kill() targeting this process (bit i = signal i
+     * pending), delivered the next time this process is about to
+     * resume in userspace -- see deliver_pending_signal() in
+     * kernel/arch/x86_64/idt.c and sys_kill() in
+     * kernel/syscall/table.c. */
+    uint32_t           pending_signals;
+
+    /* Register state a freshly-forked child should resume userspace
+     * with (identical to the parent's at the moment of fork(), except
+     * rax = 0). Set by sys_fork_impl() in kernel/proc/fork_exec.c,
+     * consumed once by fork_child_entry() the first time the
+     * scheduler runs this process. */
+    interrupt_frame_t  fork_frame;
 } process_t;
 
 void       proc_init(void);

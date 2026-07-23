@@ -87,8 +87,9 @@
 #define SYS_RMDIR          79   /* remove an empty directory */
 #define SYS_UPTIME_TICKS   80   /* raw 100Hz tick count, no seconds truncation */
 #define SYS_SIGRETURN      81   /* resume the code a signal handler interrupted */
+#define SYS_KILL           82   /* send a signal to another (or the same) process */
 
-#define SYS_COUNT          82
+#define SYS_COUNT          83
 
 
 /*

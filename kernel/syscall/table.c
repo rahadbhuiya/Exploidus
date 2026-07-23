@@ -236,7 +236,7 @@ static __attribute__((unused)) int64_t sys_exit(syscall_frame_t *f)
     for(;;) __asm__ volatile("hlt");
     return 0;
 }
-static __attribute__((unused)) int64_t sys_fork(syscall_frame_t *f)   { (void)f; return sys_fork_impl(); }
+static __attribute__((unused)) int64_t sys_fork(syscall_frame_t *f)   { return sys_fork_impl(f); }
 static __attribute__((unused)) int64_t sys_exec(syscall_frame_t *f)
 {
     if (!uptr_ok(f->rdi, f->rsi)) return -1;
@@ -772,6 +772,34 @@ static __attribute__((unused)) int64_t sys_sigreturn(syscall_frame_t *f)
 
     sigreturn_restore(&restored);
     __builtin_unreachable();
+}
+
+/*
+ * sys_kill(pid, sig) -- send a signal to another (or the same)
+ * process. This is a single-user system: any process may signal any
+ * other live process, there is no owner/uid check here (a
+ * multi-user build would check the caller's identity against the
+ * target's owner before allowing this).
+ *
+ * Delivery is not instant: this just marks the signal pending on the
+ * target and returns. It actually gets delivered the next time that
+ * process is about to resume in userspace, through the interrupt/IRQ
+ * return path (see deliver_pending_signal() in
+ * kernel/arch/x86_64/idt.c) -- in practice at most one timer tick
+ * away, including when a process signals itself.
+ */
+static __attribute__((unused)) int64_t sys_kill(syscall_frame_t *f)
+{
+    int pid = (int)(int64_t)f->rdi;
+    int sig = (int)(int64_t)f->rsi;
+
+    if (sig <= 0 || sig >= 16) return -1;
+
+    process_t *target = proc_get((uint32_t)pid);
+    if (!target || target->state == PROC_ZOMBIE) return -1; /* no such process */
+
+    target->pending_signals |= (1u << sig);
+    return 0;
 }
 
 /* sys_chmod(path, mode) */
@@ -1403,6 +1431,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_CHMOD]          = sys_chmod,
     [SYS_RMDIR]          = sys_rmdir,
     [SYS_SIGRETURN]      = sys_sigreturn,
+    [SYS_KILL]           = sys_kill,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

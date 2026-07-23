@@ -39,11 +39,20 @@ void sched_enqueue(process_t *p)
 
     /* Check if already in queue */
     { process_t *chk = g_queues[p->intent];
+      int guard = 0;
       while (chk) {
           if (chk == p) {
               return;
           }
           chk = chk->sched_next;
+          if (++guard > MAX_PROCESSES) {
+              serial_print("[DEBUG] sched_enqueue: CYCLE detected in queue (dedup scan), intent=");
+              serial_printhex((uint64_t)p->intent);
+              serial_print(" pid=");
+              serial_printhex(p->pid);
+              serial_print("\n");
+              return;
+          }
       }
     }
 
@@ -55,8 +64,18 @@ void sched_enqueue(process_t *p)
     }
 
     process_t *cur = g_queues[p->intent];
-    while (cur->sched_next)
+    int guard = 0;
+    while (cur->sched_next) {
         cur = cur->sched_next;
+        if (++guard > MAX_PROCESSES) {
+            serial_print("[DEBUG] sched_enqueue: CYCLE detected in queue (append scan), intent=");
+            serial_printhex((uint64_t)p->intent);
+            serial_print(" pid=");
+            serial_printhex(p->pid);
+            serial_print("\n");
+            return;
+        }
+    }
 
     cur->sched_next = p;
 }
@@ -141,7 +160,7 @@ static void unblock_sleepers(void)
             p->wake_tick = 0;
             p->state     = PROC_READY;
             sched_enqueue(p);
-            /* NOTE: do NOT serial_print here. This function runs from
+            /* NOTE: do NOT serial_print here unconditionally. This runs from
              * the timer IRQ handler on every tick (100Hz) for every
              * process that just woke up. serial_putc() busy-waits on
              * real UART transmit timing (~90us/byte) — with interrupts
