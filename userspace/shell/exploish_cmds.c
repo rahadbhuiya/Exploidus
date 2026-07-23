@@ -131,10 +131,23 @@ void cmd_ext_uptime(void) {
 }
 
 void cmd_ext_kill(const char *args) {
-    if (!*args) { _println("Usage: kill <pid>"); return; }
+    if (!*args) { _println("Usage: kill <pid> [signal]"); return; }
     int64_t pid = 0;
     while (*args >= '0' && *args <= '9') pid = pid*10 + (*args++ - '0');
-    _print("kill: sent signal to PID "); _print_int(pid); _println(" (stub)");
+
+    args = _skip(args);
+    int64_t sig = 15; /* default: SIGTERM-equivalent */
+    if (*args) {
+        sig = 0;
+        while (*args >= '0' && *args <= '9') sig = sig*10 + (*args++ - '0');
+    }
+
+    if (kill_raw((int)pid, (int)sig) != 0) {
+        _print("kill: no such process: "); _print_int(pid); _println("");
+        return;
+    }
+    _print("kill: sent signal "); _print_int(sig);
+    _print(" to PID "); _print_int(pid); _println("");
 }
 
 void cmd_ext_ifconfig(void) {

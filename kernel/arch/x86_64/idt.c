@@ -76,6 +76,31 @@ static const char *g_exception_names[32] = {
     "Reserved"
 };
 
+/*
+ * Redirects frame to a userspace signal handler for sig, saving the
+ * full pre-delivery register state first so sigreturn() can restore
+ * it and resume exactly here later. Caller must already have checked
+ * sig_in_progress and that handler != 0. Shared by fault-triggered
+ * delivery (exception_handler below) and kill()-triggered delivery
+ * (deliver_pending_signal below).
+ */
+static void deliver_signal_to_handler(interrupt_frame_t *frame, int sig, uint64_t handler)
+{
+    g_current_proc->sig_saved_frame = *frame;
+    g_current_proc->sig_in_progress = true;
+
+    serial_print("[EXPLOIDUS] Delivering signal ");
+    serial_printhex((uint64_t)sig);
+    serial_print(" to PID=");
+    serial_printhex(g_current_proc->pid);
+    serial_print(" handler=");
+    serial_printhex(handler);
+    serial_print("\n");
+
+    frame->rdi = (uint64_t)sig; /* handler's first arg = signal number */
+    frame->rip = handler;
+}
+
 void exception_handler(interrupt_frame_t *frame)
 {
     uint64_t vec = frame->int_num;
@@ -141,21 +166,7 @@ void exception_handler(interrupt_frame_t *frame)
 
         if (sig > 0 && sig < 16 && !g_current_proc->sig_in_progress &&
             g_current_proc->sig_handlers[sig] != 0) {
-            uint64_t handler = g_current_proc->sig_handlers[sig];
-
-            g_current_proc->sig_saved_frame = *frame;
-            g_current_proc->sig_in_progress = true;
-
-            serial_print("[EXPLOIDUS] Delivering signal ");
-            serial_printhex((uint64_t)sig);
-            serial_print(" to PID=");
-            serial_printhex(g_current_proc->pid);
-            serial_print(" handler=");
-            serial_printhex(handler);
-            serial_print("\n");
-
-            frame->rdi = (uint64_t)sig; /* handler's first arg = signal number */
-            frame->rip = handler;
+            deliver_signal_to_handler(frame, sig, g_current_proc->sig_handlers[sig]);
             return; /* resumes userspace at the handler via IRET */
         }
 
@@ -188,6 +199,67 @@ void exception_handler(interrupt_frame_t *frame)
 
 extern void irq_dispatch(interrupt_frame_t *frame);
 
+/*
+ * Checks for a signal marked pending by kill() (kernel/syscall/table.c
+ * sys_kill()) on the process about to resume userspace through this
+ * exact frame, and either redirects it to a registered handler or, if
+ * none is registered, kills the process the same way an unhandled
+ * fault does.
+ *
+ * Called from interrupt_handler() after every interrupt/exception/
+ * IRQ, right before control returns to whichever process is now
+ * current. That may not be whoever originally took the interrupt, if
+ * irq_dispatch() below caused a context switch -- but g_current_proc
+ * and frame stay correctly paired across that, since each process's
+ * own saved frame lives on its own kernel stack and this code only
+ * runs again, for that process, once the scheduler resumes that same
+ * suspended call chain.
+ *
+ * Only fires for a frame returning to ring 3: a kernel-mode return
+ * has no userspace handler to redirect to.
+ */
+static void deliver_pending_signal(interrupt_frame_t *frame)
+{
+    if (!g_current_proc) return;
+    if ((frame->cs & 0x3) != 0x3) return;          /* returning to kernel, not user */
+    if (g_current_proc->sig_in_progress) return;    /* one saved-frame slot, see above */
+    if (g_current_proc->pending_signals == 0) return;
+
+    int sig = 0;
+    for (int i = 1; i < 16; i++) {
+        if (g_current_proc->pending_signals & (1u << i)) { sig = i; break; }
+    }
+    if (sig == 0) return;
+
+    g_current_proc->pending_signals &= ~(1u << sig);
+
+    uint64_t handler = g_current_proc->sig_handlers[sig];
+    if (handler != 0) {
+        deliver_signal_to_handler(frame, sig, handler);
+        return;
+    }
+
+    /* No handler registered: default action is to terminate, same as
+     * an unhandled fault (see exception_handler above). */
+    serial_print("[EXPLOIDUS] Killing PID=");
+    serial_printhex(g_current_proc->pid);
+    serial_print(" on unhandled signal ");
+    serial_printhex((uint64_t)sig);
+    serial_print(" -- rest of the system continues.\n");
+
+    proc_exit(g_current_proc->pid, -(128 + sig));
+    sched_yield();
+
+    /* Same fallback as exception_handler's kill path: this should
+     * never be reached, but wait for the timer IRQ to switch away
+     * instead of falling through into undefined state if it somehow
+     * is. */
+    __asm__ volatile ("sti");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}
+
 void interrupt_handler(interrupt_frame_t *frame)
 {
     if (frame->int_num < 32) {
@@ -195,6 +267,8 @@ void interrupt_handler(interrupt_frame_t *frame)
     } else if (frame->int_num < 48) {
         irq_dispatch(frame);
     }
+
+    deliver_pending_signal(frame);
 }
 
 void idt_init(void)

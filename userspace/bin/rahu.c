@@ -1,5 +1,5 @@
 /*
- * rahu — Exploidus Package Manager
+ * rahu -- Exploidus Package Manager
  *
  * Usage:
  *   rahu install <package>
@@ -8,8 +8,16 @@
  *   rahu search  <query>
  *   rahu update
  *
- * Downloads static ELF binaries from the Exploidus package registry.
- * Packages are installed to /bin/<name>
+ * Downloads .fozu package archives from the Exploidus package
+ * registry and unpacks them. A .fozu file can bundle more than one
+ * installed file (a binary plus config files, etc) with a name and
+ * version -- see tools/mkfozu.py for the exact container format and
+ * unpack_fozu() below for the reader.
+ *
+ * Each installed package's file list is recorded at
+ * /var/rahu/installed/<pkg>.list (one absolute path per line) so
+ * `rahu remove` can clean up every file a package put down, not just
+ * a single guessed /bin/<pkg> path.
  */
 
 #include "../libc/syscall.h"
@@ -94,11 +102,179 @@ static void hex_encode(const uint8_t *in, int len, char *out)
     out[len*2] = 0;
 }
 
+/*  .fozu package format (see tools/mkfozu.py)  */
+
+static int read_exact(int fd, void *buf, uint64_t n)
+{
+    uint8_t *p = (uint8_t *)buf;
+    uint64_t got = 0;
+    while (got < n) {
+        int64_t r = read(fd, p + got, n - got);
+        if (r <= 0) return -1;
+        got += (uint64_t)r;
+    }
+    return 0;
+}
+
+static int read_u32(int fd, uint32_t *out) { return read_exact(fd, out, 4); }
+static int read_u64(int fd, uint64_t *out) { return read_exact(fd, out, 8); }
+
+static void ensure_dir(const char *path)
+{
+    int fd = fs_create(path, 1);
+    if (fd >= 0) close(fd);
+}
+
+/* /var/rahu/{tmp,installed} need to exist before we can write into
+ * them. fs_create() on an existing directory is expected to fail;
+ * that is fine, we just ignore it. */
+static void ensure_rahu_dirs(void)
+{
+    ensure_dir("/var");
+    ensure_dir("/var/rahu");
+    ensure_dir("/var/rahu/tmp");
+    ensure_dir("/var/rahu/installed");
+}
+
+/* Appends `line` plus a newline to the file at `path`, creating it if
+ * needed. Same "no append syscall" constraint as write_manifest_entry
+ * below: read what's there, add the line, write it all back. Fine for
+ * the small per-package manifest files this is used for. */
+static void append_line(const char *path, const char *line)
+{
+    static uint8_t buf[16384];
+    int64_t pos = 0;
+
+    int fd = open(path, 0);
+    if (fd >= 0) {
+        pos = read(fd, buf, sizeof(buf) - 256);
+        if (pos < 0) pos = 0;
+        close(fd);
+    }
+
+    for (const char *s = line; *s && pos < (int64_t)sizeof(buf) - 2; s++)
+        buf[pos++] = (uint8_t)*s;
+    buf[pos++] = '\n';
+
+    file_write(path, buf, (uint64_t)pos);
+}
+
+/* Copies `size` bytes from src_fd to a newly-created file at
+ * install_path with the given mode, streaming through a fixed chunk
+ * buffer instead of loading the whole file into memory. Returns 0 on
+ * success, -1 on failure. */
+static int extract_one_file(int src_fd, const char *install_path,
+                             uint32_t mode, uint64_t size)
+{
+    int dst_fd = fs_create(install_path, 0);
+    if (dst_fd < 0) {
+        /* Likely already exists (reinstall/upgrade) -- replace it. */
+        unlink(install_path);
+        dst_fd = fs_create(install_path, 0);
+        if (dst_fd < 0) return -1;
+    }
+
+    static uint8_t chunk[8192];
+    uint64_t remaining = size;
+    while (remaining > 0) {
+        uint64_t want = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
+        if (read_exact(src_fd, chunk, want) < 0) { close(dst_fd); return -1; }
+        int64_t w = write(dst_fd, chunk, want);
+        if (w < 0 || (uint64_t)w != want) { close(dst_fd); return -1; }
+        remaining -= want;
+    }
+    close(dst_fd);
+    chmod(install_path, mode);
+    return 0;
+}
+
+/* Unpacks a .fozu container already downloaded to fozu_path. Extracts
+ * every contained file to its recorded install path and writes
+ * /var/rahu/installed/<pkg>.list (one absolute path per line) so
+ * `rahu remove` can find everything again later.
+ * Returns the number of files installed, or -1 on error. */
+static int unpack_fozu(const char *fozu_path, const char *pkg_name)
+{
+    int fd = open(fozu_path, 0);
+    if (fd < 0) return -1;
+
+    char magic[4];
+    if (read_exact(fd, magic, 4) < 0 ||
+        magic[0] != 'F' || magic[1] != 'O' || magic[2] != 'Z' || magic[3] != 'U') {
+        println("[rahu]   not a valid .fozu file (bad magic).");
+        close(fd);
+        return -1;
+    }
+
+    uint32_t format_ver;
+    if (read_u32(fd, &format_ver) < 0) { close(fd); return -1; }
+
+    uint32_t name_len;
+    if (read_u32(fd, &name_len) < 0 || name_len > 200) { close(fd); return -1; }
+    char name_buf[201];
+    if (read_exact(fd, name_buf, name_len) < 0) { close(fd); return -1; }
+    name_buf[name_len] = 0;
+
+    uint32_t ver_len;
+    if (read_u32(fd, &ver_len) < 0 || ver_len > 64) { close(fd); return -1; }
+    char ver_buf[65];
+    if (read_exact(fd, ver_buf, ver_len) < 0) { close(fd); return -1; }
+    ver_buf[ver_len] = 0;
+
+    uint32_t file_count;
+    if (read_u32(fd, &file_count) < 0) { close(fd); return -1; }
+
+    print("[rahu]   package: "); print(name_buf);
+    print(" v"); println(ver_buf);
+
+    static char manifest_path[80];
+    int mp = 0;
+    for (const char *s = "/var/rahu/installed/"; *s && mp < 60;) manifest_path[mp++] = *s++;
+    for (const char *s = pkg_name; *s && mp < 60;) manifest_path[mp++] = *s++;
+    for (const char *s = ".list"; *s && mp < 79;) manifest_path[mp++] = *s++;
+    manifest_path[mp] = 0;
+
+    /* Fresh install list every time -- an upgrade might drop files
+     * the previous version had. */
+    unlink(manifest_path);
+
+    int installed = 0;
+    for (uint32_t i = 0; i < file_count; i++) {
+        uint32_t path_len;
+        if (read_u32(fd, &path_len) < 0 || path_len > 200) goto fail;
+        char path_buf[201];
+        if (read_exact(fd, path_buf, path_len) < 0) goto fail;
+        path_buf[path_len] = 0;
+
+        uint32_t mode;
+        if (read_u32(fd, &mode) < 0) goto fail;
+
+        uint64_t size;
+        if (read_u64(fd, &size) < 0) goto fail;
+
+        if (extract_one_file(fd, path_buf, mode, size) < 0) goto fail;
+
+        print("[rahu]   installed "); println(path_buf);
+        append_line(manifest_path, path_buf);
+        installed++;
+    }
+
+    close(fd);
+    return installed;
+
+fail:
+    println("[rahu]   package archive ended unexpectedly (truncated download?).");
+    close(fd);
+    return installed > 0 ? installed : -1;
+}
+
+
+
 /*  Commands  */
 
 static void cmd_help(void)
 {
-    println("Rahu — Exploidus Package Manager");
+    println("Rahu -- Exploidus Package Manager");
     println("");
     println("Usage:");
     println("  rahu install <package>   Install a package");
@@ -237,24 +413,30 @@ static void cmd_install(const char *pkg)
 {
     if (!pkg || !*pkg) { println("[rahu] Usage: rahu install <package>"); return; }
 
+    ensure_rahu_dirs();
+
     print("[rahu] Installing: "); println(pkg);
 
     static char url[256];
-    static char install_path[64];
+    static char staging_path[80];
 
-    /* Build install path: /bin/<name> */
-    int ip = 0;
-    for (const char *s = "/bin/"; *s && ip < 63;) install_path[ip++] = *s++;
-    for (const char *s = pkg;    *s && ip < 63;) install_path[ip++] = *s++;
-    install_path[ip] = 0;
+    /* Staging path: /var/rahu/tmp/<pkg>.fozu -- downloaded here first
+     * so it can be hash-verified and unpacked, rather than streaming
+     * straight to the final install path like the old single-.elf
+     * scheme did (a package can contain more than one file now). */
+    int sp = 0;
+    for (const char *s = "/var/rahu/tmp/"; *s && sp < 60;) staging_path[sp++] = *s++;
+    for (const char *s = pkg;              *s && sp < 60;) staging_path[sp++] = *s++;
+    for (const char *s = ".fozu";          *s && sp < 79;) staging_path[sp++] = *s++;
+    staging_path[sp] = 0;
 
-    /* Build download URL: http://host:port/packages/pkg.elf */
+    /* Build download URL: http://host:port/packages/pkg.fozu */
     int pos = 0;
     for (const char *s = "http://";          *s && pos < 255;) url[pos++] = *s++;
     for (const char *s = REGISTRY_HOST;      *s && pos < 255;) url[pos++] = *s++;
     for (const char *s = ":9090/packages/";  *s && pos < 255;) url[pos++] = *s++;
     for (const char *s = pkg;                *s && pos < 255;) url[pos++] = *s++;
-    for (const char *s = ".elf";             *s && pos < 255;) url[pos++] = *s++;
+    for (const char *s = ".fozu";             *s && pos < 255;) url[pos++] = *s++;
     url[pos] = 0;
 
     print("[rahu] Downloading: "); println(url);
@@ -264,11 +446,11 @@ static void cmd_install(const char *pkg)
     char expected_hex[65];
     int  have_expected = index_lookup_hash(pkg, expected_hex);
 
-    /* Stream directly to /bin/<name> — no userspace buffer, no size cap.
-     * digest[32] is a tiny stack buffer; the kernel does the actual
-     * file-sized hashing work on its own heap. */
+    /* Stream directly to the staging path -- no userspace buffer, no
+     * size cap. digest[32] is a tiny stack buffer; the kernel does
+     * the actual file-sized hashing work on its own heap. */
     uint8_t digest[32];
-    int64_t n = http_download(url, install_path, have_expected ? digest : (uint8_t*)0);
+    int64_t n = http_download(url, staging_path, have_expected ? digest : (uint8_t*)0);
     if (n <= 0) {
         if (n == -8) println("[rahu] Package not found on registry (HTTP error).");
         else { print("[rahu] Download failed. Error: "); print_uint((uint64_t)(-n)); putc('\n'); }
@@ -283,31 +465,38 @@ static void cmd_install(const char *pkg)
      *
      * NOTE: the kernel BLAKE3 is single-chunk-only above 1024 bytes
      * (see kernel/crypto/blake3.c), so for larger files this hash will
-     * differ from standard BLAKE3 tools — that's expected. Use
+     * differ from standard BLAKE3 tools -- that's expected. Use
      * tools/gen_index.py on the server side; it replicates the same
      * quirk so the hashes line up. */
     if (have_expected) {
         char actual_hex[65];
         hex_encode(digest, 32, actual_hex);
         if (!str_eq(actual_hex, expected_hex)) {
-            println("[rahu] BLAKE3 hash mismatch — removing and refusing to install.");
+            println("[rahu] BLAKE3 hash mismatch -- removing and refusing to install.");
             print("[rahu]   expected: "); println(expected_hex);
             print("[rahu]   got:      "); println(actual_hex);
-            unlink(install_path);
+            unlink(staging_path);
             return;
         }
         println("[rahu] BLAKE3 hash verified.");
     } else {
-        println("[rahu] No hash on record — installing unverified. Run 'rahu update' first.");
+        println("[rahu] No hash on record -- installing unverified. Run 'rahu update' first.");
+    }
+
+    int installed = unpack_fozu(staging_path, pkg);
+    unlink(staging_path);
+
+    if (installed <= 0) {
+        println("[rahu] Failed to unpack package (not a valid .fozu archive?).");
+        return;
     }
 
     write_manifest_entry(pkg, (uint64_t)n);
-    print("[rahu] Installed: "); println(install_path);
-    print("[rahu] Done. Run with: "); println(install_path);
+    print("[rahu] Installed "); print_uint((uint64_t)installed); println(" file(s).");
 }
 
 /* Remove `pkg`'s line from /var/rahu/installed.json, if present.
- * Same "no append syscall" constraint as write_manifest_entry — read
+ * Same "no append syscall" constraint as write_manifest_entry -- read
  * it all in, rebuild without the matching line, write it all back. */
 static void remove_manifest_entry(const char *pkg)
 {
@@ -350,22 +539,40 @@ static void cmd_remove(const char *pkg)
 {
     if (!pkg || !*pkg) { println("[rahu] Usage: rahu remove <package>"); return; }
 
-    static char path[64];
-    int ip = 0;
-    const char *bindir = "/bin/";
-    for (const char *s = bindir; *s && ip < 63;) path[ip++] = *s++;
-    for (const char *s = pkg;    *s && ip < 63;) path[ip++] = *s++;
-    path[ip] = 0;
+    static char manifest_path[80];
+    int mp = 0;
+    for (const char *s = "/var/rahu/installed/"; *s && mp < 60;) manifest_path[mp++] = *s++;
+    for (const char *s = pkg;                    *s && mp < 60;) manifest_path[mp++] = *s++;
+    for (const char *s = ".list";                *s && mp < 79;) manifest_path[mp++] = *s++;
+    manifest_path[mp] = 0;
 
-    int r = unlink(path);
-    if (r < 0) {
-        print("[rahu] Could not remove "); print(path);
-        println(r == -2 ? " (it's a directory)" : " (not found)");
+    int fd = open(manifest_path, 0);
+    if (fd < 0) {
+        print("[rahu] No installed-file record for "); print(pkg); println(".");
+        println("[rahu] (installed before rahu supported .fozu, or already removed?)");
         return;
     }
 
+    char line[256]; int li = 0; char ch[1]; int64_t n; int removed = 0;
+    while ((n = read(fd, ch, 1)) > 0) {
+        if (ch[0] == '\n' || li >= 255) {
+            line[li] = 0;
+            if (li > 0) {
+                int r = unlink(line);
+                if (r == 0) { print("[rahu]   removed "); println(line); removed++; }
+                else        { print("[rahu]   could not remove "); println(line); }
+            }
+            li = 0;
+        } else {
+            line[li++] = ch[0];
+        }
+    }
+    close(fd);
+
+    unlink(manifest_path);
     remove_manifest_entry(pkg);
-    print("[rahu] Removed: "); println(path);
+
+    print("[rahu] Removed "); print_uint((uint64_t)removed); println(" file(s).");
 }
 
 static void cmd_list(void)
@@ -393,7 +600,7 @@ static void cmd_list(void)
     println("");
     println("[rahu] Install history (/var/rahu/installed.json):");
     int hist = print_matching_lines("/var/rahu/installed.json", (const char *)0);
-    if (hist < 0)  println("  (none yet — try 'rahu install <pkg>')");
+    if (hist < 0)  println("  (none yet -- try 'rahu install <pkg>')");
     if (hist == 0) println("  (none yet)");
 }
 
@@ -402,7 +609,7 @@ void main(int argc, char **argv)
 {
     if (argc < 2) { cmd_help(); return; }
 
-    /* argv[1] may be "install hello" as a single string — split it */
+    /* argv[1] may be "install hello" as a single string -- split it */
     char cmd_buf[32]; char arg_buf[64];
     cmd_buf[0] = 0; arg_buf[0] = 0;
     const char *s = argv[1];

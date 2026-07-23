@@ -40,21 +40,27 @@ int _isatty(int fd) { return isatty(fd); }
 /* kill */
 
 /*
- * Honest limitation: Exploidus has no real signal-delivery mechanism
- * yet, and no way to terminate an arbitrary OTHER process (the
- * shell's own `kill <pid>` command is currently a stub too — see
- * cmd_ext_kill in userspace/shell/exploish_cmds.c). What DOES work,
- * and covers the main real-world use of kill() from ported code
- * (raise()/abort() targeting yourself with SIGABRT), is self-signaling.
+ * kill(pid, sig) -- now backed by a real kernel syscall (SYS_KILL,
+ * see sys_kill() in kernel/syscall/table.c), so it can target any
+ * live process, not just the caller. The shell's `kill <pid>` command
+ * (cmd_ext_kill in userspace/shell/exploish_cmds.c) can call this
+ * directly now instead of being a stub.
+ *
+ * Delivery is asynchronous: the target only actually receives the
+ * signal the next time it is about to resume in userspace (at most
+ * one timer tick away, see deliver_pending_signal() in
+ * kernel/arch/x86_64/idt.c), including when a process signals itself.
+ * Code that wants an immediate, synchronous self-signal (the classic
+ * raise()/abort() use case) still gets that in practice since exit()
+ * from the caller's own handler, once it runs, terminates right away.
  */
 int kill(int pid, int sig)
 {
-    (void)sig;
-    if (pid == (int)getpid()) {
-        exit(128 + (sig > 0 ? sig : 0)); /* conventional shell exit-code style */
+    if (kill_raw(pid, sig) != 0) {
+        errno = ESRCH; /* no such process */
+        return -1;
     }
-    errno = ESRCH; /* no such process we can actually reach */
-    return -1;
+    return 0;
 }
 
 int _kill(int pid, int sig) { return kill(pid, sig); }

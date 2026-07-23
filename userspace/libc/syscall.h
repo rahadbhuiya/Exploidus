@@ -686,6 +686,19 @@ static inline int64_t sigreturn_raw(void)
     return syscall0(SYS_SIGRETURN);
 }
 
+#define SYS_KILL 82
+
+/*
+ * kill_raw -- sends a signal to another (or the same) process. See
+ * kill() in newlib_stubs.c for the POSIX-shaped wrapper most code
+ * should call instead. Returns 0 on success, -1 if pid does not name
+ * a live process.
+ */
+static inline int64_t kill_raw(int pid, int sig)
+{
+    return syscall2(SYS_KILL, (uint64_t)(int64_t)pid, (uint64_t)(int64_t)sig);
+}
+
 #define SYS_CHMOD 78
 
 static inline int chmod(const char *path, uint32_t mode)

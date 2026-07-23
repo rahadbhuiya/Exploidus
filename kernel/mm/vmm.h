@@ -10,6 +10,19 @@
 #define VMM_HUGE      (1ULL << 7)
 #define VMM_NX        (1ULL << 63)
 
+/*
+ * Mask to extract the physical address out of a page table entry:
+ * bits 12-51 (AMD64's maximum physical address width). `& ~0xFFFULL`
+ * alone only clears the low 12 flag bits and leaves NX (bit 63) and
+ * any other high bits untouched -- fine for entries you already know
+ * are NX-clear, but wrong in general: an entry with NX set would
+ * produce a non-canonical "physical address" that faults (usually a
+ * #GP, since it is non-canonical) the moment anything dereferences
+ * it. Always mask with this, not a bare ~0xFFFULL, when pulling a
+ * physical address back out of an entry to use as a pointer.
+ */
+#define VMM_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
 void     vmm_init(void);
 
 /* Map into the global kernel PML4 */
