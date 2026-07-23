@@ -186,10 +186,10 @@ build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/lua/lua.ld
 	$(LD) -T userspace/lua/lua.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(LUA_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/fixed.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  rahu   -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(RH_OBJS)
+	$(LD) -T userspace/bin/fixed.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(RH_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/compositor/compositor.elf: $(BIN_OBJS) $(COMP_OBJS) userspace/compositor/compositor.ld
