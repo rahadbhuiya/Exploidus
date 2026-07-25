@@ -172,22 +172,22 @@ uint64_t vmm_get_phys_into(uint64_t pml4_phys, uint64_t virt)
     uint64_t *pml4 = phys_to_virt(pml4_phys);
     uint64_t e4 = pml4[(virt >> 39) & 0x1FF];
     if (!(e4 & VMM_PRESENT)) return 0;
-    uint64_t *pdpt = phys_to_virt(e4 & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_virt(e4 & VMM_ADDR_MASK);
     uint64_t e3 = pdpt[(virt >> 30) & 0x1FF];
     if (!(e3 & VMM_PRESENT)) return 0;
     if (e3 & VMM_HUGE) {
-        return (e3 & ~0x3FFFFFFFULL) | (virt & 0x3FFFFFFFULL);
+        return (e3 & VMM_ADDR_MASK & ~0x3FFFFFFFULL) | (virt & 0x3FFFFFFFULL);
     }
-    uint64_t *pd = phys_to_virt(e3 & ~0xFFFULL);
+    uint64_t *pd = phys_to_virt(e3 & VMM_ADDR_MASK);
     uint64_t e2 = pd[(virt >> 21) & 0x1FF];
     if (!(e2 & VMM_PRESENT)) return 0;
     if (e2 & VMM_HUGE) {
-        return (e2 & ~0x1FFFFFULL) | (virt & 0x1FFFFFULL);
+        return (e2 & VMM_ADDR_MASK & ~0x1FFFFFULL) | (virt & 0x1FFFFFULL);
     }
-    uint64_t *pt = phys_to_virt(e2 & ~0xFFFULL);
+    uint64_t *pt = phys_to_virt(e2 & VMM_ADDR_MASK);
     uint64_t pte = pt[(virt >> 12) & 0x1FF];
     if (!(pte & VMM_PRESENT)) return 0;
-    return (pte & ~0xFFFULL) | (virt & 0xFFF);
+    return (pte & VMM_ADDR_MASK) | (virt & 0xFFF);
 }
 
 uint64_t vmm_get_phys(uint64_t virt)
