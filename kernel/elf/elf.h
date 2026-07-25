@@ -15,10 +15,37 @@
 
 #define PT_LOAD         1
 #define PT_NULL         0
+#define PT_DYNAMIC      2
 
 #define PF_X            (1 << 0)
 #define PF_W            (1 << 1)
 #define PF_R            (1 << 2)
+
+/*
+ * Dynamic section tags and RELA relocations -- just enough to
+ * self-relocate a statically-linked PIE (built with -static-pie),
+ * which only ever emits R_X86_64_RELATIVE entries (no external
+ * symbols to resolve, since everything is linked into one image).
+ * See apply_relocations() in elf.c.
+ */
+#define DT_NULL         0
+#define DT_RELA         7
+#define DT_RELASZ       8
+#define DT_RELAENT      9
+
+#define R_X86_64_RELATIVE 8
+#define ELF64_R_TYPE(info) ((uint32_t)((info) & 0xffffffffULL))
+
+typedef struct __attribute__((packed)) {
+    int64_t  d_tag;
+    uint64_t d_val;
+} elf64_dyn_t;
+
+typedef struct __attribute__((packed)) {
+    uint64_t r_offset;
+    uint64_t r_info;
+    int64_t  r_addend;
+} elf64_rela_t;
 
 /*  ELF HEADER  */
 typedef struct __attribute__((packed)) {

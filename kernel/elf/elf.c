@@ -193,6 +193,105 @@ static int map_page(uint64_t pml4_phys, uint64_t vaddr,
 }
 
 
+/*
+ * vaddr_to_file_offset -- find which PT_LOAD segment covers `vaddr`
+ * (a pre-ASLR virtual address, straight from the ELF's own program
+ * headers) and return the corresponding offset into the file data
+ * buffer. Returns UINT64_MAX if no segment covers it.
+ */
+static uint64_t vaddr_to_file_offset(const uint8_t *data, uint64_t size,
+                                      const elf64_hdr_t *h, uint64_t vaddr)
+{
+    for (int i = 0; i < h->phnum; i++) {
+        uint64_t phdr_off = h->phoff + (uint64_t)i * h->phentsize;
+        if (phdr_off > size || h->phentsize > size - phdr_off) continue;
+        const elf64_phdr_t *ph = (const elf64_phdr_t *)(data + phdr_off);
+        if (ph->type != PT_LOAD) continue;
+        if (vaddr >= ph->vaddr && vaddr < ph->vaddr + ph->filesz) {
+            return ph->offset + (vaddr - ph->vaddr);
+        }
+    }
+    return ~0ULL;
+}
+
+/*
+ * apply_relocations -- self-relocates a statically-linked PIE
+ * (built with -static-pie: one self-contained executable, no
+ * external symbols, so the only relocation type that ever appears
+ * is R_X86_64_RELATIVE).
+ *
+ * dyn_off/dyn_filesz locate the PT_DYNAMIC segment's raw bytes in
+ * the file data buffer (found during the PT_LOAD scan in elf_load).
+ * Walks its DT_RELA/DT_RELASZ/DT_RELAENT entries to find the actual
+ * .rela.dyn table, then for every R_X86_64_RELATIVE entry writes
+ * (aslr_base + addend) into the already-mapped page at
+ * (aslr_base + r_offset), via vmm_get_phys_into() so it works
+ * regardless of which segment or page the target falls in.
+ *
+ * Without this, any absolute address baked into .data/.got by the
+ * compiler (a string-literal pointer in an array, a stored function
+ * pointer, etc) is left holding its link-time (base-0) value instead
+ * of the correct ASLR-shifted runtime address -- the exact bug
+ * fixed.ld previously had to work around by disabling ASLR entirely.
+ */
+static bool apply_relocations(uint64_t pml4, const uint8_t *data, uint64_t size,
+                               const elf64_hdr_t *h,
+                               uint64_t dyn_off, uint64_t dyn_filesz,
+                               uint64_t aslr_base)
+{
+    uint64_t rela_vaddr = 0, rela_size = 0, rela_entsize = sizeof(elf64_rela_t);
+
+    uint64_t n_dyn = dyn_filesz / sizeof(elf64_dyn_t);
+    for (uint64_t i = 0; i < n_dyn; i++) {
+        uint64_t off = dyn_off + i * sizeof(elf64_dyn_t);
+        if (off > size || sizeof(elf64_dyn_t) > size - off) break;
+        const elf64_dyn_t *d = (const elf64_dyn_t *)(data + off);
+        if (d->d_tag == DT_NULL) break;
+        if (d->d_tag == DT_RELA)    rela_vaddr   = d->d_val;
+        if (d->d_tag == DT_RELASZ)  rela_size    = d->d_val;
+        if (d->d_tag == DT_RELAENT && d->d_val)  rela_entsize = d->d_val;
+    }
+
+    if (rela_size == 0) return true; /* nothing to relocate, not an error */
+
+    uint64_t rela_file_off = vaddr_to_file_offset(data, size, h, rela_vaddr);
+    if (rela_file_off == ~0ULL) {
+        serial_print("[ELF] .rela.dyn vaddr not inside any segment\n");
+        return false;
+    }
+
+    uint64_t count = rela_size / rela_entsize;
+    for (uint64_t i = 0; i < count; i++) {
+        uint64_t off = rela_file_off + i * rela_entsize;
+        if (off > size || sizeof(elf64_rela_t) > size - off) {
+            serial_print("[ELF] .rela.dyn entry outside image\n");
+            return false;
+        }
+        const elf64_rela_t *r = (const elf64_rela_t *)(data + off);
+
+        if (ELF64_R_TYPE(r->r_info) != R_X86_64_RELATIVE) continue;
+
+        uint64_t target_vaddr = r->r_offset + aslr_base;
+        uint64_t value = aslr_base + (uint64_t)r->r_addend;
+
+        /* Byte-at-a-time so a target straddling a page boundary still
+         * works, not just the common (page-aligned-enough) case. */
+        for (int b = 0; b < 8; b++) {
+            uint64_t phys = vmm_get_phys_into(pml4, target_vaddr + (uint64_t)b);
+            if (!phys) {
+                serial_print("[ELF] relocation target not mapped\n");
+                return false;
+            }
+            ((uint8_t *)(uintptr_t)phys)[0] = (uint8_t)(value >> (b * 8));
+        }
+    }
+
+    serial_print("[ELF] applied ");
+    serial_printhex(count);
+    serial_print(" relocation(s)\n");
+    return true;
+}
+
 bool elf_load(const uint8_t *data, uint64_t size,
               uint64_t *pml4_out, uint64_t *entry_out, uint64_t *stack_out,
               const char **argv, const char **envp)
@@ -204,10 +303,22 @@ bool elf_load(const uint8_t *data, uint64_t size,
     if (!pml4) { serial_print("[ELF] pml4 alloc failed\n"); return false; }
 
     /*
-     * ASLR: only PIE (ET_DYN) binaries use RIP-relative addressing and
-     * can be loaded at an arbitrary base.  ET_EXEC binaries embed absolute
-     * addresses at link time; randomising them would fault on the first
-     * data access.  Load ET_EXEC at its linked address (aslr_base = 0).
+     * ASLR: only PIE (ET_DYN) binaries can safely be loaded at an
+     * arbitrary base -- and now that apply_relocations() below fixes
+     * up every R_X86_64_RELATIVE entry, an ET_DYN binary's absolute
+     * addresses (a string-literal pointer stored in an array, etc)
+     * get correctly shifted too, not just its RIP-relative code.
+     *
+     * ET_EXEC binaries have no relocations at all (that is what
+     * ET_EXEC means) and embed absolute addresses assuming they run
+     * at their exact linked address -- always load them there,
+     * aslr_base = 0, regardless of what that linked address happens
+     * to be. (A previous version of this check special-cased a low
+     * linked address as "apply ASLR anyway", which directly
+     * contradicted this and was the actual cause of a real crash --
+     * any ET_EXEC binary linked at a low base, e.g. via a linker
+     * script that starts at 0, would get its absolute-address data
+     * silently corrupted.)
      */
     uint64_t aslr_base = 0;
     if (h->type == ELF_TYPE_DYN) {
@@ -216,15 +327,12 @@ bool elf_load(const uint8_t *data, uint64_t size,
         serial_print("[ELF] ET_DYN ASLR base=");
         serial_printhex(aslr_base);
         serial_print("\n");
-    } else if (h->entry < 0x100000ULL) {
-        /* ET_EXEC linked at low addr — apply ASLR with 32MB minimum */
-        aslr_base = (aslr_rdrand() & ASLR_MASK & ~0x1FFFFFULL) + ASLR_MIN_BASE;
-        serial_print("[ELF] ET_EXEC ASLR base=");
-        serial_printhex(aslr_base);
-        serial_print("\n");
     } else {
         serial_print("[ELF] ET_EXEC: fixed addr, no ASLR\n");
     }
+
+    uint64_t dyn_off = 0, dyn_filesz = 0;
+    bool     have_dyn = false;
 
     for (int i = 0; i < h->phnum; i++) {
         uint64_t phdr_off = h->phoff + (uint64_t)i * h->phentsize;
@@ -234,6 +342,11 @@ bool elf_load(const uint8_t *data, uint64_t size,
         }
         const elf64_phdr_t *ph =
             (const elf64_phdr_t *)(data + phdr_off);
+        if (ph->type == PT_DYNAMIC) {
+            dyn_off    = ph->offset;
+            dyn_filesz = ph->filesz;
+            have_dyn   = true;
+        }
         if (ph->type != PT_LOAD || ph->memsz == 0) continue;
         if (ph->filesz > ph->memsz || ph->offset > size ||
             ph->filesz > size - ph->offset) {
@@ -270,6 +383,13 @@ bool elf_load(const uint8_t *data, uint64_t size,
         serial_print(" filesz=");
         serial_printhex(ph->filesz);
         serial_print("\n");
+    }
+
+    if (h->type == ELF_TYPE_DYN && have_dyn) {
+        if (!apply_relocations(pml4, data, size, h, dyn_off, dyn_filesz, aslr_base)) {
+            serial_print("[ELF] relocation processing failed\n");
+            return false;
+        }
     }
 
     /* Stack — fixed position, not randomised. */
