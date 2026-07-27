@@ -90,6 +90,19 @@ static int      g_drag_win   = -1;  /* window index being dragged, -1=none */
 static int32_t  g_drag_off_x = 0;  /* mouse offset from window origin   */
 static int32_t  g_drag_off_y = 0;
 
+/*
+ * Pending damage tracking for the partial-redraw fast path (see the
+ * main loop below). g_dirty_win is:
+ *   -1  no damage pending
+ *   >=0 damage pending, all of it inside this one window -- (dirty_x,
+ *       dirty_y, dirty_w, dirty_h) is the screen-space union rect
+ *   -2  damage spans more than one window (or we don't know it
+ *       doesn't) -- always falls back to a full composite
+ */
+static int      g_dirty_win = -1;
+static int32_t  g_dirty_x = 0, g_dirty_y = 0;
+static uint32_t g_dirty_w = 0, g_dirty_h = 0;
+
 static uint32_t g_screen_w   = 0;
 static uint32_t g_screen_h   = 0;
 static uint32_t g_fb_active  = 0;
@@ -346,6 +359,31 @@ static void blit_window(window_t *w)
     fb_blit(sx, sy, sw, h, w->pixels, COL_DESKTOP);
 }
 
+/*
+ * fully_occluded_by_focused -- true if window w's on-screen bounds
+ * (chrome included, if decorated) are entirely covered by the
+ * focused window sitting on top of it. Common case: a background
+ * window sits fully behind a maximized/near-full-screen focused
+ * one -- skip the wasted chrome redraw + blit for it entirely
+ * instead of drawing pixels that get immediately painted over.
+ */
+static int fully_occluded_by_focused(const window_t *w)
+{
+    if (g_focused < 0 || !g_windows[g_focused].valid) return 0;
+    const window_t *fw = &g_windows[g_focused];
+    if (fw == w) return 0;
+
+    int32_t wy0 = (w->flags & WIN_FLAG_DECORATED) ? w->y - TITLEBAR_H : w->y;
+    int32_t wx1 = w->x + (int32_t)w->w;
+    int32_t wy1 = wy0 + (int32_t)w->h + ((w->flags & WIN_FLAG_DECORATED) ? TITLEBAR_H : 0);
+
+    int32_t fy0 = (fw->flags & WIN_FLAG_DECORATED) ? fw->y - TITLEBAR_H : fw->y;
+    int32_t fx1 = fw->x + (int32_t)fw->w;
+    int32_t fy1 = fy0 + (int32_t)fw->h + ((fw->flags & WIN_FLAG_DECORATED) ? TITLEBAR_H : 0);
+
+    return fw->x <= w->x && fy0 <= wy0 && fx1 >= wx1 && fy1 >= wy1;
+}
+
 /*  full composite frame  */
 
 static void composite_frame(void)
@@ -357,6 +395,7 @@ static void composite_frame(void)
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!g_windows[i].valid) continue;
         if (i == g_focused) continue;
+        if (fully_occluded_by_focused(&g_windows[i])) continue;
         if (g_windows[i].flags & WIN_FLAG_DECORATED)
             draw_window_chrome(&g_windows[i]);
         blit_window(&g_windows[i]);
@@ -385,6 +424,7 @@ static void composite_frame_light(void)
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!g_windows[i].valid) continue;
         if (i == g_focused) continue;
+        if (fully_occluded_by_focused(&g_windows[i])) continue;
         if (g_windows[i].flags & WIN_FLAG_DECORATED)
             draw_window_chrome(&g_windows[i]);
         blit_window(&g_windows[i]);
@@ -501,7 +541,36 @@ static void handle_damage(ipc_msg_t *msg)
 {
     win_damage_msg_t *p = (win_damage_msg_t *)msg->data;
     window_t *w = find_win(p->shm_id);
-    if (w) w->dirty = 1;
+    if (!w) return;
+    w->dirty = 1;
+
+    int idx = (int)(w - g_windows);
+    int32_t  nx = w->x + p->dx, ny = w->y + p->dy;
+    uint32_t nw = p->dw,        nh = p->dh;
+
+    if (g_dirty_win == -1) {
+        g_dirty_win = idx;
+        g_dirty_x = nx; g_dirty_y = ny; g_dirty_w = nw; g_dirty_h = nh;
+    } else if (g_dirty_win == idx) {
+        /* More damage to the SAME window this frame: grow the union
+         * rect to cover both. */
+        int32_t x0 = g_dirty_x < nx ? g_dirty_x : nx;
+        int32_t y0 = g_dirty_y < ny ? g_dirty_y : ny;
+        int32_t x1_old = g_dirty_x + (int32_t)g_dirty_w;
+        int32_t x1_new = nx + (int32_t)nw;
+        int32_t y1_old = g_dirty_y + (int32_t)g_dirty_h;
+        int32_t y1_new = ny + (int32_t)nh;
+        int32_t x1 = x1_old > x1_new ? x1_old : x1_new;
+        int32_t y1 = y1_old > y1_new ? y1_old : y1_new;
+        g_dirty_x = x0; g_dirty_y = y0;
+        g_dirty_w = (uint32_t)(x1 - x0);
+        g_dirty_h = (uint32_t)(y1 - y0);
+    } else {
+        /* Damage to a different window than we were already
+         * tracking -- more than one window changed this frame, the
+         * fast path below can't handle that. */
+        g_dirty_win = -2;
+    }
 }
 
 static void handle_win_move(ipc_msg_t *msg)
@@ -758,7 +827,7 @@ void main(void)
                 break;
             case IPC_MSG_DAMAGE:
                 handle_damage(&msg);
-                needs_full_redraw = 1;
+                if (g_dirty_win == -2) needs_full_redraw = 1;
                 break;
             case IPC_MSG_WIN_MOVE:
                 handle_win_move(&msg);
@@ -817,6 +886,49 @@ void main(void)
             fb_flip();
             needs_full_redraw  = 0;
             needs_cursor_update = 0;
+            g_dirty_win = -1;
+            drawn_cx = cur_mx; drawn_cy = cur_my;
+            last_frame_tick = now;
+
+        } else if (g_dirty_win >= 0 && g_dirty_win == g_focused &&
+                   g_windows[g_dirty_win].valid &&
+                   !needs_cursor_update && frame_due) {
+            /*
+             * Fast path: the only thing that changed is the topmost
+             * (focused) window's own content -- typing into a
+             * terminal is the classic case. Nothing else on screen
+             * needs touching: no other window overlaps it (it's on
+             * top), and the wallpaper/dock/menubar under it are
+             * already correct from the last full frame. Re-blit just
+             * this one window (already a single fb_blit syscall, see
+             * blit_window()) and flip just its screen rect, instead
+             * of composite_frame()'s full scene rebuild (wallpaper
+             * gradient + every window's shadow/chrome) followed by a
+             * whole-screen fb_flip(). This is what turned "visibly
+             * laggy" typing into something that keeps up.
+             */
+            window_t *w = &g_windows[g_dirty_win];
+            blit_window(w);
+
+            int32_t  fx = w->x;
+            int32_t  fy = (w->flags & WIN_FLAG_DECORATED) ? w->y - TITLEBAR_H : w->y;
+            uint32_t fw = w->w;
+            uint32_t fh = w->h + ((w->flags & WIN_FLAG_DECORATED) ? (uint32_t)TITLEBAR_H : 0);
+
+            /* Cover the cursor glyph too, in case it's sitting inside
+             * this window (redrawing it here is cheap either way). */
+            draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
+            draw_rect(cur_mx,     cur_my,     10, 2,  COL_TEXT_PRI);
+            draw_rect(cur_mx + 1, cur_my + 1, 1,  8,  0x000000);
+            draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
+            if (cur_mx < fx) { fw += (uint32_t)(fx - cur_mx); fx = cur_mx; }
+            if (cur_my < fy) { fh += (uint32_t)(fy - cur_my); fy = cur_my; }
+            if (cur_mx + 11 > fx + (int32_t)fw) fw = (uint32_t)(cur_mx + 11 - fx);
+            if (cur_my + 11 > fy + (int32_t)fh) fh = (uint32_t)(cur_my + 11 - fy);
+
+            fb_flip_rect(fx, fy, fw, fh);
+
+            g_dirty_win = -1;
             drawn_cx = cur_mx; drawn_cy = cur_my;
             last_frame_tick = now;
 
@@ -830,7 +942,10 @@ void main(void)
              * (drawn_cx/drawn_cy, not prev_mx/prev_my — those are
              * already updated to the new position by this point), then
              * repaint only windows + dock (cheap) on top, then draw the
-             * cursor at its new spot. */
+             * cursor at its new spot. composite_frame_light() re-blits
+             * every window from its current (already up to date) pixel
+             * buffer, so any pending single-window damage is resolved
+             * as a side effect of this too. */
             draw_rect(drawn_cx - 1, drawn_cy - 1, 12, 12, COL_DESKTOP);
             composite_frame_light();
             draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
@@ -839,6 +954,7 @@ void main(void)
             draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
             fb_flip();
             needs_cursor_update = 0;
+            g_dirty_win = -1;
             drawn_cx = cur_mx; drawn_cy = cur_my;
             last_frame_tick = now;
         }
@@ -850,6 +966,7 @@ void main(void)
          *  frame_due, which starves our own mouse-poll loop whenever
          *  anything else is runnable — that's what caused the
          *  stutter/"stopping" feel. */
-        if (!got_msg && !needs_full_redraw && !needs_cursor_update) yield();
+        if (!got_msg && !needs_full_redraw && !needs_cursor_update &&
+            g_dirty_win < 0) yield();
     }
 }

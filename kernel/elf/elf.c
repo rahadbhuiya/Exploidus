@@ -96,7 +96,7 @@ static uint64_t make_isolated_pml4(void)
     /* PML4[0]: need private PDPT */
     if (!(kpml4[0] & 1)) return pml4_phys;
 
-    uint64_t kpdpt_phys = kpml4[0] & ~0xFFFULL;
+    uint64_t kpdpt_phys = kpml4[0] & VMM_ADDR_MASK;
     uint64_t *kpdpt     = (uint64_t *)(uintptr_t)kpdpt_phys;
 
     uint64_t pdpt_phys = pmm_alloc(ZONE_GREEN);
@@ -110,7 +110,7 @@ static uint64_t make_isolated_pml4(void)
 
     /* PDPT[0]: private PD0 — keep only first 8 entries (kernel 0-15MB) */
     if (kpdpt[0] & 1) {
-        uint64_t kpd0_phys = kpdpt[0] & ~0xFFFULL;
+        uint64_t kpd0_phys = kpdpt[0] & VMM_ADDR_MASK;
         uint64_t *kpd0     = (uint64_t *)(uintptr_t)kpd0_phys;
 
         uint64_t pd0_phys = pmm_alloc(ZONE_GREEN);
@@ -125,7 +125,7 @@ static uint64_t make_isolated_pml4(void)
 
     /* PDPT[1]: private PD1 — clear last entry (stack range 0x7FE00000+) */
     if (kpdpt[1] & 1) {
-        uint64_t kpd1_phys = kpdpt[1] & ~0xFFFULL;
+        uint64_t kpd1_phys = kpdpt[1] & VMM_ADDR_MASK;
         uint64_t *kpd1     = (uint64_t *)(uintptr_t)kpd1_phys;
 
         uint64_t pd1_phys = pmm_alloc(ZONE_GREEN);
@@ -157,7 +157,7 @@ static int map_page(uint64_t pml4_phys, uint64_t vaddr,
     } else if (is_user) {
         pml4[PML4_IDX(vaddr)] |= VMM_USER;
     }
-    uint64_t *pdpt = (uint64_t *)(uintptr_t)(pml4[PML4_IDX(vaddr)] & ~0xFFFULL);
+    uint64_t *pdpt = (uint64_t *)(uintptr_t)(pml4[PML4_IDX(vaddr)] & VMM_ADDR_MASK);
 
     if (!(pdpt[PDPT_IDX(vaddr)] & 1)) {
         uint64_t p = pmm_alloc(ZONE_GREEN);
@@ -167,7 +167,7 @@ static int map_page(uint64_t pml4_phys, uint64_t vaddr,
     } else if (is_user) {
         pdpt[PDPT_IDX(vaddr)] |= VMM_USER;
     }
-    uint64_t *pd = (uint64_t *)(uintptr_t)(pdpt[PDPT_IDX(vaddr)] & ~0xFFFULL);
+    uint64_t *pd = (uint64_t *)(uintptr_t)(pdpt[PDPT_IDX(vaddr)] & VMM_ADDR_MASK);
 
     /* If PD entry is a huge page, we cannot sub-divide it.
      * This should not happen with make_isolated_pml4 since we
@@ -185,7 +185,7 @@ static int map_page(uint64_t pml4_phys, uint64_t vaddr,
     } else if (is_user) {
         pd[PD_IDX(vaddr)] |= VMM_USER;
     }
-    uint64_t *pt = (uint64_t *)(uintptr_t)(pd[PD_IDX(vaddr)] & ~0xFFFULL);
+    uint64_t *pt = (uint64_t *)(uintptr_t)(pd[PD_IDX(vaddr)] & VMM_ADDR_MASK);
 
     pt[PT_IDX(vaddr)] = (paddr & ~0xFFFULL) | flags | VMM_PRESENT;
     __asm__ volatile ("invlpg (%0)" :: "r"(vaddr) : "memory");
