@@ -29,11 +29,11 @@ static inline uint64_t *phys_to_virt(uint64_t p)
 static uint64_t alloc_table(uint64_t *entry)
 {
     if (*entry & VMM_PRESENT)
-        return *entry & ~0xFFFULL;
+        return *entry & VMM_ADDR_MASK;
     uint64_t p = pmm_alloc(ZONE_GREEN);
     if (!p) return 0;
     memset(phys_to_virt(p), 0, 4096);
-    *entry = (p & ~0xFFFULL) | VMM_PRESENT | VMM_WRITE | VMM_USER;
+    *entry = (p & VMM_ADDR_MASK) | VMM_PRESENT | VMM_WRITE | VMM_USER;
     return p;
 }
 
@@ -144,15 +144,15 @@ void vmm_unmap_into(uint64_t pml4_phys, uint64_t virt)
     uint64_t *pml4 = phys_to_virt(pml4_phys);
     uint64_t e4 = pml4[(virt >> 39) & 0x1FF];
     if (!(e4 & VMM_PRESENT)) return;
-    uint64_t *pdpt = phys_to_virt(e4 & ~0xFFFULL);
+    uint64_t *pdpt = phys_to_virt(e4 & VMM_ADDR_MASK);
     uint64_t e3 = pdpt[(virt >> 30) & 0x1FF];
     if (!(e3 & VMM_PRESENT)) return;
     if (e3 & VMM_HUGE) return;
-    uint64_t *pd = phys_to_virt(e3 & ~0xFFFULL);
+    uint64_t *pd = phys_to_virt(e3 & VMM_ADDR_MASK);
     uint64_t e2 = pd[(virt >> 21) & 0x1FF];
     if (!(e2 & VMM_PRESENT)) return;
     if (e2 & VMM_HUGE) return;
-    uint64_t *pt = phys_to_virt(e2 & ~0xFFFULL);
+    uint64_t *pt = phys_to_virt(e2 & VMM_ADDR_MASK);
     pt[(virt >> 12) & 0x1FF] = 0;
     __asm__ volatile ("invlpg (%0)" :: "r"(virt) : "memory");
 }

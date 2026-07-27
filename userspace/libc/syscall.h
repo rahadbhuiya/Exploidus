@@ -462,6 +462,12 @@ static inline void fb_flip(void)
 {
     syscall0(SYS_FB_FLIP);
 }
+#define SYS_FB_FLIP_RECT 84
+static inline void fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h)
+{
+    syscall6(SYS_FB_FLIP_RECT, (uint64_t)(int64_t)x, (uint64_t)(int64_t)y,
+             (uint64_t)w, (uint64_t)h, 0, 0);
+}
 static inline void fb_rrect(int x, int y, int w, int h, int r, uint32_t color)
 {
     syscall6(SYS_FB_RRECT,

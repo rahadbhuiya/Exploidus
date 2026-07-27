@@ -450,6 +450,38 @@ void fb_flip(void)
 }
 
 /*
+ * fb_flip_rect -- same idea as fb_blit's run-copy: most of a frame
+ * hasn't changed since the last flip, so copying the *entire*
+ * back buffer to the real framebuffer (fb_flip(), a ~1-2MB memcpy at
+ * typical resolutions) on every single small update -- one changed
+ * character cell, one moved cursor -- is almost all wasted work.
+ * This copies only the given rect, row by row (the backbuffer and
+ * framebuffer are both row-major with `pitch` stride, so a rect
+ * isn't contiguous memory and needs one memcpy per row rather than
+ * one memcpy overall).
+ */
+void fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h)
+{
+    if (!g_back_buf || !g_fb.active) return;
+
+    if (x < 0) { w = (uint32_t)((int32_t)w + x); x = 0; }
+    if (y < 0) { h = (uint32_t)((int32_t)h + y); y = 0; }
+    if (x >= (int32_t)g_fb.width || y >= (int32_t)g_fb.height) return;
+    if ((int32_t)w <= 0 || (int32_t)h <= 0) return;
+    if ((uint32_t)x + w > g_fb.width)  w = g_fb.width  - (uint32_t)x;
+    if ((uint32_t)y + h > g_fb.height) h = g_fb.height - (uint32_t)y;
+
+    uint64_t row_bytes = (uint64_t)w * 4;
+
+    for (uint32_t row = 0; row < h; row++) {
+        uint64_t off = (uint64_t)(y + (int32_t)row) * g_fb.pitch + (uint64_t)x * 4;
+        __builtin_memcpy((void *)(uintptr_t)(g_fb.addr + off),
+                          g_back_buf + off,
+                          row_bytes);
+    }
+}
+
+/*
  * Blit a whole ARGB32 buffer (top byte = alpha) into the framebuffer
  * at (dst_x, dst_y), width x height, in ONE kernel-space loop.
  *

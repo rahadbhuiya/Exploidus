@@ -62,6 +62,25 @@ static void buf_glyph(int x, int y, unsigned char c, uint32_t fg)
 
 /*  grid → pixel render  */
 
+/* Redraws exactly one cell's worth of pixels: background, then the
+ * glyph if any. Used by the incremental fast path below instead of
+ * render_grid()'s full O(GRID_ROWS*GRID_COLS) redraw. */
+static void draw_cell(int r, int c, char ch, uint32_t fg)
+{
+    int px = 8 + c * CELL_W;
+    int py = 8 + r * CELL_H;
+    buf_fill(px, py, CELL_W, CELL_H, COL_BG);
+    if (ch && ch != ' ')
+        buf_glyph(px, py, (unsigned char)ch, fg);
+}
+
+static void draw_cursor_at(int r, int c)
+{
+    int cx = 8 + c * CELL_W;
+    int cy = 8 + r * CELL_H;
+    buf_fill(cx, cy + 7, 5, 1, COL_CURSOR);
+}
+
 static void render_grid(void)
 {
     buf_fill(0, 0, WIN_W, WIN_H, COL_BG);
@@ -77,9 +96,7 @@ static void render_grid(void)
     }
 
     /* Cursor block */
-    int cx = 8 + g_cur_col * CELL_W;
-    int cy = 8 + g_cur_row * CELL_H;
-    buf_fill(cx, cy + 7, 5, 1, COL_CURSOR);
+    draw_cursor_at(g_cur_row, g_cur_col);
 }
 
 /*  grid manipulation  */
@@ -362,24 +379,61 @@ void main(void)
             key_msg_t *k = (key_msg_t *)msg.data;
             char c = (char)k->ascii;
 
+            /*
+             * Incremental fast path: render_grid() redraws every one
+             * of GRID_ROWS*GRID_COLS (1672) cells and comp_damage()
+             * used to always mark the *whole* window dirty, on every
+             * single keystroke. That was the main source of the
+             * typing lag/stutter -- one glyph changing doesn't need
+             * ~1672 glyph redraws plus a full-window composite. For
+             * plain typing and backspace that don't cross a line
+             * boundary, touch only the one or two cells that actually
+             * changed and send damage for just that small rect.
+             * Anything that moves to a new row (Enter, wrapping at
+             * end of line, or nothing changed at all) still falls
+             * back to the full render_grid() + full-window damage,
+             * since scrolling genuinely does touch every row.
+             */
             if (c == '\n' || c == '\r') {
                 g_line[g_line_len] = 0;
                 grid_putc('\n');
                 execute_line(g_line);
                 g_line_len = 0;
                 if (!g_should_exit) draw_prompt();
+                render_grid();
+                comp_damage(comp_pid, shm_id, 0, 0, WIN_W, WIN_H);
             } else if (c == '\b' || c == 127) {
                 if (g_line_len > 0) {
+                    int old_row = g_cur_row, old_col = g_cur_col;
                     g_line_len--;
                     grid_putc('\b');
+                    if (g_cur_row == old_row) {
+                        draw_cell(old_row, old_col, g_grid[old_row][old_col], COL_FG);
+                        draw_cell(g_cur_row, g_cur_col, g_grid[g_cur_row][g_cur_col], COL_FG);
+                        draw_cursor_at(g_cur_row, g_cur_col);
+                        int x0 = 8 + g_cur_col * CELL_W;
+                        int y0 = 8 + g_cur_row * CELL_H;
+                        comp_damage(comp_pid, shm_id, x0, y0, CELL_W * 2, CELL_H);
+                    } else {
+                        render_grid();
+                        comp_damage(comp_pid, shm_id, 0, 0, WIN_W, WIN_H);
+                    }
                 }
             } else if (c >= 32 && c < 127 && g_line_len < 255) {
+                int old_row = g_cur_row, old_col = g_cur_col;
                 g_line[g_line_len++] = c;
                 grid_putc(c);
+                if (g_cur_row == old_row) {
+                    draw_cell(old_row, old_col, g_grid[old_row][old_col], COL_FG);
+                    draw_cursor_at(g_cur_row, g_cur_col);
+                    int x0 = 8 + old_col * CELL_W;
+                    int y0 = 8 + old_row * CELL_H;
+                    comp_damage(comp_pid, shm_id, x0, y0, CELL_W * 2, CELL_H);
+                } else {
+                    render_grid();
+                    comp_damage(comp_pid, shm_id, 0, 0, WIN_W, WIN_H);
+                }
             }
-
-            render_grid();
-            comp_damage(comp_pid, shm_id, 0, 0, WIN_W, WIN_H);
         }
         else if (msg.type == IPC_MSG_WIN_FOCUS ||
                  msg.type == IPC_MSG_WIN_BLUR) {
