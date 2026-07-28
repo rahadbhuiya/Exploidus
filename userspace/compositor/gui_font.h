@@ -136,16 +136,53 @@ static inline void gui_font_char(uint32_t *buf, int buf_w, int buf_h,
 {
     if (c < 32 || c > 127) c = '?';
     const uint8_t *glyph = g_gui_font[c - 32];
+
+    /*
+     * Edge softening: this is a 1-bit source font (each pixel fully
+     * on or off), so there's no real subpixel coverage data to
+     * anti-alias from -- getting genuine smooth edges would mean
+     * redesigning every glyph as a grayscale bitmap. Cheap
+     * approximation instead: any "on" pixel that sits right next to
+     * an "off" one (i.e. the boundary of a stroke) gets drawn in a
+     * color mostly-foreground-but-blended-toward-background rather
+     * than 100% solid foreground. Interior pixels (fully surrounded
+     * by other "on" pixels) stay solid. This softens the stair-step
+     * look on diagonals and curves without touching the font data.
+     */
+    uint32_t edge_color = fg;
+    if (bg != 0) {
+        uint8_t fr = (uint8_t)(fg >> 16), fgc = (uint8_t)(fg >> 8), fb_ = (uint8_t)fg;
+        uint8_t br = (uint8_t)(bg >> 16), bgc = (uint8_t)(bg >> 8), bb_ = (uint8_t)bg;
+        uint8_t er = (uint8_t)((fr * 3 + br) / 4);
+        uint8_t eg = (uint8_t)((fgc * 3 + bgc) / 4);
+        uint8_t eb = (uint8_t)((fb_ * 3 + bb_) / 4);
+        edge_color = (fg & 0xFF000000u) | ((uint32_t)er << 16) | ((uint32_t)eg << 8) | eb;
+    }
+
     for (int row = 0; row < GUI_FONT_H; row++) {
         int py = y + row;
         if (py < 0 || py >= buf_h) continue;
-        uint8_t bits = glyph[row];
+        uint8_t bits      = glyph[row];
+        uint8_t bits_up   = (row > 0)               ? glyph[row - 1] : 0;
+        uint8_t bits_down = (row < GUI_FONT_H - 1)   ? glyph[row + 1] : 0;
         for (int col = 0; col < GUI_FONT_W; col++) {
             int px = x + col;
             if (px < 0 || px >= buf_w) continue;
-            uint32_t color = (bits & (0x80 >> col)) ? fg : bg;
-            if (bg == 0 && !(bits & (0x80 >> col))) continue; /* transparent bg */
-            buf[py * buf_w + px] = color;
+            uint8_t mask = (uint8_t)(0x80 >> col);
+
+            if (!(bits & mask)) {
+                if (bg == 0) continue; /* transparent background */
+                buf[py * buf_w + px] = bg;
+                continue;
+            }
+
+            int left_off  = (col > 0)              && !(bits & (uint8_t)(mask << 1));
+            int right_off = (col < GUI_FONT_W - 1) && !(bits & (uint8_t)(mask >> 1));
+            int up_off    = !(bits_up   & mask);
+            int down_off  = !(bits_down & mask);
+
+            buf[py * buf_w + px] =
+                (left_off || right_off || up_off || down_off) ? edge_color : fg;
         }
     }
 }

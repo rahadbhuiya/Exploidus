@@ -94,6 +94,45 @@ void fb_blend_pixel(uint32_t x, uint32_t y, uint32_t color, uint8_t alpha)
     *pixel = fb_rgb(r, g, b);
 }
 
+/*
+ * fb_blend_rect -- same idea as fb_blend_pixel but for a whole rect in
+ * one call, so the compositor can get a real "frosted glass" effect
+ * (blended against whatever is actually underneath -- wallpaper,
+ * window content, anything) without one syscall per pixel. Used for
+ * the translucent dock/menubar and window fade-in/out.
+ */
+void fb_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    uint32_t color, uint8_t alpha)
+{
+    if (!g_fb.active) return;
+    if (alpha == 255) { fb_fill_rect(x, y, w, h, color); return; }
+    if (alpha == 0)   return;
+    if (x >= g_fb.width || y >= g_fb.height) return;
+    if (x + w > g_fb.width)  w = g_fb.width  - x;
+    if (y + h > g_fb.height) h = g_fb.height - y;
+
+    uint8_t sr = (uint8_t)(color >> 16);
+    uint8_t sg = (uint8_t)(color >>  8);
+    uint8_t sb = (uint8_t)(color);
+
+    for (uint32_t row = 0; row < h; row++) {
+        uint64_t off = (uint64_t)(y + row) * g_fb.pitch + (uint64_t)x * (g_fb.bpp / 8);
+        uint32_t *line = g_back_buf
+            ? (uint32_t *)(g_back_buf + off)
+            : (uint32_t *)(uintptr_t)(g_fb.addr + off);
+        for (uint32_t col = 0; col < w; col++) {
+            uint32_t bg = line[col];
+            uint8_t br  = (uint8_t)(bg >> 16);
+            uint8_t bgc = (uint8_t)(bg >>  8);
+            uint8_t bb  = (uint8_t)(bg);
+            uint8_t r = (uint8_t)((sr * alpha + br  * (255 - alpha)) >> 8);
+            uint8_t g = (uint8_t)((sg * alpha + bgc * (255 - alpha)) >> 8);
+            uint8_t b = (uint8_t)((sb * alpha + bb  * (255 - alpha)) >> 8);
+            line[col] = fb_rgb(r, g, b);
+        }
+    }
+}
+
 /*  fill primitives  */
 
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color)

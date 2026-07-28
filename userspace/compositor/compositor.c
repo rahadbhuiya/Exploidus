@@ -74,6 +74,7 @@ typedef struct {
     uint32_t  owner_pid;
     uint8_t   dirty;           /* needs repaint                          */
     uint8_t   valid;
+    uint8_t   fade_alpha;      /* fade-in veil strength, 0 = fully faded in */
 } window_t;
 
 /*  compositor state  */
@@ -157,6 +158,15 @@ static void draw_rect(int x, int y, int w, int h, uint32_t col)
     fb_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h, col);
 }
 
+/* Alpha-blend a filled rectangle over whatever is already there --
+ * real translucency (unlike blend(), which only approximates a known
+ * constant background), used for the frosted dock/menubar and window
+ * fade in/out. */
+static void draw_blend_rect(int x, int y, int w, int h, uint32_t col, uint8_t alpha)
+{
+    fb_blend_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h, col, alpha);
+}
+
 /* Draw a single pixel */
 
 /* Draw a string */
@@ -209,8 +219,10 @@ static void draw_wallpaper(void)
 static void draw_menubar(void)
 {
     int mh = 22;
-    /* Frosted-glass look: slightly lighter than desktop */
-    draw_rect(0, 0, (int)g_screen_w, mh, 0x161B22);
+    /* Real frosted glass: blend a dark tint over whatever's actually
+     * behind it (wallpaper glow, anything), instead of drawing a
+     * flat solid color that only looked like glass in the name. */
+    draw_blend_rect(0, 0, (int)g_screen_w, mh, 0x0D1117, 200);
 
     /* Apple-style logo placeholder */
     draw_str(10, 4, "Exploidus", COL_TEXT_PRI, 0x161B22);
@@ -262,9 +274,10 @@ static void draw_dock(void)
     g_dock_dx = dx; g_dock_dy = dy;
     g_dock_dw = dw; g_dock_spacing = spacing;
 
-    /* Dock background — frosted pill */
-    draw_rrect(dx, dy + 6, dw, DOCK_H - 8, 10, 0x1F2937);
-    draw_rrect(dx, dy + 6, dw, DOCK_H - 8, 10, 0x30363D);
+    /* Dock background -- real frosted glass, blended against whatever
+     * is actually behind it (wallpaper, or a window if one extends
+     * that far down), not just a flat solid color. */
+    draw_blend_rect(dx, dy + 6, dw, DOCK_H - 8, 0x1F2937, 215);
 
     for (int i = 0; i < DOCK_ITEMS; i++) {
         int ix = dx + spacing * (i + 1) - DOCK_ICON_SZ / 2;
@@ -360,6 +373,37 @@ static void blit_window(window_t *w)
 }
 
 /*
+ * draw_fade_veil -- simple window-open animation. A freshly-created
+ * window starts under a solid desktop-colored veil (fade_alpha ~220)
+ * and this thins it out by FADE_STEP each redraw until it hits 0, so
+ * the window appears to fade in rather than just snapping into
+ * existence. This is a veil blended on top of the already-blitted
+ * window content (real per-pixel translucency, via fb_blend_rect),
+ * not a change to the window's own pixels, so it works for any
+ * window regardless of what it draws.
+ */
+#define FADE_STEP 44
+static void draw_fade_veil(window_t *w)
+{
+    if (w->fade_alpha == 0) return;
+    int32_t  vy = (w->flags & WIN_FLAG_DECORATED) ? w->y - TITLEBAR_H : w->y;
+    uint32_t vh = w->h + ((w->flags & WIN_FLAG_DECORATED) ? (uint32_t)TITLEBAR_H : 0);
+    draw_blend_rect(w->x, vy, (int)w->w, (int)vh, COL_DESKTOP, w->fade_alpha);
+    w->fade_alpha = (w->fade_alpha > FADE_STEP) ? (uint8_t)(w->fade_alpha - FADE_STEP) : 0;
+}
+
+/* True while any window still has an open-animation in progress --
+ * the main loop uses this to keep redrawing every frame until all
+ * fades finish, instead of only reacting to the one message that
+ * started the animation. */
+static int any_window_fading(void)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (g_windows[i].valid && g_windows[i].fade_alpha > 0) return 1;
+    return 0;
+}
+
+/*
  * fully_occluded_by_focused -- true if window w's on-screen bounds
  * (chrome included, if decorated) are entirely covered by the
  * focused window sitting on top of it. Common case: a background
@@ -399,6 +443,7 @@ static void composite_frame(void)
         if (g_windows[i].flags & WIN_FLAG_DECORATED)
             draw_window_chrome(&g_windows[i]);
         blit_window(&g_windows[i]);
+        draw_fade_veil(&g_windows[i]);
     }
     /* Draw focused window on top */
     if (g_focused >= 0 && g_windows[g_focused].valid) {
@@ -406,6 +451,7 @@ static void composite_frame(void)
         if (fw->flags & WIN_FLAG_DECORATED)
             draw_window_chrome(fw);
         blit_window(fw);
+        draw_fade_veil(fw);
     }
 
     draw_dock();
@@ -428,12 +474,14 @@ static void composite_frame_light(void)
         if (g_windows[i].flags & WIN_FLAG_DECORATED)
             draw_window_chrome(&g_windows[i]);
         blit_window(&g_windows[i]);
+        draw_fade_veil(&g_windows[i]);
     }
     if (g_focused >= 0 && g_windows[g_focused].valid) {
         window_t *fw = &g_windows[g_focused];
         if (fw->flags & WIN_FLAG_DECORATED)
             draw_window_chrome(fw);
         blit_window(fw);
+        draw_fade_veil(fw);
     }
     draw_dock();
 }
@@ -475,6 +523,7 @@ static void handle_win_create(ipc_msg_t *msg)
     w->owner_pid = msg->from_pid;
     w->dirty     = 1;
     w->valid     = 1;
+    w->fade_alpha = 220;   /* start almost fully veiled, fades to 0 in the main loop */
 
     /* Copy title */
     int ti = 0;
@@ -876,6 +925,12 @@ void main(void)
         uint64_t now = uptime();
         int frame_due = (now - last_frame_tick) >= FRAME_TICKS;
 
+        /* Keep redrawing every frame while a window's open-animation
+         * is still running, even though no new IPC/input triggered
+         * this iteration -- otherwise the veil only thins out once
+         * per keystroke/mouse-move instead of smoothly over time. */
+        if (any_window_fading()) needs_full_redraw = 1;
+
         if (needs_full_redraw && frame_due) {
             /* Full scene composite + cursor + single flip */
             composite_frame();
@@ -909,6 +964,7 @@ void main(void)
              */
             window_t *w = &g_windows[g_dirty_win];
             blit_window(w);
+            draw_fade_veil(w);
 
             int32_t  fx = w->x;
             int32_t  fy = (w->flags & WIN_FLAG_DECORATED) ? w->y - TITLEBAR_H : w->y;
@@ -967,6 +1023,6 @@ void main(void)
          *  anything else is runnable — that's what caused the
          *  stutter/"stopping" feel. */
         if (!got_msg && !needs_full_redraw && !needs_cursor_update &&
-            g_dirty_win < 0) yield();
+            g_dirty_win < 0 && !any_window_fading()) yield();
     }
 }
