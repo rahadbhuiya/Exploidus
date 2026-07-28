@@ -49,6 +49,7 @@
 #define SYS_FB_RRECT     43
 #define SYS_FB_FLIP      44
 #define SYS_FB_FLIP_RECT 84   /* partial back->front flip, one rect only */
+#define SYS_FB_BLEND_RECT 85  /* alpha-blend a color over a rect (real translucency) */
 #define SYS_CHDIR        45
 #define SYS_GETCWD         46
 #define SYS_CNSL_UNBLOCK   47
@@ -90,7 +91,7 @@
 #define SYS_SIGRETURN      81   /* resume the code a signal handler interrupted */
 #define SYS_KILL           82   /* send a signal to another (or the same) process */
 
-#define SYS_COUNT          85
+#define SYS_COUNT          86
 
 
 /*

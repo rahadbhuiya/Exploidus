@@ -627,6 +627,38 @@ static __attribute__((unused)) int64_t sys_fb_flip(syscall_frame_t *f)
 { (void)f; fb_flip(); return 0; }
 
 /*
+ * sys_fb_flip_rect(x, y, w, h) -- same as fb_flip() but copies only
+ * one rect from the back buffer to the real framebuffer, instead of
+ * the whole screen. See fb_flip_rect() in kernel/drivers/fb.c.
+ */
+static __attribute__((unused)) int64_t sys_fb_flip_rect(syscall_frame_t *f)
+{
+    int32_t  x = (int32_t)f->rdi;
+    int32_t  y = (int32_t)f->rsi;
+    uint32_t w = (uint32_t)f->rdx;
+    uint32_t h = (uint32_t)f->r10;
+    fb_flip_rect(x, y, w, h);
+    return 0;
+}
+
+/*
+ * sys_fb_blend_rect(x, y, w, h, color, alpha) -- alpha-blends color
+ * over whatever is already drawn in that rect. See fb_blend_rect()
+ * in kernel/drivers/fb.c.
+ */
+static __attribute__((unused)) int64_t sys_fb_blend_rect(syscall_frame_t *f)
+{
+    uint32_t x     = (uint32_t)f->rdi;
+    uint32_t y     = (uint32_t)f->rsi;
+    uint32_t w     = (uint32_t)f->rdx;
+    uint32_t h     = (uint32_t)f->r10;
+    uint32_t color = (uint32_t)f->r8;
+    uint8_t  alpha = (uint8_t)f->r9;
+    fb_blend_rect(x, y, w, h, color, alpha);
+    return 0;
+}
+
+/*
  * sys_fb_blit(dst_x, dst_y, w, h, src_ptr, bg_color)
  * Blits a whole ARGB32 window buffer in one syscall instead of the
  * caller doing one fb_pixel syscall per pixel (which was the main
@@ -1432,6 +1464,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_RMDIR]          = sys_rmdir,
     [SYS_SIGRETURN]      = sys_sigreturn,
     [SYS_KILL]           = sys_kill,
+    [SYS_FB_FLIP_RECT]   = sys_fb_flip_rect,
+    [SYS_FB_BLEND_RECT]  = sys_fb_blend_rect,
 };
 
 void syscall_dispatch(syscall_frame_t *frame)

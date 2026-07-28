@@ -468,6 +468,13 @@ static inline void fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h)
     syscall6(SYS_FB_FLIP_RECT, (uint64_t)(int64_t)x, (uint64_t)(int64_t)y,
              (uint64_t)w, (uint64_t)h, 0, 0);
 }
+#define SYS_FB_BLEND_RECT 85
+static inline void fb_blend_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                  uint32_t color, uint8_t alpha)
+{
+    syscall6(SYS_FB_BLEND_RECT, (uint64_t)x, (uint64_t)y, (uint64_t)w,
+             (uint64_t)h, (uint64_t)color, (uint64_t)alpha);
+}
 static inline void fb_rrect(int x, int y, int w, int h, int r, uint32_t color)
 {
     syscall6(SYS_FB_RRECT,
