@@ -989,26 +989,61 @@ void main(void)
             last_frame_tick = now;
 
         } else if (needs_cursor_update && frame_due) {
-            /* Cursor-only update. Do NOT call the full composite_frame()
-             * here — it redraws the whole gradient wallpaper (~30
-             * per-pixel circle draws) on every single mouse-move event,
-             * which is what was making the whole screen appear to
-             * flicker/flash while the mouse moved. Instead: erase the
-             * cursor glyph at the position it was ACTUALLY last drawn
-             * (drawn_cx/drawn_cy, not prev_mx/prev_my — those are
-             * already updated to the new position by this point), then
-             * repaint only windows + dock (cheap) on top, then draw the
-             * cursor at its new spot. composite_frame_light() re-blits
-             * every window from its current (already up to date) pixel
-             * buffer, so any pending single-window damage is resolved
-             * as a side effect of this too. */
+            /*
+             * Cursor-only update. This used to unconditionally call
+             * composite_frame_light() (redraws every window + dock)
+             * and fb_flip() (whole-screen copy) on every single
+             * mouse-move event, regardless of whether the mouse was
+             * anywhere near a window -- most mouse movement crosses
+             * empty desktop, where none of that is needed at all.
+             * Only actually redraw windows/dock if the cursor's old
+             * or new position overlaps one; otherwise this is just
+             * "erase old cursor glyph, draw new one, flip that tiny
+             * rect" with no window work and no full-screen flip.
+             */
+            int touches_window = 0;
+            for (int i = 0; i < MAX_WINDOWS && !touches_window; i++) {
+                if (!g_windows[i].valid) continue;
+                window_t *cw = &g_windows[i];
+                int32_t wy0 = (cw->flags & WIN_FLAG_DECORATED) ? cw->y - TITLEBAR_H : cw->y;
+                int32_t wy1 = wy0 + (int32_t)cw->h +
+                              ((cw->flags & WIN_FLAG_DECORATED) ? (int32_t)TITLEBAR_H : 0);
+                int32_t wx1 = cw->x + (int32_t)cw->w;
+                if ((cur_mx   >= cw->x && cur_mx   < wx1 && cur_my   >= wy0 && cur_my   < wy1) ||
+                    (drawn_cx >= cw->x && drawn_cx < wx1 && drawn_cy >= wy0 && drawn_cy < wy1))
+                    touches_window = 1;
+            }
+            /* Also treat the dock/menubar strips as "windows" for this
+             * check -- the cursor passing over them does need a real
+             * redraw, same reasoning. */
+            if (cur_my < 22 || drawn_cy < 22 ||
+                cur_my >= (int32_t)g_screen_h - (int32_t)DOCK_H ||
+                drawn_cy >= (int32_t)g_screen_h - (int32_t)DOCK_H)
+                touches_window = 1;
+            /* Don't silently drop separately-pending window content
+             * damage just because the cursor itself isn't over a
+             * window this move. */
+            if (g_dirty_win >= 0) touches_window = 1;
+
             draw_rect(drawn_cx - 1, drawn_cy - 1, 12, 12, COL_DESKTOP);
-            composite_frame_light();
+            if (touches_window) {
+                composite_frame_light();
+            }
             draw_rect(cur_mx,     cur_my,     2, 10, COL_TEXT_PRI);
             draw_rect(cur_mx,     cur_my,     10, 2,  COL_TEXT_PRI);
             draw_rect(cur_mx + 1, cur_my + 1, 1,  8,  0x000000);
             draw_rect(cur_mx + 1, cur_my + 1, 8,  1,  0x000000);
-            fb_flip();
+
+            if (touches_window) {
+                fb_flip();  /* windows were repainted -- flip everything, safest */
+            } else {
+                int32_t rx0 = drawn_cx < cur_mx ? drawn_cx : cur_mx;
+                int32_t ry0 = drawn_cy < cur_my ? drawn_cy : cur_my;
+                int32_t rx1 = (drawn_cx > cur_mx ? drawn_cx : cur_mx) + 11;
+                int32_t ry1 = (drawn_cy > cur_my ? drawn_cy : cur_my) + 11;
+                fb_flip_rect(rx0 - 1, ry0 - 1,
+                             (uint32_t)(rx1 - rx0 + 2), (uint32_t)(ry1 - ry0 + 2));
+            }
             needs_cursor_update = 0;
             g_dirty_win = -1;
             drawn_cx = cur_mx; drawn_cy = cur_my;

@@ -214,6 +214,28 @@ void sched_yield(void)
     process_t *next = sched_next();
     if (!next) {
         if (requeue_prev) {
+            /*
+             * We are the only ready process. This used to just
+             * resume immediately with no HLT at all -- meaning a
+             * process that calls yield() in a loop whenever it has
+             * nothing to do (exactly what the compositor's main loop
+             * does) never actually gives the CPU a chance to go
+             * idle: sti;return here, straight back into the caller's
+             * for(;;), straight back into yield() again, forever, at
+             * full CPU speed. That is a genuine busy-loop wearing a
+             * cooperative-yield costume.
+             *
+             * This matters a lot more under KVM than TCG: a vCPU
+             * thread that never executes HLT looks "fully busy" to
+             * the host scheduler, which can starve the host of the
+             * quiet gaps it would otherwise use to promptly deliver
+             * timer/keyboard/mouse IRQs -- producing exactly the
+             * input-lag symptoms this was reported as. Halt for one
+             * interrupt (next timer tick at worst, 10ms at 100Hz;
+             * sooner if keyboard/mouse IRQs fire first) before
+             * resuming, instead of spinning at full speed.
+             */
+            __asm__ volatile ("sti; hlt; cli" ::: "memory");
             make_current(prev);
             prev->state = PROC_RUNNING;
             __asm__ volatile ("sti" ::: "memory");

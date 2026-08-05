@@ -136,6 +136,31 @@ static void ensure_rahu_dirs(void)
     ensure_dir("/var/rahu/installed");
 }
 
+#define MAX_DEP_DEPTH 8
+
+/* True if pkg already has an installed-file manifest, i.e. it's
+ * already on the system and doesn't need reinstalling to satisfy a
+ * dependency. */
+static int is_installed(const char *pkg)
+{
+    static char path[96];
+    int p = 0;
+    for (const char *s = "/var/rahu/installed/"; *s && p < 60;) path[p++] = *s++;
+    for (const char *s = pkg;                    *s && p < 60;) path[p++] = *s++;
+    for (const char *s = ".list";                *s && p < 95;) path[p++] = *s++;
+    path[p] = 0;
+
+    int fd = open(path, 0);
+    if (fd < 0) return 0;
+    close(fd);
+    return 1;
+}
+
+/* Forward-declared: unpack_fozu() calls this recursively for any
+ * dependency that isn't already installed, and cmd_install() calls it
+ * for the package the user actually asked for (depth 0). */
+static int install_package(const char *pkg, int depth);
+
 /* Appends `line` plus a newline to the file at `path`, creating it if
  * needed. Same "no append syscall" constraint as write_manifest_entry
  * below: read what's there, add the line, write it all back. Fine for
@@ -193,7 +218,7 @@ static int extract_one_file(int src_fd, const char *install_path,
  * /var/rahu/installed/<pkg>.list (one absolute path per line) so
  * `rahu remove` can find everything again later.
  * Returns the number of files installed, or -1 on error. */
-static int unpack_fozu(const char *fozu_path, const char *pkg_name)
+static int unpack_fozu(const char *fozu_path, const char *pkg_name, int depth)
 {
     int fd = open(fozu_path, 0);
     if (fd < 0) return -1;
@@ -221,11 +246,50 @@ static int unpack_fozu(const char *fozu_path, const char *pkg_name)
     if (read_exact(fd, ver_buf, ver_len) < 0) { close(fd); return -1; }
     ver_buf[ver_len] = 0;
 
-    uint32_t file_count;
-    if (read_u32(fd, &file_count) < 0) { close(fd); return -1; }
-
     print("[rahu]   package: "); print(name_buf);
     print(" v"); println(ver_buf);
+
+    /* Dependencies: install any that aren't already on the system
+     * before touching this package's own files, same order a real
+     * package manager would use. depth guards against a dependency
+     * cycle (A needs B needs A) spinning forever -- MAX_DEP_DEPTH
+     * levels is far more than any real chain should need. */
+    uint32_t dep_count;
+    if (read_u32(fd, &dep_count) < 0) { close(fd); return -1; }
+
+    if (dep_count > 0) {
+        print("[rahu]   depends on "); print_uint((uint64_t)dep_count); println(" package(s):");
+    }
+    for (uint32_t i = 0; i < dep_count; i++) {
+        uint32_t dn_len;
+        if (read_u32(fd, &dn_len) < 0 || dn_len > 63) { close(fd); return -1; }
+        char dep_name[64];
+        if (read_exact(fd, dep_name, dn_len) < 0) { close(fd); return -1; }
+        dep_name[dn_len] = 0;
+
+        if (is_installed(dep_name)) {
+            print("[rahu]     "); print(dep_name); println(" (already installed)");
+            continue;
+        }
+
+        if (depth + 1 >= MAX_DEP_DEPTH) {
+            print("[rahu]   dependency chain too deep at ");
+            print(dep_name);
+            println(" (possible cycle) -- aborting.");
+            close(fd);
+            return -1;
+        }
+
+        print("[rahu]     "); print(dep_name); println(" (not installed, installing...)");
+        if (!install_package(dep_name, depth + 1)) {
+            print("[rahu]   failed to install dependency: "); println(dep_name);
+            close(fd);
+            return -1;
+        }
+    }
+
+    uint32_t file_count;
+    if (read_u32(fd, &file_count) < 0) { close(fd); return -1; }
 
     static char manifest_path[80];
     int mp = 0;
@@ -409,10 +473,16 @@ static void write_manifest_entry(const char *pkg, uint64_t size)
     file_write("/var/rahu/installed.json", buf, (uint64_t)pos);
 }
 
-static void cmd_install(const char *pkg)
+/*
+ * install_package -- downloads, verifies, and unpacks one .fozu
+ * package, recursively installing any of its dependencies first
+ * (see unpack_fozu). depth is 0 for a package the user asked for
+ * directly, and increases by one per level of recursion into
+ * dependencies -- see MAX_DEP_DEPTH.
+ * Returns 1 on success, 0 on failure.
+ */
+static int install_package(const char *pkg, int depth)
 {
-    if (!pkg || !*pkg) { println("[rahu] Usage: rahu install <package>"); return; }
-
     ensure_rahu_dirs();
 
     print("[rahu] Installing: "); println(pkg);
@@ -454,7 +524,7 @@ static void cmd_install(const char *pkg)
     if (n <= 0) {
         if (n == -8) println("[rahu] Package not found on registry (HTTP error).");
         else { print("[rahu] Download failed. Error: "); print_uint((uint64_t)(-n)); putc('\n'); }
-        return;
+        return 0;
     }
 
     print("[rahu] Downloaded "); print_uint((uint64_t)n); println(" bytes.");
@@ -476,23 +546,30 @@ static void cmd_install(const char *pkg)
             print("[rahu]   expected: "); println(expected_hex);
             print("[rahu]   got:      "); println(actual_hex);
             unlink(staging_path);
-            return;
+            return 0;
         }
         println("[rahu] BLAKE3 hash verified.");
     } else {
         println("[rahu] No hash on record -- installing unverified. Run 'rahu update' first.");
     }
 
-    int installed = unpack_fozu(staging_path, pkg);
+    int installed = unpack_fozu(staging_path, pkg, depth);
     unlink(staging_path);
 
     if (installed <= 0) {
         println("[rahu] Failed to unpack package (not a valid .fozu archive?).");
-        return;
+        return 0;
     }
 
     write_manifest_entry(pkg, (uint64_t)n);
     print("[rahu] Installed "); print_uint((uint64_t)installed); println(" file(s).");
+    return 1;
+}
+
+static void cmd_install(const char *pkg)
+{
+    if (!pkg || !*pkg) { println("[rahu] Usage: rahu install <package>"); return; }
+    install_package(pkg, 0);
 }
 
 /* Remove `pkg`'s line from /var/rahu/installed.json, if present.
