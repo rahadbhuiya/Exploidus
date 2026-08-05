@@ -292,5 +292,20 @@ void idt_init(void)
     g_idt_ptr.base  = (uint64_t)(uintptr_t)g_idt;
 
     __asm__ volatile ("lidt %0" : : "m"(g_idt_ptr));
-    __asm__ volatile ("sti");
+    /*
+     * Deliberately NOT enabling interrupts here. The PIC is still in
+     * its default (BIOS) configuration at this point in boot, which
+     * maps hardware IRQ0-7 to vectors 0x08-0x0F -- directly
+     * overlapping CPU exception vectors, including 0x08 (Double
+     * Fault). If sti executed here and any hardware IRQ (the timer,
+     * likely already ticking since power-on) is pending, the very
+     * next instruction can take that interrupt, deliver it to
+     * whatever vector the un-remapped PIC still points it at, and a
+     * plain timer tick gets misinterpreted as a genuine CPU double
+     * fault -- which is exactly what was happening: this used to end
+     * with `sti` right here, before the PIC remap that moves IRQs to
+     * 32-47 has had a chance to run. Interrupts get enabled later in
+     * kernel_main(), once PIC remapping and the rest of early boot
+     * are done.
+     */
 }

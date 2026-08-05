@@ -241,3 +241,70 @@ static inline int gui_textbox_hit(const gui_textbox_t *t, int mx, int my)
     return mx >= t->x && mx < t->x + t->w &&
            my >= t->y && my < t->y + t->h;
 }
+
+/*  scrollbar (vertical)  */
+
+typedef struct {
+    int x, y, h;         /* track position and length */
+    int content_h;       /* total scrollable content height, in pixels */
+    int view_h;          /* visible viewport height, in pixels */
+    int offset;           /* current scroll offset, 0..(content_h-view_h) */
+    int dragging;         /* set by the caller while the thumb is held */
+    int drag_grab_offset;  /* pixel offset from thumb top to where the drag grabbed it */
+} gui_scrollbar_t;
+
+#define GUI_SCROLLBAR_W    10
+#define GUI_SCROLLBAR_MINT 20   /* minimum thumb length, so it stays grabbable */
+
+/* Computes the thumb's on-screen y and height for the current offset. */
+static inline void gui_scrollbar_thumb(const gui_scrollbar_t *sb, int *thumb_y, int *thumb_h)
+{
+    if (sb->content_h <= sb->view_h) { *thumb_y = sb->y; *thumb_h = sb->h; return; }
+    int th = sb->h * sb->view_h / sb->content_h;
+    if (th < GUI_SCROLLBAR_MINT) th = GUI_SCROLLBAR_MINT;
+    if (th > sb->h) th = sb->h;
+    int max_offset = sb->content_h - sb->view_h;
+    int track_travel = sb->h - th;
+    int ty = sb->y + (max_offset > 0 ? sb->offset * track_travel / max_offset : 0);
+    *thumb_y = ty;
+    *thumb_h = th;
+}
+
+static inline void gui_scrollbar_draw(uint32_t *buf, int buf_w, int buf_h,
+                                       const gui_scrollbar_t *sb)
+{
+    gui_fill_rect(buf, buf_w, buf_h, sb->x, sb->y, GUI_SCROLLBAR_W, sb->h, GUI_COL_SURFACE);
+    if (sb->content_h <= sb->view_h) return;  /* nothing to scroll, empty track only */
+    int ty, th;
+    gui_scrollbar_thumb(sb, &ty, &th);
+    gui_fill_rect(buf, buf_w, buf_h, sb->x + 2, ty, GUI_SCROLLBAR_W - 4, th,
+                  sb->dragging ? GUI_COL_ACCENT_PUR : GUI_COL_BORDER);
+}
+
+static inline int gui_scrollbar_hit(const gui_scrollbar_t *sb, int mx, int my)
+{
+    return mx >= sb->x && mx < sb->x + GUI_SCROLLBAR_W &&
+           my >= sb->y && my < sb->y + sb->h;
+}
+
+/*
+ * gui_scrollbar_drag -- called on mouse move while sb->dragging is
+ * set (the caller sets that on mouse-down over the thumb, clears it
+ * on mouse-up). Updates sb->offset from the new mouse y. Returns 1 if
+ * the offset actually changed (redraw needed), 0 otherwise.
+ */
+static inline int gui_scrollbar_drag(gui_scrollbar_t *sb, int my)
+{
+    if (sb->content_h <= sb->view_h) return 0;
+    int ty, th;
+    gui_scrollbar_thumb(sb, &ty, &th);
+    int max_offset    = sb->content_h - sb->view_h;
+    int track_travel  = sb->h - th;
+    int new_ty        = my - sb->drag_grab_offset - sb->y;
+    if (new_ty < 0) new_ty = 0;
+    if (new_ty > track_travel) new_ty = track_travel;
+    int new_offset = track_travel > 0 ? new_ty * max_offset / track_travel : 0;
+    if (new_offset == sb->offset) return 0;
+    sb->offset = new_offset;
+    return 1;
+}
