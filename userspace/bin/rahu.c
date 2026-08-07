@@ -184,6 +184,23 @@ static void append_line(const char *path, const char *line)
     file_write(path, buf, (uint64_t)pos);
 }
 
+/*
+ * record_dependent -- appends `dependent` to
+ * /var/rahu/installed/<dep>.dependents, the reverse of a "depends on"
+ * relationship. cmd_remove() reads this to refuse removing a package
+ * something else installed still needs.
+ */
+static void record_dependent(const char *dep, const char *dependent)
+{
+    static char path[96];
+    int p = 0;
+    for (const char *s = "/var/rahu/installed/"; *s && p < 60;) path[p++] = *s++;
+    for (const char *s = dep;                    *s && p < 60;) path[p++] = *s++;
+    for (const char *s = ".dependents";          *s && p < 95;) path[p++] = *s++;
+    path[p] = 0;
+    append_line(path, dependent);
+}
+
 /* Copies `size` bytes from src_fd to a newly-created file at
  * install_path with the given mode, streaming through a fixed chunk
  * buffer instead of loading the whole file into memory. Returns 0 on
@@ -269,6 +286,7 @@ static int unpack_fozu(const char *fozu_path, const char *pkg_name, int depth)
 
         if (is_installed(dep_name)) {
             print("[rahu]     "); print(dep_name); println(" (already installed)");
+            record_dependent(dep_name, pkg_name);
             continue;
         }
 
@@ -286,6 +304,7 @@ static int unpack_fozu(const char *fozu_path, const char *pkg_name, int depth)
             close(fd);
             return -1;
         }
+        record_dependent(dep_name, pkg_name);
     }
 
     uint32_t file_count;
@@ -615,6 +634,49 @@ static void remove_manifest_entry(const char *pkg)
 static void cmd_remove(const char *pkg)
 {
     if (!pkg || !*pkg) { println("[rahu] Usage: rahu remove <package>"); return; }
+
+    /* Refuse to remove a package something else installed still
+     * needs -- read /var/rahu/installed/<pkg>.dependents (written by
+     * record_dependent() during those packages' own installs) and
+     * check whether any name listed there is still actually
+     * installed (a dependent could itself have been removed since,
+     * leaving a stale entry -- that's fine, just skip it). */
+    {
+        static char dependents_path[96];
+        int dp = 0;
+        for (const char *s = "/var/rahu/installed/"; *s && dp < 60;) dependents_path[dp++] = *s++;
+        for (const char *s = pkg;                    *s && dp < 60;) dependents_path[dp++] = *s++;
+        for (const char *s = ".dependents";          *s && dp < 95;) dependents_path[dp++] = *s++;
+        dependents_path[dp] = 0;
+
+        int dfd = open(dependents_path, 0);
+        if (dfd >= 0) {
+            char line[256]; int li = 0; char ch[1]; int64_t n;
+            int blockers_found = 0;
+            while ((n = read(dfd, ch, 1)) > 0) {
+                if (ch[0] == '\n' || li >= 255) {
+                    line[li] = 0;
+                    if (li > 0 && !str_eq(line, pkg) && is_installed(line)) {
+                        if (!blockers_found) {
+                            print("[rahu] Refusing to remove "); print(pkg);
+                            println(": still needed by:");
+                        }
+                        print("[rahu]   "); println(line);
+                        blockers_found = 1;
+                    }
+                    li = 0;
+                } else {
+                    line[li++] = ch[0];
+                }
+            }
+            close(dfd);
+            if (blockers_found) {
+                println("[rahu] Remove those first, or accept they'll break, "
+                        "then remove this package's .dependents record manually.");
+                return;
+            }
+        }
+    }
 
     static char manifest_path[80];
     int mp = 0;
