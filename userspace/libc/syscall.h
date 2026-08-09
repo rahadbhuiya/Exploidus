@@ -66,18 +66,33 @@ static inline int64_t syscall0(uint64_t n)
         : "=a"(r) : "a"(n) : "rcx","r11","memory");
     return r;
 }
+/*
+ * IMPORTANT: every register the kernel's syscall handlers might read
+ * (rsi/rdx, even for syscalls whose *primary* meaning only uses rdi)
+ * must be pinned to a known value here, even when this wrapper's own
+ * arg count doesn't need it. Some handlers (e.g. sys_spawn) look at
+ * rdx unconditionally to detect "was an optional argument passed",
+ * so if we don't set it, whatever the caller's rdx happened to hold
+ * (leftover from prior computation, entirely unrelated to this call)
+ * passes straight through to the kernel and gets misinterpreted as a
+ * real argument. This was a real bug: spawn(path) via syscall1() left
+ * rdx unset, and under PIE (different register-allocation/leftover
+ * values than the old fixed-address build) that stale rdx sometimes
+ * looked like a valid user pointer, so sys_spawn treated it as an
+ * argv[1] string and fed garbage into the child's argv array.
+ */
 static inline int64_t syscall1(uint64_t n, uint64_t a)
 {
     int64_t r;
     __asm__ volatile ("syscall"
-        : "=a"(r) : "a"(n),"D"(a) : "rcx","r11","memory");
+        : "=a"(r) : "a"(n),"D"(a),"S"(0),"d"(0) : "rcx","r11","memory");
     return r;
 }
 static inline int64_t syscall2(uint64_t n, uint64_t a, uint64_t b)
 {
     int64_t r;
     __asm__ volatile ("syscall"
-        : "=a"(r) : "a"(n),"D"(a),"S"(b) : "rcx","r11","memory");
+        : "=a"(r) : "a"(n),"D"(a),"S"(b),"d"(0) : "rcx","r11","memory");
     return r;
 }
 static inline int64_t syscall3(uint64_t n, uint64_t a, uint64_t b, uint64_t c)

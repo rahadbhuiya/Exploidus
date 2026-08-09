@@ -17,7 +17,7 @@ ASFLAGS := -f elf64 -g
 LDFLAGS := -T linker.ld -nostdlib \
            -z max-page-size=0x1000 --no-dynamic-linker
 
-SHELL_LDFLAGS := -T userspace/shell/shell.ld -nostdlib \
+SHELL_LDFLAGS := -T userspace/bin/pie.ld -nostdlib \
                  -z max-page-size=0x1000 --no-dynamic-linker
 
 # Shell-specific C flags (freestanding, no stdlib, debug info)
@@ -29,11 +29,18 @@ SHELL_CFLAGS := -std=c11 -ffreestanding -fno-stack-protector \
 
 USER_LDFLAGS := -nostdlib -z max-page-size=0x1000 --no-dynamic-linker
 
-# Static PIE (ET_DYN, self-relocating, no dynamic linker needed) --
-# for aslrtest, the one binary that actually exercises the ELF
-# loader's ASLR + relocation-processing path. Every other userspace
-# binary intentionally links as plain ET_EXEC via a fixed-base .ld
-# script instead (see fixed.ld) and never touches this code path.
+# Static PIE (ET_DYN, self-relocating, no dynamic linker needed).
+# Every userspace binary now links this way and goes through the ELF
+# loader's ASLR + relocation-processing path (kernel/elf/elf.c:
+# apply_relocations() fixes up R_X86_64_RELATIVE entries, which is
+# exactly what makes stored function pointers -- luaL_Reg tables,
+# signal() handlers, callback arrays -- safe under ASLR now). This
+# used to be aslrtest-only, with everything else opting out via a
+# fixed-base .ld script (fixed.ld/hello.ld/lua.ld/etc, now unused --
+# kept in-tree for reference/history, not deleted) because the loader
+# didn't process relocations yet. USER_LDFLAGS is kept for reference /
+# any future binary that has a specific reason to opt back out to a
+# fixed base.
 PIE_LDFLAGS := -nostdlib -pie -static -z max-page-size=0x1000 --no-dynamic-linker
 
 #  SOURCES 
@@ -140,47 +147,47 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 
 all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
 
-build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  httptest -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HTT_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(HTT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/httpd.elf: $(BIN_OBJS) $(HT_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/httpd.elf: $(BIN_OBJS) $(HT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  httpd  -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HT_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(HT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/init.elf: $(BIN_OBJS) $(IN_OBJS) userspace/bin/init.ld
+build/userspace/bin/init.elf: $(BIN_OBJS) $(IN_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  init   -> $@"
-	$(LD) -T userspace/bin/init.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(IN_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(IN_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/auditd.elf: $(BIN_OBJS) $(AD_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/auditd.elf: $(BIN_OBJS) $(AD_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  auditd -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(AD_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(AD_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 #  KERNEL ELF
-build/userspace/bin/hello.elf: $(BIN_OBJS) $(HC_OBJS) userspace/bin/hello.ld
+build/userspace/bin/hello.elf: $(BIN_OBJS) $(HC_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  hello  -> $@"
-	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(HC_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(HC_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/sigtest.elf: $(BIN_OBJS) $(ST_OBJS) userspace/bin/fixed.ld
+build/userspace/bin/sigtest.elf: $(BIN_OBJS) $(ST_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  sigtest -> $@"
-	$(LD) -T userspace/bin/fixed.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(ST_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(ST_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/chmodtest.elf: $(BIN_OBJS) $(CT_OBJS) userspace/bin/hello.ld
+build/userspace/bin/chmodtest.elf: $(BIN_OBJS) $(CT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  chmodtest -> $@"
-	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(CT_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(CT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/bin/aslrtest.elf: $(BIN_OBJS) $(AT_OBJS) userspace/bin/pie.ld
@@ -189,40 +196,40 @@ build/userspace/bin/aslrtest.elf: $(BIN_OBJS) $(AT_OBJS) userspace/bin/pie.ld
 	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(AT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/udptest.elf: $(BIN_OBJS) $(UT_OBJS) userspace/bin/hello.ld
+build/userspace/bin/udptest.elf: $(BIN_OBJS) $(UT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  udptest -> $@"
-	$(LD) -T userspace/bin/hello.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(UT_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(UT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/lua/lua.ld
+build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  lua    -> $@"
-	$(LD) -T userspace/lua/lua.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(LUA_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(LUA_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/fixed.ld
+build/userspace/bin/rahu.elf: $(BIN_OBJS) $(RH_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  rahu   -> $@"
-	$(LD) -T userspace/bin/fixed.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(RH_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(RH_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/compositor/compositor.elf: $(BIN_OBJS) $(COMP_OBJS) userspace/compositor/compositor.ld
+build/userspace/compositor/compositor.elf: $(BIN_OBJS) $(COMP_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  compositor -> $@"
-	$(LD) -T userspace/compositor/compositor.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(COMP_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(COMP_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/gui_demo.elf: $(BIN_OBJS) $(GUI_DEMO_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/gui_demo.elf: $(BIN_OBJS) $(GUI_DEMO_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  gui_demo -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(GUI_DEMO_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(GUI_DEMO_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
-build/userspace/bin/terminal.elf: $(BIN_OBJS) $(TERMINAL_OBJS) userspace/bin/auditd.ld
+build/userspace/bin/terminal.elf: $(BIN_OBJS) $(TERMINAL_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  terminal -> $@"
-	$(LD) -T userspace/bin/auditd.ld $(USER_LDFLAGS) -o $@ $(BIN_OBJS) $(TERMINAL_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(TERMINAL_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o linker.ld
@@ -230,10 +237,10 @@ build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/in
 	$(LD) $(LDFLAGS) -o $@ $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o
 
 #  SHELL ELF 
-build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) userspace/shell/shell.ld
+build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  shell  -> $@"
-	$(LD) -T userspace/shell/shell.ld $(USER_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS)
 	x86_64-elf-strip --strip-debug $@
 	@echo "[STRIP] exploish done"
 
@@ -439,7 +446,7 @@ build/userspace/yolish/%.o: userspace/yolish/%.c
 	@echo "[CC]  yolish: $<"
 	$(CC) $(SHELL_CFLAGS) -Iuserspace/yolish -Iuserspace/libc -c $< -o $@
 
-build/userspace/yolish/ys.elf: $(SA_OBJS) $(YOLISH_OBJS) userspace/shell/shell.ld
+build/userspace/yolish/ys.elf: $(SA_OBJS) $(YOLISH_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  ys -> $@"
-	$(LD) -T userspace/shell/shell.ld $(USER_LDFLAGS) -o $@ $(SA_OBJS) $(YOLISH_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(YOLISH_OBJS)
