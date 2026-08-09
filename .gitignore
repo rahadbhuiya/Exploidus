@@ -3,4 +3,6 @@ registry/packages/
 registry/index.json
 *.o
 *.iso
-*.img
+*.imgbuild.log
+build/
+iso/
