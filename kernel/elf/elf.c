@@ -15,16 +15,43 @@
 #define PT_IDX(a)   (((a) >> 12) & 0x1FF)
 
 /*
- * ASLR_MASK: bits [27:12] of RDRAND output, producing a 2MB-aligned
- * random offset in the range [0, 256 MB).
+ * ASLR_MASK: bits [28:21] of RDRAND output, producing a 2MB-aligned
+ * random offset in the range [0, ~512 MB). Since any 2MB-aligned
+ * value only ever varies in bits 21+, entropy is bounded by how many
+ * *high* bits the mask keeps, not by the mask's total width -- the
+ * previous mask (bits 27:12) only ever contributed bits 27:21 after
+ * 2MB-alignment, i.e. 7 bits of real entropy. This mask keeps bits
+ * 28:21, i.e. 8 bits (256 possible load addresses instead of 128).
  *
  * ASLR_MIN_BASE: 32 MB minimum -- safely above the kernel-reserved
- * pd0 entries (indices 0-7, covering 0-16 MB huge pages). Adding
- * ASLR_MIN_BASE guarantees the final base is always in [32MB, 288MB),
- * all of which is in the user-zeroed pd0 region of the isolated PML4.
+ * pd0 entries (indices 0-15, covering 0-32 MB huge pages). Adding
+ * ASLR_MIN_BASE guarantees the final base is always in
+ * [32MB, 32MB + 510MB] = [32MB, 542MB], which stays comfortably
+ * inside the user-zeroed pd0 region (indices 16-511, i.e. up to
+ * 1024MB) that make_isolated_pml4() clears for user mappings --
+ * leaving ~480MB of headroom above the highest possible base for
+ * the ELF image itself plus any future PT_LOAD growth.
+ *
+ * NOTE: 8 bits is still weak by desktop-OS standards (Linux typically
+ * gives 28+ bits for mmap ASLR). True strong entropy would need
+ * make_isolated_pml4() to clear more than one PD table's worth of
+ * user address space -- a bigger architectural change, tracked as a
+ * follow-up. This is a safe, contained improvement within the
+ * existing single-PD-table user region.
  */
-#define ASLR_MASK     0x000000000FFFF000ULL
+#define ASLR_MASK     0x000000001FE00000ULL
 #define ASLR_MIN_BASE 0x0000000002000000ULL  /* 32 MB */
+
+/*
+ * STACK_ASLR_MASK: random *sub-page* offset within the single 2MB
+ * PD entry (pd1[511]) that make_isolated_pml4() clears for the
+ * stack. USER_STACK_PAGES (64 pages = 256KB) must still fit below
+ * USER_STACK_TOP after the offset is subtracted, so the offset is
+ * capped well under the ~1.75MB of slack available in that entry.
+ * Bits [20:12] give a 4KB-aligned offset in [0, ~2MB), which we then
+ * mask down further to stay clear of the stack pages themselves.
+ */
+#define STACK_ASLR_MASK 0x00000000001FF000ULL /* up to ~2MB, 4KB-aligned */
 
 /*
  * aslr_rdrand — generate a hardware-random 64-bit value.
@@ -392,9 +419,20 @@ bool elf_load(const uint8_t *data, uint64_t size,
         }
     }
 
-    /* Stack — fixed position, not randomised. */
-    uint64_t stack_base = USER_STACK_TOP -
+    /*
+     * Stack ASLR — randomise the stack's position within the 2MB
+     * region make_isolated_pml4() clears for it (pd1[511]), instead
+     * of always starting exactly at USER_STACK_TOP. Applied
+     * unconditionally (ET_EXEC and ET_DYN alike): unlike code/data
+     * ASLR, the stack has no absolute-address-in-.data problem, so
+     * there's no relocation hazard here — only RIP-relative/SP-
+     * relative access, which self-corrects under any shift.
+     */
+    uint64_t stack_rand = aslr_rdrand() & STACK_ASLR_MASK;
+    uint64_t stack_top  = USER_STACK_TOP - stack_rand;
+    uint64_t stack_base = stack_top -
                           (uint64_t)USER_STACK_PAGES * PAGE_SIZE;
+    serial_print("[ELF] stack_rand="); serial_printhex(stack_rand); serial_print("\n");
     serial_print("[ELF] stack_base="); serial_printhex(stack_base); serial_print("\n");
     for (int i = 0; i < USER_STACK_PAGES; i++) {
         uint64_t phys = pmm_alloc(ZONE_RED);
@@ -461,7 +499,7 @@ bool elf_load(const uint8_t *data, uint64_t size,
         }
 
         /*
-         * Layout on stack (growing down from USER_STACK_TOP):
+         * Layout on stack (growing down from stack_top):
          *   [strings area]  str_bytes bytes
          *   NULL (envp end)
          *   envc envp ptrs  (8 bytes each)
@@ -474,8 +512,8 @@ bool elf_load(const uint8_t *data, uint64_t size,
         /* Align down to 16 bytes */
         total = (total + 15) & ~15ULL;
 
-        uint64_t sp = USER_STACK_TOP - total;
-        uint64_t str_cursor = USER_STACK_TOP - str_bytes;
+        uint64_t sp = stack_top - total;
+        uint64_t str_cursor = stack_top - str_bytes;
 
         /* Copy all strings into a kernel buffer BEFORE switching CR3 */
         static char argv_strbuf[2048];
