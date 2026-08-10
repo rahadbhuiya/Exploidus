@@ -6,3 +6,4 @@ registry/index.json
 *.imgbuild.log
 build/
 iso/
+build.log
