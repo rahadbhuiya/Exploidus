@@ -1,5 +1,6 @@
 #include "ata.h"
 #include "serial.h"
+#include "../arch/x86_64/irq.h"
 #include <string.h>
 
 /* ATA primary bus ports */
@@ -12,6 +13,8 @@
 #define ATA_DRIVE_SEL   0x1F6
 #define ATA_STATUS      0x1F7
 #define ATA_CMD         0x1F7
+
+#define ATA_IRQ         14   /* primary ATA channel, ISA-wired IRQ14 */
 
 #define ATA_STATUS_BSY  0x80
 #define ATA_STATUS_RDY  0x40
@@ -46,9 +49,69 @@ static inline void outw(uint16_t port, uint16_t val)
     __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
 }
 
+/* Is IF (interrupt flag) currently set? During early boot, ata_init()
+ * and the first exfs_mount() read run *before* main.c's global sti,
+ * so the IRQ path below would hlt forever waiting for an interrupt
+ * that can never be delivered. Everything after boot (VFS reads
+ * triggered by userspace syscalls) runs with interrupts on, so this
+ * lets the same code safely use the IRQ path only when it's actually
+ * possible to. */
+static inline bool interrupts_enabled(void)
+{
+    uint64_t flags;
+    __asm__ volatile ("pushfq; pop %0" : "=r"(flags));
+    return (flags & (1ULL << 9)) != 0;
+}
+
+/* Set by ata_irq_handler() when IRQ14 fires. Volatile: written from
+ * interrupt context, read from a polling loop the compiler must not
+ * reorder/cache across. */
+static volatile bool g_ata_irq_pending = false;
+
+static void ata_irq_handler(interrupt_frame_t *frame)
+{
+    (void)frame;
+    /*
+     * Reading the status register is how a PC AT-compatible ATA
+     * controller acknowledges/clears its IRQ line (per the ATA
+     * spec, INTRQ stays asserted until the host reads Status).
+     * Without this read the controller would never lower the line
+     * again and we'd get exactly one interrupt total.
+     */
+    (void)inb(ATA_STATUS);
+    g_ata_irq_pending = true;
+}
+
+static void ata_irq_install(void)
+{
+    irq_register(ATA_IRQ, ata_irq_handler);
+}
+
 static bool ata_wait_not_busy(void)
 {
-    /* Poll up to ~5M iterations (~5 seconds at 1GHz) */
+    /*
+     * IRQ-driven path: if interrupts are enabled, park the CPU with
+     * hlt instead of spinning -- an ATA command's IRQ fires once BSY
+     * clears, so we can react to it directly rather than burning a
+     * core polling a port thousands of times a second. Bounded to
+     * ~5M wakeups so a wedged/IRQ-less drive still times out instead
+     * of hanging forever, same ceiling the old busy-poll used.
+     */
+    if (interrupts_enabled()) {
+        g_ata_irq_pending = false;
+        for (uint32_t i = 0; i < 5000000; i++) {
+            uint8_t status = inb(ATA_STATUS);
+            if (!(status & ATA_STATUS_BSY)) return true;
+            if (!g_ata_irq_pending) {
+                __asm__ volatile ("hlt");
+            }
+        }
+        serial_print("[ATA] timeout waiting for not-busy (irq path)\n");
+        return false;
+    }
+
+    /* Early-boot path (pre-sti): interrupts can't be delivered yet,
+     * so this has to busy-poll. Same as the original implementation. */
     for (uint32_t i = 0; i < 5000000; i++) {
         uint8_t status = inb(ATA_STATUS);
         if (!(status & ATA_STATUS_BSY)) return true;
@@ -59,6 +122,23 @@ static bool ata_wait_not_busy(void)
 
 static bool ata_wait_drq(void)
 {
+    if (interrupts_enabled()) {
+        g_ata_irq_pending = false;
+        for (uint32_t i = 0; i < 5000000; i++) {
+            uint8_t status = inb(ATA_STATUS);
+            if (status & ATA_STATUS_ERR) {
+                serial_print("[ATA] error bit set\n");
+                return false;
+            }
+            if (status & ATA_STATUS_DRQ) return true;
+            if (!g_ata_irq_pending) {
+                __asm__ volatile ("hlt");
+            }
+        }
+        serial_print("[ATA] timeout waiting for DRQ (irq path)\n");
+        return false;
+    }
+
     for (uint32_t i = 0; i < 5000000; i++) {
         uint8_t status = inb(ATA_STATUS);
         if (status & ATA_STATUS_ERR) {
@@ -95,6 +175,17 @@ void ata_init(void)
     uint32_t sectors = ((uint32_t)identify[61] << 16) | identify[60];
     serial_printhex((uint64_t)sectors);
     serial_print("\n");
+
+    /*
+     * Register IRQ14 now. Safe even though we're still pre-sti at
+     * this point in boot: irq_register() only unmasks the PIC line
+     * and stores the handler pointer, it doesn't require interrupts
+     * to already be globally enabled -- and ata_wait_*() checks
+     * interrupts_enabled() before ever relying on the IRQ firing.
+     * Registering here means the very first post-boot disk access
+     * already gets the IRQ-driven path.
+     */
+    ata_irq_install();
 }
 
 bool ata_read_sector(uint32_t lba, uint8_t *buf)
