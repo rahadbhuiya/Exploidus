@@ -1,6 +1,9 @@
 #include "kmalloc.h"
 #include "../sync/sync.h"
 #include <string.h>
+#ifdef DEBUG_HEAP
+#include "../drivers/serial.h"
+#endif
 
 #define ALIGN_UP(x, a)  (((x) + (a) - 1) & ~((a) - 1))
 #define MIN_ALLOC       16
@@ -58,6 +61,24 @@ static inline int valid_hdr(block_header_t *h)
 void *kmalloc(uint64_t size)
 {
     if (!size || !g_heap_head)
+        return NULL;
+
+    /*
+     * Reject sizes that would overflow the ALIGN_UP below (or that
+     * obviously can't ever be satisfied by this heap) BEFORE doing
+     * any arithmetic on them. Without this check, a request near
+     * UINT64_MAX makes `(size + 15) & ~15` wrap around to a tiny
+     * value -- the allocator would then silently hand back a
+     * 16-byte buffer while the caller believes it got the huge size
+     * it asked for. Any write through that pointer at the
+     * *requested* size becomes a heap overflow into whatever
+     * follows. Comparing against heap_size first means this can
+     * never wrap: heap_size is a few MiB, nowhere near UINT64_MAX,
+     * so `size > heap_size` catches the overflow-inducing range
+     * long before size+15 could ever wrap.
+     */
+    uint64_t heap_size = g_heap_end - g_heap_start;
+    if (size > heap_size)
         return NULL;
 
     size = ALIGN_UP(size, 16);
@@ -166,3 +187,41 @@ void kfree(void *ptr)
 out:
     spin_unlock_irqrestore(&g_heap_lock, irq_flags);
 }
+
+/*  DEBUG HOOKS  */
+#ifdef DEBUG_HEAP
+void kmalloc_dump(void)
+{
+    uint64_t irq_flags = spin_lock_irqsave(&g_heap_lock);
+    block_header_t *cur = g_heap_head;
+    uint64_t n = 0;
+    while (cur) {
+        if (!valid_hdr(cur)) {
+            serial_print("[HEAP] corrupt block, aborting dump\n");
+            break;
+        }
+        serial_print(cur->free ? "[HEAP] FREE  size=" : "[HEAP] USED  size=");
+        serial_printhex(cur->size);
+        serial_print("\n");
+        cur = cur->next;
+        n++;
+    }
+    serial_print("[HEAP] total blocks=");
+    serial_printhex(n);
+    serial_print("\n");
+    spin_unlock_irqrestore(&g_heap_lock, irq_flags);
+}
+
+uint64_t kmalloc_total_used(void)
+{
+    uint64_t irq_flags = spin_lock_irqsave(&g_heap_lock);
+    uint64_t used = 0;
+    block_header_t *cur = g_heap_head;
+    while (cur && valid_hdr(cur)) {
+        if (!cur->free) used += cur->size;
+        cur = cur->next;
+    }
+    spin_unlock_irqrestore(&g_heap_lock, irq_flags);
+    return used;
+}
+#endif
