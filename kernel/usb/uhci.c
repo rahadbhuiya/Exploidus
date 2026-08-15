@@ -172,6 +172,232 @@ static inline void portsc_write(int port, uint16_t v)
     outw(g_iobase + (port == 0 ? UHCI_PORTSC1 : UHCI_PORTSC2), v);
 }
 
+/* =====================================================================
+ * Transfer layer: Transfer Descriptors (TD) and Queue Heads (QH).
+ *
+ * CONFIDENCE NOTE: the register/reset/port code above is
+ * high-confidence (simple, single-purpose bits, consistent across
+ * every source). The TD control/status bit layout below is NOT at
+ * that same confidence level -- it's built from best recollection of
+ * the Linux uhci-hcd driver's TD_CTRL_* constants, without a way to
+ * verify against a datasheet or real hardware in this environment.
+ * If a transfer doesn't behave as expected, uhci_control_transfer()
+ * dumps every TD's raw ctrl_status DWORD to serial specifically so
+ * the actual bit pattern can be inspected/cross-checked by hand
+ * instead of trusting these #defines blindly.
+ * =====================================================================
+ */
+
+typedef struct __attribute__((packed, aligned(16))) {
+    uint32_t link;         /* -> next TD, or Terminate */
+    uint32_t ctrl_status;
+    uint32_t token;
+    uint32_t buffer;       /* physical address of this TD's data buffer */
+} uhci_td_t;
+
+typedef struct __attribute__((packed, aligned(16))) {
+    uint32_t head_link;    /* -> next QH in the schedule, or Terminate */
+    uint32_t element_link; /* -> first TD of this QH's chain, or Terminate */
+} uhci_qh_t;
+
+/* Link Pointer flag bits (shared format used by frame list entries,
+ * QH links, and TD links alike). */
+#define UHCI_PTR_TERMINATE (1u << 0)
+#define UHCI_PTR_QH        (1u << 1)
+#define UHCI_PTR_DEPTH     (1u << 2) /* depth-first: HC moves straight to
+                                       * this TD's own link next, instead
+                                       * of returning to the frame list */
+
+/* TD ctrl_status DWORD (best-recollection layout, see CONFIDENCE NOTE) */
+#define TD_CTRL_CERR3    (3u << 27) /* error counter: retry limit 3 */
+#define TD_CTRL_LS       (1u << 26) /* low-speed device */
+#define TD_CTRL_IOC      (1u << 24) /* interrupt on complete */
+#define TD_CTRL_ACTIVE   (1u << 23)
+#define TD_CTRL_STALLED  (1u << 22)
+#define TD_CTRL_DBUFERR  (1u << 21)
+#define TD_CTRL_BABBLE   (1u << 20)
+#define TD_CTRL_NAK      (1u << 19)
+#define TD_CTRL_CRCTIMEO (1u << 18)
+#define TD_CTRL_BITSTUFF (1u << 17)
+#define TD_CTRL_ACTLEN_MASK 0x7FFu
+#define TD_CTRL_ERROR_MASK (TD_CTRL_STALLED | TD_CTRL_DBUFERR | \
+                             TD_CTRL_BABBLE | TD_CTRL_CRCTIMEO | \
+                             TD_CTRL_BITSTUFF)
+
+/* TD token DWORD */
+#define USB_PID_SETUP 0x2Du
+#define USB_PID_IN    0x69u
+#define USB_PID_OUT   0xE1u
+
+static inline uint16_t maxlen_field(uint16_t len)
+{
+    /* UHCI encodes "N-1" for an N-byte packet, EXCEPT a 0-byte
+     * (zero-length) packet, which is the special value 0x7FF. Using
+     * unsigned wraparound for len=0 lands on 0xFFFF -> masked to
+     * 0x7FF automatically, so no separate special case is needed. */
+    return (uint16_t)((uint16_t)(len - 1u) & 0x7FFu);
+}
+
+static inline uint32_t td_token(uint8_t pid, uint8_t addr, uint8_t endp,
+                                 bool data1, uint16_t len)
+{
+    return (uint32_t)pid
+         | ((uint32_t)(addr & 0x7F) << 8)
+         | ((uint32_t)(endp & 0x0F) << 15)
+         | ((data1 ? 1u : 0u) << 19)
+         | ((uint32_t)maxlen_field(len) << 21);
+}
+
+/* One persistent QH used for every control transfer we issue.
+ * Linked into every frame-list entry once at init, so it's always
+ * visited (empty QHs are cheap for the HC to skip past). */
+static uhci_qh_t g_control_qh __attribute__((aligned(16)));
+
+static uint8_t g_setup_buf[8] __attribute__((aligned(16)));
+
+static void dump_td(const char *label, const uhci_td_t *td)
+{
+    serial_print("[UHCI]   ");
+    serial_print(label);
+    serial_print(" ctrl_status=");
+    serial_printhex(td->ctrl_status);
+    serial_print(" token=");
+    serial_printhex(td->token);
+    serial_print("\n");
+}
+
+/*
+ * Synchronous control transfer: SETUP + optional single-packet DATA
+ * stage + STATUS. "Single-packet" means data_len must fit in one USB
+ * packet (<=8 bytes is always safe pre-enumeration, before the
+ * device's real max packet size is known) -- multi-packet DATA
+ * stages (chaining several same-direction TDs with alternating data
+ * toggle) are NOT implemented yet, so this can't yet fetch a full
+ * 18-byte device descriptor in one call. Good enough to prove the
+ * TD/QH plumbing works end-to-end first.
+ */
+static bool uhci_control_transfer(uint8_t device_addr,
+                                   const uint8_t setup[8],
+                                   uint8_t *data_buf, uint16_t data_len,
+                                   bool data_in,
+                                   uint16_t *actual_len_out)
+{
+    static uhci_td_t td_setup  __attribute__((aligned(16)));
+    static uhci_td_t td_data   __attribute__((aligned(16)));
+    static uhci_td_t td_status __attribute__((aligned(16)));
+
+    bool has_data = (data_len > 0 && data_buf != NULL);
+    memcpy(g_setup_buf, setup, 8);
+
+    td_setup.token       = td_token(USB_PID_SETUP, device_addr, 0, false, 8);
+    td_setup.buffer      = (uint32_t)(uintptr_t)g_setup_buf;
+    td_setup.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
+
+    if (has_data) {
+        td_setup.link = (uint32_t)(uintptr_t)&td_data | UHCI_PTR_DEPTH;
+
+        td_data.token       = td_token(data_in ? USB_PID_IN : USB_PID_OUT,
+                                        device_addr, 0, true, data_len);
+        td_data.buffer      = (uint32_t)(uintptr_t)data_buf;
+        td_data.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
+        td_data.link        = (uint32_t)(uintptr_t)&td_status | UHCI_PTR_DEPTH;
+    } else {
+        td_setup.link = (uint32_t)(uintptr_t)&td_status | UHCI_PTR_DEPTH;
+    }
+
+    /* STATUS stage: opposite direction of DATA (or IN, if there was
+     * no DATA stage), always DATA1, always zero-length. */
+    bool status_in = has_data ? !data_in : true;
+    td_status.token       = td_token(status_in ? USB_PID_IN : USB_PID_OUT,
+                                      device_addr, 0, true, 0);
+    td_status.buffer      = (uint32_t)(uintptr_t)g_setup_buf; /* unused (0-len) */
+    td_status.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3 | TD_CTRL_IOC;
+    td_status.link        = UHCI_PTR_TERMINATE;
+
+    /* Kick the whole chain off by pointing our QH's element link at
+     * the SETUP TD. The HC advances through SETUP -> DATA -> STATUS
+     * on its own (following each TD's own link field), across
+     * however many 1ms frames it takes. */
+    g_control_qh.element_link = (uint32_t)(uintptr_t)&td_setup;
+
+    bool ok = false;
+    for (uint32_t i = 0; i < 500; i++) { /* ~500ms bound */
+        if (!(td_status.ctrl_status & TD_CTRL_ACTIVE)) {
+            ok = !(td_status.ctrl_status & TD_CTRL_ERROR_MASK);
+            break;
+        }
+        busy_wait_ms(1);
+    }
+
+    if (!ok) {
+        serial_print("[UHCI] control transfer failed/timed out, dumping TDs:\n");
+        dump_td("SETUP ", &td_setup);
+        if (has_data) dump_td("DATA  ", &td_data);
+        dump_td("STATUS", &td_status);
+    } else if (actual_len_out) {
+        *actual_len_out = has_data
+            ? (uint16_t)((td_data.ctrl_status & TD_CTRL_ACTLEN_MASK) + 1)
+            : 0;
+    }
+
+    /* Detach the chain so this QH goes back to idle for next time. */
+    g_control_qh.element_link = UHCI_PTR_TERMINATE;
+
+    return ok;
+}
+
+static void hexdump8(const uint8_t *buf, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++) {
+        serial_printhex(buf[i]);
+        serial_print(" ");
+    }
+    serial_print("\n");
+}
+
+/*
+ * First real enumeration step: fetch just the first 8 bytes of the
+ * device descriptor at default address 0 (standard USB convention --
+ * the device's real max packet size, needed to safely fetch the
+ * *full* 18-byte descriptor, is byte 7 of this partial descriptor).
+ * SET_ADDRESS and the full-descriptor fetch are follow-up work.
+ */
+static void uhci_probe_device(void)
+{
+    static uint8_t desc[8] __attribute__((aligned(16)));
+    memset(desc, 0, sizeof(desc));
+
+    /* GET_DESCRIPTOR (Device), wLength=8 */
+    const uint8_t setup[8] = {
+        0x80, 0x06,       /* bmRequestType, bRequest */
+        0x00, 0x01,       /* wValue = Descriptor Type 1 (DEVICE), Index 0 */
+        0x00, 0x00,       /* wIndex = 0 */
+        0x08, 0x00        /* wLength = 8 */
+    };
+
+    uint16_t actual = 0;
+    bool ok = uhci_control_transfer(0, setup, desc, 8, true, &actual);
+
+    if (!ok) {
+        serial_print("[UHCI] GET_DESCRIPTOR(Device, 8 bytes) failed\n");
+        return;
+    }
+
+    serial_print("[UHCI] GET_DESCRIPTOR ok, ");
+    serial_printhex(actual);
+    serial_print(" bytes: ");
+    hexdump8(desc, (uint16_t)(actual > 8 ? 8 : actual));
+
+    if (actual >= 8) {
+        serial_print("[UHCI]   bMaxPacketSize0=");
+        serial_printhex(desc[7]);
+        serial_print(" bcdUSB=");
+        serial_printhex(desc[3]);
+        serial_printhex(desc[2]);
+        serial_print("\n");
+    }
+}
+
 /*
  * Reset one root port and report whether a device is present
  * afterward. Per the UHCI spec, unlike OHCI, a UHCI controller does
@@ -304,10 +530,17 @@ bool uhci_init(void)
     /* Clear any stale status bits (write-1-to-clear register). */
     sts_write(0xFFFF);
 
-    /* Install the (currently empty) frame list. */
+    /* Install the frame list, with every entry pointing at our one
+     * persistent control QH (idle/Terminate element for now). A QH
+     * with Terminate element is cheap for the HC to skip, so linking
+     * it into all 1024 entries up front means transfers can be
+     * kicked off later just by changing the QH's element pointer --
+     * no need to touch the frame list itself again. */
+    g_control_qh.head_link    = UHCI_PTR_TERMINATE;
+    g_control_qh.element_link = UHCI_PTR_TERMINATE;
     memset(g_frame_list, 0, sizeof(g_frame_list));
     for (int i = 0; i < 1024; i++) {
-        g_frame_list[i] = 0x1; /* Terminate bit set: nothing scheduled */
+        g_frame_list[i] = (uint32_t)(uintptr_t)&g_control_qh | UHCI_PTR_QH;
     }
     outl(g_iobase + UHCI_FRBASEADD, (uint32_t)(uintptr_t)g_frame_list);
     outw(g_iobase + UHCI_FRNUM, 0);
@@ -332,16 +565,23 @@ bool uhci_init(void)
 
     serial_print("[UHCI] controller running\n");
 
-    /* UHCI defines exactly 2 root ports. */
+    /* UHCI defines exactly 2 root ports.
+     *
+     * LIMITATION: uhci_probe_device() always targets address 0 (the
+     * USB default/unaddressed state). That's correct as long as at
+     * most one device is unaddressed on the bus at a time -- fine
+     * for this single-device test, but real multi-device enumeration
+     * needs to reset+probe+SET_ADDRESS one port fully before moving
+     * to the next, or two simultaneously-connected devices would
+     * both answer address-0 requests at once. Not handled yet. */
     bool any_device = false;
-    if (uhci_reset_port(0)) any_device = true;
-    if (uhci_reset_port(1)) any_device = true;
+    if (uhci_reset_port(0)) { any_device = true; uhci_probe_device(); }
+    if (uhci_reset_port(1)) { any_device = true; uhci_probe_device(); }
 
     if (!any_device) {
         serial_print("[UHCI] no devices detected on root ports\n");
     }
 
-    serial_print("[UHCI] foundation init complete "
-                 "(no enumeration yet -- transfer layer not implemented)\n");
+    serial_print("[UHCI] foundation + control-transfer probe complete\n");
     return true;
 }
