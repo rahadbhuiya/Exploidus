@@ -266,41 +266,71 @@ static void dump_td(const char *label, const uhci_td_t *td)
     serial_print("\n");
 }
 
+#define UHCI_MAX_DATA_TDS 4  /* enough for an 18-byte descriptor even at
+                               * the smallest legal max-packet-size (8):
+                               * ceil(18/8) = 3, +1 headroom */
+
 /*
- * Synchronous control transfer: SETUP + optional single-packet DATA
- * stage + STATUS. "Single-packet" means data_len must fit in one USB
- * packet (<=8 bytes is always safe pre-enumeration, before the
- * device's real max packet size is known) -- multi-packet DATA
- * stages (chaining several same-direction TDs with alternating data
- * toggle) are NOT implemented yet, so this can't yet fetch a full
- * 18-byte device descriptor in one call. Good enough to prove the
- * TD/QH plumbing works end-to-end first.
+ * Synchronous control transfer: SETUP + optional multi-packet DATA
+ * stage + STATUS. The DATA stage is split into ceil(data_len /
+ * max_packet) packets, each its own TD, chained together with
+ * alternating data toggle starting at DATA1 (USB rule: SETUP is
+ * always DATA0, the first DATA-stage packet is always DATA1,
+ * alternating after that; STATUS is always DATA1 regardless of how
+ * many DATA packets preceded it -- that's a fixed rule, not a
+ * continuation of the alternation).
  */
 static bool uhci_control_transfer(uint8_t device_addr,
                                    const uint8_t setup[8],
                                    uint8_t *data_buf, uint16_t data_len,
+                                   uint8_t max_packet,
                                    bool data_in,
                                    uint16_t *actual_len_out)
 {
     static uhci_td_t td_setup  __attribute__((aligned(16)));
-    static uhci_td_t td_data   __attribute__((aligned(16)));
+    static uhci_td_t td_data[UHCI_MAX_DATA_TDS] __attribute__((aligned(16)));
     static uhci_td_t td_status __attribute__((aligned(16)));
 
     bool has_data = (data_len > 0 && data_buf != NULL);
     memcpy(g_setup_buf, setup, 8);
+
+    if (max_packet == 0) max_packet = 8; /* sane fallback */
+
+    uint32_t n_data_tds = 0;
+    if (has_data) {
+        n_data_tds = (data_len + max_packet - 1) / max_packet;
+        if (n_data_tds > UHCI_MAX_DATA_TDS) {
+            serial_print("[UHCI] control transfer: data too large for "
+                         "TD chain, aborting\n");
+            return false;
+        }
+    }
 
     td_setup.token       = td_token(USB_PID_SETUP, device_addr, 0, false, 8);
     td_setup.buffer      = (uint32_t)(uintptr_t)g_setup_buf;
     td_setup.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
 
     if (has_data) {
-        td_setup.link = (uint32_t)(uintptr_t)&td_data | UHCI_PTR_DEPTH;
+        td_setup.link = (uint32_t)(uintptr_t)&td_data[0] | UHCI_PTR_DEPTH;
 
-        td_data.token       = td_token(data_in ? USB_PID_IN : USB_PID_OUT,
-                                        device_addr, 0, true, data_len);
-        td_data.buffer      = (uint32_t)(uintptr_t)data_buf;
-        td_data.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
-        td_data.link        = (uint32_t)(uintptr_t)&td_status | UHCI_PTR_DEPTH;
+        uint16_t remaining = data_len;
+        uint8_t *cursor = data_buf;
+        for (uint32_t i = 0; i < n_data_tds; i++) {
+            uint16_t this_len = remaining < max_packet
+                               ? remaining : (uint16_t)max_packet;
+            bool toggle = (i % 2 == 0) ? true : false; /* DATA1,DATA0,... */
+
+            td_data[i].token  = td_token(data_in ? USB_PID_IN : USB_PID_OUT,
+                                          device_addr, 0, toggle, this_len);
+            td_data[i].buffer = (uint32_t)(uintptr_t)cursor;
+            td_data[i].ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
+            td_data[i].link = (i + 1 < n_data_tds)
+                ? ((uint32_t)(uintptr_t)&td_data[i + 1] | UHCI_PTR_DEPTH)
+                : ((uint32_t)(uintptr_t)&td_status | UHCI_PTR_DEPTH);
+
+            cursor    += this_len;
+            remaining -= this_len;
+        }
     } else {
         td_setup.link = (uint32_t)(uintptr_t)&td_status | UHCI_PTR_DEPTH;
     }
@@ -315,8 +345,8 @@ static bool uhci_control_transfer(uint8_t device_addr,
     td_status.link        = UHCI_PTR_TERMINATE;
 
     /* Kick the whole chain off by pointing our QH's element link at
-     * the SETUP TD. The HC advances through SETUP -> DATA -> STATUS
-     * on its own (following each TD's own link field), across
+     * the SETUP TD. The HC advances through SETUP -> DATA... ->
+     * STATUS on its own (following each TD's own link field), across
      * however many 1ms frames it takes. */
     g_control_qh.element_link = (uint32_t)(uintptr_t)&td_setup;
 
@@ -332,12 +362,14 @@ static bool uhci_control_transfer(uint8_t device_addr,
     if (!ok) {
         serial_print("[UHCI] control transfer failed/timed out, dumping TDs:\n");
         dump_td("SETUP ", &td_setup);
-        if (has_data) dump_td("DATA  ", &td_data);
+        for (uint32_t i = 0; i < n_data_tds; i++) dump_td("DATA  ", &td_data[i]);
         dump_td("STATUS", &td_status);
     } else if (actual_len_out) {
-        *actual_len_out = has_data
-            ? (uint16_t)((td_data.ctrl_status & TD_CTRL_ACTLEN_MASK) + 1)
-            : 0;
+        uint16_t total = 0;
+        for (uint32_t i = 0; i < n_data_tds; i++) {
+            total += (uint16_t)((td_data[i].ctrl_status & TD_CTRL_ACTLEN_MASK) + 1);
+        }
+        *actual_len_out = total;
     }
 
     /* Detach the chain so this QH goes back to idle for next time. */
@@ -346,7 +378,7 @@ static bool uhci_control_transfer(uint8_t device_addr,
     return ok;
 }
 
-static void hexdump8(const uint8_t *buf, uint16_t len)
+static void hexdump(const uint8_t *buf, uint16_t len)
 {
     for (uint16_t i = 0; i < len; i++) {
         serial_printhex(buf[i]);
@@ -356,44 +388,98 @@ static void hexdump8(const uint8_t *buf, uint16_t len)
 }
 
 /*
- * First real enumeration step: fetch just the first 8 bytes of the
- * device descriptor at default address 0 (standard USB convention --
- * the device's real max packet size, needed to safely fetch the
- * *full* 18-byte descriptor, is byte 7 of this partial descriptor).
- * SET_ADDRESS and the full-descriptor fetch are follow-up work.
+ * Full enumeration sequence for one device found on a root port:
+ *   1. GET_DESCRIPTOR(Device, 8 bytes) at address 0 -- learn
+ *      bMaxPacketSize0 (needed to safely split a larger transfer
+ *      into correctly-sized packets).
+ *   2. SET_ADDRESS(1) at address 0 -- the device adopts address 1
+ *      once the STATUS stage of *this* request completes. Per spec,
+ *      wait >= 2ms afterward (Set Address Recovery Time) before
+ *      sending anything else to it.
+ *   3. GET_DESCRIPTOR(Device, 18 bytes) at the new address 1, now
+ *      split into properly-sized packets -- the full descriptor.
+ *
+ * Only ever assigns address 1. Fine for one device; a real
+ * multi-device enumerator would track and hand out the next free
+ * address (2, 3, ...) per device instead -- not needed yet since
+ * uhci_reset_port()'s caller only probes one port's device at a
+ * time regardless (see the LIMITATION note in uhci_init()).
  */
-static void uhci_probe_device(void)
+static void uhci_enumerate_device(void)
 {
-    static uint8_t desc[8] __attribute__((aligned(16)));
-    memset(desc, 0, sizeof(desc));
+    static uint8_t desc8[8]  __attribute__((aligned(16)));
+    static uint8_t desc18[18] __attribute__((aligned(16)));
+    memset(desc8, 0, sizeof(desc8));
+    memset(desc18, 0, sizeof(desc18));
 
-    /* GET_DESCRIPTOR (Device), wLength=8 */
-    const uint8_t setup[8] = {
-        0x80, 0x06,       /* bmRequestType, bRequest */
+    const uint8_t get_desc_setup[8] = {
+        0x80, 0x06,       /* bmRequestType, bRequest = GET_DESCRIPTOR */
         0x00, 0x01,       /* wValue = Descriptor Type 1 (DEVICE), Index 0 */
         0x00, 0x00,       /* wIndex = 0 */
-        0x08, 0x00        /* wLength = 8 */
+        0x00, 0x00        /* wLength -- filled in per-call below */
     };
 
-    uint16_t actual = 0;
-    bool ok = uhci_control_transfer(0, setup, desc, 8, true, &actual);
+    /* --- Step 1: partial (8-byte) descriptor at address 0 --- */
+    uint8_t setup1[8];
+    memcpy(setup1, get_desc_setup, 8);
+    setup1[6] = 8; setup1[7] = 0; /* wLength = 8 */
 
-    if (!ok) {
+    uint16_t actual = 0;
+    if (!uhci_control_transfer(0, setup1, desc8, 8, 8, true, &actual)) {
         serial_print("[UHCI] GET_DESCRIPTOR(Device, 8 bytes) failed\n");
         return;
     }
-
-    serial_print("[UHCI] GET_DESCRIPTOR ok, ");
+    serial_print("[UHCI] partial descriptor (");
     serial_printhex(actual);
-    serial_print(" bytes: ");
-    hexdump8(desc, (uint16_t)(actual > 8 ? 8 : actual));
+    serial_print(" bytes): ");
+    hexdump(desc8, (uint16_t)(actual > 8 ? 8 : actual));
 
-    if (actual >= 8) {
-        serial_print("[UHCI]   bMaxPacketSize0=");
-        serial_printhex(desc[7]);
-        serial_print(" bcdUSB=");
-        serial_printhex(desc[3]);
-        serial_printhex(desc[2]);
+    uint8_t max_packet = desc8[7];
+    serial_print("[UHCI] bMaxPacketSize0=");
+    serial_printhex(max_packet);
+    serial_print("\n");
+
+    /* --- Step 2: SET_ADDRESS(1), still at address 0 --- */
+    const uint8_t set_addr_setup[8] = {
+        0x00, 0x05,       /* bmRequestType, bRequest = SET_ADDRESS */
+        0x01, 0x00,       /* wValue = new address (1) */
+        0x00, 0x00,       /* wIndex = 0 */
+        0x00, 0x00        /* wLength = 0 (no data stage) */
+    };
+    if (!uhci_control_transfer(0, set_addr_setup, NULL, 0, max_packet,
+                                true, NULL)) {
+        serial_print("[UHCI] SET_ADDRESS(1) failed\n");
+        return;
+    }
+    busy_wait_ms(10); /* spec minimum is 2ms; generous margin */
+    serial_print("[UHCI] SET_ADDRESS(1) ok, device now at address 1\n");
+
+    /* --- Step 3: full (18-byte) descriptor at the new address --- */
+    uint8_t setup2[8];
+    memcpy(setup2, get_desc_setup, 8);
+    setup2[6] = 18; setup2[7] = 0; /* wLength = 18 */
+
+    actual = 0;
+    if (!uhci_control_transfer(1, setup2, desc18, 18, max_packet,
+                                true, &actual)) {
+        serial_print("[UHCI] GET_DESCRIPTOR(Device, 18 bytes) failed\n");
+        return;
+    }
+
+    serial_print("[UHCI] full descriptor (");
+    serial_printhex(actual);
+    serial_print(" bytes): ");
+    hexdump(desc18, (uint16_t)(actual > 18 ? 18 : actual));
+
+    if (actual >= 18) {
+        uint16_t vendor  = (uint16_t)(desc18[8]  | (desc18[9]  << 8));
+        uint16_t product = (uint16_t)(desc18[10] | (desc18[11] << 8));
+        serial_print("[UHCI]   bDeviceClass=");
+        serial_printhex(desc18[4]);
+        serial_print(" idVendor=");
+        serial_printhex(vendor);
+        serial_print(" idProduct=");
+        serial_printhex(product);
         serial_print("\n");
     }
 }
@@ -567,7 +653,7 @@ bool uhci_init(void)
 
     /* UHCI defines exactly 2 root ports.
      *
-     * LIMITATION: uhci_probe_device() always targets address 0 (the
+     * LIMITATION: uhci_enumerate_device() always assigns address 1 (the
      * USB default/unaddressed state). That's correct as long as at
      * most one device is unaddressed on the bus at a time -- fine
      * for this single-device test, but real multi-device enumeration
@@ -575,8 +661,8 @@ bool uhci_init(void)
      * to the next, or two simultaneously-connected devices would
      * both answer address-0 requests at once. Not handled yet. */
     bool any_device = false;
-    if (uhci_reset_port(0)) { any_device = true; uhci_probe_device(); }
-    if (uhci_reset_port(1)) { any_device = true; uhci_probe_device(); }
+    if (uhci_reset_port(0)) { any_device = true; uhci_enumerate_device(); }
+    if (uhci_reset_port(1)) { any_device = true; uhci_enumerate_device(); }
 
     if (!any_device) {
         serial_print("[UHCI] no devices detected on root ports\n");
