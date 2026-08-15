@@ -32,6 +32,7 @@ extern void syscall_init_msr(void);
 #include "include/multiboot2.h"
 #include "ipc/ipc.h"
 #include "shm/shm.h"
+#include "usb/uhci.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -278,6 +279,17 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     driver_mark_initialized("e1000");
     extern void arp_preload_qemu_gateway(void);
     arp_preload_qemu_gateway();
+
+    kprint("[USB ] Probing for UHCI controller...\n");
+    driver_register("uhci");
+    uhci_init();
+    driver_mark_initialized("uhci");
+    /* Mirrors ata_init()'s convention: "no controller/device present"
+     * isn't a driver failure, so this is unconditional -- the driver
+     * itself is fine, there's just nothing plugged in. uhci_init()'s
+     * own serial logging already distinguishes "no controller found"
+     * from an actual init failure (HCRESET stuck, controller halted
+     * after start, etc) for anyone reading the boot log. */
 
     kprint("[IPC ] Initializing inter-process communication...\n");
     ipc_init();

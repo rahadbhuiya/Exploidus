@@ -64,6 +64,7 @@ KERNEL_C_SRCS := \
     kernel/net/dns/dns.c \
     kernel/net/tcp/tcp.c kernel/net/socket/socket.c \
     kernel/net/drivers/e1000.c \
+    kernel/usb/uhci.c \
     kernel/cnsl/cnsl.c \
     kernel/cnsl/fim.c \
 	kernel/huddlecluster/huddlecluster.c \
@@ -348,14 +349,14 @@ qemu: build/exploidus.elf
 	qemu-system-x86_64 \
 	    -kernel build/exploidus.elf \
 	    -m 256M \
-	    -device usb-ehci -device usb-tablet \
+	    -device piix3-usb-uhci -device usb-tablet \
 	    -serial stdio
 
 qemu-vga: build/exploidus.elf
 	qemu-system-x86_64 \
 	    -kernel build/exploidus.elf \
 	    -m 256M \
-	    -device usb-ehci -device usb-tablet \
+	    -device piix3-usb-uhci -device usb-tablet \
 	    -vga virtio -serial stdio
 
 qemu-iso: build/exploidus.iso
@@ -392,7 +393,7 @@ qemu-disk: build/exploidus.iso build/disk.img
 	    -device e1000,netdev=n0 \
 	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
 	    -m 256M \
-	    -device usb-ehci -device usb-tablet \
+	    -device piix3-usb-uhci -device usb-tablet \
 	    -serial stdio \
 	    -accel kvm -accel tcg,thread=multi \
 	    -cpu qemu64,+rdrand \
@@ -405,7 +406,7 @@ qemu-gui: build/exploidus.iso build/disk.img
 	    -device e1000,netdev=n0 \
 	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
 	    -m 256M \
-	    -device usb-ehci -device usb-tablet \
+	    -device piix3-usb-uhci -device usb-tablet \
 	    -vga virtio \
 	    -serial stdio \
 	    -accel kvm -accel tcg,thread=multi \
@@ -422,7 +423,7 @@ qemu-run: build/exploidus.iso build/disk.img
 	    -net nic,model=e1000 -net user \
 	     -cpu qemu64,+rdrand \
 	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap \
-	    -device usb-ehci -device usb-tablet \
+	    -device piix3-usb-uhci -device usb-tablet \
 	    -serial file:/tmp/serial.log \
 	    -vga virtio -display gtk,grab-on-hover=off 
 
