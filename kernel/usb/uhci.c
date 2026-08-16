@@ -266,9 +266,11 @@ static void dump_td(const char *label, const uhci_td_t *td)
     serial_print("\n");
 }
 
-#define UHCI_MAX_DATA_TDS 4  /* enough for an 18-byte descriptor even at
-                               * the smallest legal max-packet-size (8):
-                               * ceil(18/8) = 3, +1 headroom */
+#define UHCI_MAX_DATA_TDS 8  /* supports up to 64 bytes at the smallest
+                               * legal max-packet-size (8) -- enough
+                               * for a typical simple HID config
+                               * descriptor (Config+Interface+HID+
+                               * Endpoint = ~34 bytes) */
 
 /*
  * Synchronous control transfer: SETUP + optional multi-packet DATA
@@ -388,6 +390,103 @@ static void hexdump(const uint8_t *buf, uint16_t len)
 }
 
 /*
+ * Interrupt IN transfer -- a single bare IN-token TD, no SETUP/STATUS
+ * (those are control-transfer-only concepts). Used for HID reports
+ * (mouse/tablet/keyboard position & button state).
+ *
+ * IMPORTANT: a timeout here does NOT necessarily mean failure. Per
+ * spec, a NAK response does not clear the TD's Active bit or consume
+ * the error-retry counter -- the HC just keeps retrying the same TD
+ * on its own every frame until either real data arrives or a genuine
+ * error occurs. So "device has nothing new to report yet" and
+ * "transfer timed out waiting" look identical from here: Active is
+ * still 1 when our poll bound runs out. That's expected/normal for
+ * an interrupt endpoint with no new input, not a driver bug -- the
+ * return value distinguishes it (false + *had_error_out=false) from
+ * a real error (false + *had_error_out=true).
+ */
+static bool uhci_interrupt_in(uint8_t device_addr, uint8_t endpoint,
+                               bool *toggle, uint8_t *buf, uint16_t len,
+                               uint16_t *actual_len_out, bool *had_error_out)
+{
+    static uhci_td_t td __attribute__((aligned(16)));
+
+    td.token       = td_token(USB_PID_IN, device_addr, endpoint, *toggle, len);
+    td.buffer      = (uint32_t)(uintptr_t)buf;
+    td.ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
+    td.link        = UHCI_PTR_TERMINATE;
+
+    g_control_qh.element_link = (uint32_t)(uintptr_t)&td;
+
+    bool got_data = false;
+    bool had_error = false;
+    for (uint32_t i = 0; i < 50; i++) { /* ~50ms -- short, this is a poll,
+                                          * not a one-shot blocking wait */
+        if (!(td.ctrl_status & TD_CTRL_ACTIVE)) {
+            had_error = (td.ctrl_status & TD_CTRL_ERROR_MASK) != 0;
+            got_data = !had_error;
+            break;
+        }
+        busy_wait_ms(1);
+    }
+
+    g_control_qh.element_link = UHCI_PTR_TERMINATE;
+
+    if (had_error_out) *had_error_out = had_error;
+    if (!got_data) return false;
+
+    *toggle = !*toggle; /* only advance the toggle on a real completion */
+    if (actual_len_out) {
+        *actual_len_out = (uint16_t)((td.ctrl_status & TD_CTRL_ACTLEN_MASK) + 1);
+    }
+    return true;
+}
+
+/* Descriptor type constants, for walking a raw configuration
+ * descriptor buffer (Config -> Interface -> [Class-specific] ->
+ * Endpoint, back to back, total length given by the Config
+ * descriptor's own wTotalLength field). */
+#define USB_DESC_ENDPOINT 0x05
+#define USB_EP_ATTR_TYPE_MASK 0x03
+#define USB_EP_ATTR_INTERRUPT 0x03
+#define USB_EP_DIR_IN 0x80
+
+/*
+ * Find the first interrupt-IN endpoint in a raw configuration
+ * descriptor buffer. Returns true and fills ep_addr / ep_maxpacket
+ * if found. Deliberately simple: doesn't track which interface an
+ * endpoint belongs to, doesn't distinguish alternate settings --
+ * fine for a single-interface HID device like usb-tablet, not a
+ * general-purpose descriptor parser.
+ */
+static bool find_interrupt_in_endpoint(const uint8_t *buf, uint16_t total_len,
+                                        uint8_t *ep_addr, uint8_t *ep_maxpacket)
+{
+    uint16_t off = 0;
+    while (off + 2 <= total_len) {
+        uint8_t len  = buf[off];
+        uint8_t type = buf[off + 1];
+        if (len == 0 || off + len > total_len) break; /* malformed, stop */
+
+        if (type == USB_DESC_ENDPOINT && len >= 7) {
+            uint8_t addr = buf[off + 2];
+            uint8_t attr = buf[off + 3];
+            if ((addr & USB_EP_DIR_IN) &&
+                (attr & USB_EP_ATTR_TYPE_MASK) == USB_EP_ATTR_INTERRUPT) {
+                *ep_addr      = (uint8_t)(addr & 0x0F);
+                *ep_maxpacket = buf[off + 4]; /* wMaxPacketSize low byte
+                                                * -- fine for the small
+                                                * (<256) sizes interrupt
+                                                * endpoints actually use */
+                return true;
+            }
+        }
+        off += len;
+    }
+    return false;
+}
+
+/*
  * Full enumeration sequence for one device found on a root port:
  *   1. GET_DESCRIPTOR(Device, 8 bytes) at address 0 -- learn
  *      bMaxPacketSize0 (needed to safely split a larger transfer
@@ -482,6 +581,112 @@ static void uhci_enumerate_device(void)
         serial_printhex(product);
         serial_print("\n");
     }
+
+    /* --- Step 4: configuration descriptor (9-byte header first, to
+     * learn wTotalLength, then the full thing) --- */
+    static uint8_t cfg9[9] __attribute__((aligned(16)));
+    memset(cfg9, 0, sizeof(cfg9));
+    const uint8_t get_cfg_setup9[8] = {
+        0x80, 0x06,       /* GET_DESCRIPTOR */
+        0x00, 0x02,       /* Descriptor Type 2 (CONFIGURATION), Index 0 */
+        0x00, 0x00,
+        0x09, 0x00        /* wLength = 9 (header only) */
+    };
+    if (!uhci_control_transfer(1, get_cfg_setup9, cfg9, 9, max_packet,
+                                true, &actual) || actual < 9) {
+        serial_print("[UHCI] GET_DESCRIPTOR(Config, 9 bytes) failed\n");
+        return;
+    }
+    uint16_t total_len = (uint16_t)(cfg9[2] | (cfg9[3] << 8));
+    uint8_t config_value = cfg9[5];
+    serial_print("[UHCI] config descriptor wTotalLength=");
+    serial_printhex(total_len);
+    serial_print(" bConfigurationValue=");
+    serial_printhex(config_value);
+    serial_print("\n");
+
+    if (total_len < 9 || total_len > 64) {
+        serial_print("[UHCI] config descriptor size out of the range this "
+                     "driver handles (9-64 bytes), stopping here\n");
+        return;
+    }
+
+    static uint8_t cfg_full[64] __attribute__((aligned(16)));
+    memset(cfg_full, 0, sizeof(cfg_full));
+    uint8_t get_cfg_setup_full[8];
+    memcpy(get_cfg_setup_full, get_cfg_setup9, 8);
+    get_cfg_setup_full[6] = (uint8_t)(total_len & 0xFF);
+    get_cfg_setup_full[7] = (uint8_t)(total_len >> 8);
+
+    if (!uhci_control_transfer(1, get_cfg_setup_full, cfg_full, total_len,
+                                max_packet, true, &actual) ||
+        actual < total_len) {
+        serial_print("[UHCI] GET_DESCRIPTOR(Config, full) failed\n");
+        return;
+    }
+    serial_print("[UHCI] full config descriptor: ");
+    hexdump(cfg_full, total_len);
+
+    uint8_t ep_addr = 0, ep_maxpacket = 0;
+    bool have_int_ep = find_interrupt_in_endpoint(cfg_full, total_len,
+                                                   &ep_addr, &ep_maxpacket);
+    if (!have_int_ep) {
+        serial_print("[UHCI] no interrupt-IN endpoint found in config "
+                     "descriptor, stopping here\n");
+        return;
+    }
+    serial_print("[UHCI] interrupt-IN endpoint=");
+    serial_printhex(ep_addr);
+    serial_print(" wMaxPacketSize=");
+    serial_printhex(ep_maxpacket);
+    serial_print("\n");
+
+    /* --- Step 5: SET_CONFIGURATION --- */
+    uint8_t set_cfg_setup[8] = {
+        0x00, 0x09,             /* SET_CONFIGURATION */
+        config_value, 0x00,     /* wValue = the config to activate */
+        0x00, 0x00, 0x00, 0x00
+    };
+    if (!uhci_control_transfer(1, set_cfg_setup, NULL, 0, max_packet,
+                                true, NULL)) {
+        serial_print("[UHCI] SET_CONFIGURATION failed\n");
+        return;
+    }
+    serial_print("[UHCI] SET_CONFIGURATION(");
+    serial_printhex(config_value);
+    serial_print(") ok, device configured\n");
+
+    /* --- Step 6: one interrupt-IN poll, just to prove the endpoint
+     * actually responds (a real driver would poll this periodically
+     * from the frame-list schedule, not once at boot -- see the
+     * follow-up note below). --- */
+    static uint8_t report[16] __attribute__((aligned(16)));
+    memset(report, 0, sizeof(report));
+    bool toggle = false; /* interrupt/bulk endpoints start at DATA0 */
+    uint16_t rep_len = 0;
+    bool had_error = false;
+    uint16_t read_len = ep_maxpacket < sizeof(report)
+                       ? ep_maxpacket : (uint16_t)sizeof(report);
+
+    if (uhci_interrupt_in(1, ep_addr, &toggle, report, read_len,
+                          &rep_len, &had_error)) {
+        serial_print("[UHCI] HID report (");
+        serial_printhex(rep_len);
+        serial_print(" bytes): ");
+        hexdump(report, rep_len);
+    } else if (had_error) {
+        serial_print("[UHCI] interrupt-IN poll hit a real error\n");
+    } else {
+        serial_print("[UHCI] interrupt-IN poll: no data within ~50ms "
+                     "(NAK-retried by hardware -- not necessarily a "
+                     "problem, just nothing new to report yet)\n");
+    }
+
+    serial_print("[UHCI] NOTE: this was a single one-shot poll, not a "
+                 "persistent schedule -- a real HID driver needs this "
+                 "endpoint linked into the frame list at its own "
+                 "bInterval, polled continuously in the background. "
+                 "Not implemented yet.\n");
 }
 
 /*
