@@ -399,6 +399,26 @@ qemu-disk: build/exploidus.iso build/disk.img
 	    -cpu qemu64,+rdrand \
 	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
 
+# Same as qemu-disk, but swaps usb-tablet for a usb-storage device
+# (backed by a small throwaway raw image) so the UHCI driver's
+# mass-storage/SCSI-INQUIRY code path has something to talk to.
+build/usbstick.img:
+	dd if=/dev/zero of=build/usbstick.img bs=1M count=8
+
+qemu-usb-storage-test: build/exploidus.iso build/disk.img build/usbstick.img
+	qemu-system-x86_64 \
+	    -cdrom build/exploidus.iso \
+	    -netdev user,id=n0,hostfwd=tcp::8080-:80 \
+	    -device e1000,netdev=n0 \
+	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
+	    -m 256M \
+	    -device piix3-usb-uhci \
+	    -drive if=none,id=usbstick,file=build/usbstick.img,format=raw \
+	    -device usb-storage,drive=usbstick \
+	    -serial stdio \
+	    -accel kvm -accel tcg,thread=multi \
+	    -cpu qemu64,+rdrand
+
 qemu-gui: build/exploidus.iso build/disk.img
 	qemu-system-x86_64 \
 	    -cdrom build/exploidus.iso \

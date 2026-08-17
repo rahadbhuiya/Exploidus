@@ -446,44 +446,429 @@ static bool uhci_interrupt_in(uint8_t device_addr, uint8_t endpoint,
  * descriptor buffer (Config -> Interface -> [Class-specific] ->
  * Endpoint, back to back, total length given by the Config
  * descriptor's own wTotalLength field). */
-#define USB_DESC_ENDPOINT 0x05
+#define USB_DESC_INTERFACE 0x04
+#define USB_DESC_ENDPOINT  0x05
 #define USB_EP_ATTR_TYPE_MASK 0x03
 #define USB_EP_ATTR_INTERRUPT 0x03
+#define USB_EP_ATTR_BULK       0x02
 #define USB_EP_DIR_IN 0x80
 
+#define USB_CLASS_MASS_STORAGE 0x08
+#define USB_CLASS_HID          0x03
+
+typedef struct {
+    uint8_t if_class, if_subclass, if_protocol;
+    bool have_interrupt_in;
+    uint8_t interrupt_in_addr, interrupt_in_maxpacket;
+    bool have_bulk_in;
+    uint8_t bulk_in_addr, bulk_in_maxpacket;
+    bool have_bulk_out;
+    uint8_t bulk_out_addr, bulk_out_maxpacket;
+} usb_config_info_t;
+
 /*
- * Find the first interrupt-IN endpoint in a raw configuration
- * descriptor buffer. Returns true and fills ep_addr / ep_maxpacket
- * if found. Deliberately simple: doesn't track which interface an
- * endpoint belongs to, doesn't distinguish alternate settings --
- * fine for a single-interface HID device like usb-tablet, not a
- * general-purpose descriptor parser.
+ * Single-pass walk of a raw configuration descriptor, pulling out
+ * the first interface's class/subclass/protocol and any interrupt-IN
+ * / bulk-IN / bulk-OUT endpoints it declares. Deliberately simple:
+ * only looks at the FIRST interface found (no multi-interface
+ * composite device support, no alternate-setting handling) -- fine
+ * for the single-function devices (a HID tablet, a mass-storage
+ * stick) this driver targets so far.
  */
-static bool find_interrupt_in_endpoint(const uint8_t *buf, uint16_t total_len,
-                                        uint8_t *ep_addr, uint8_t *ep_maxpacket)
+static void parse_config_descriptor(const uint8_t *buf, uint16_t total_len,
+                                     usb_config_info_t *info)
 {
+    memset(info, 0, sizeof(*info));
+    bool seen_interface = false;
+
     uint16_t off = 0;
     while (off + 2 <= total_len) {
         uint8_t len  = buf[off];
         uint8_t type = buf[off + 1];
         if (len == 0 || off + len > total_len) break; /* malformed, stop */
 
-        if (type == USB_DESC_ENDPOINT && len >= 7) {
+        if (type == USB_DESC_INTERFACE && len >= 9) {
+            if (seen_interface) break; /* stop at the 2nd interface */
+            seen_interface = true;
+            info->if_class    = buf[off + 5];
+            info->if_subclass = buf[off + 6];
+            info->if_protocol = buf[off + 7];
+        } else if (type == USB_DESC_ENDPOINT && len >= 7) {
             uint8_t addr = buf[off + 2];
             uint8_t attr = buf[off + 3];
-            if ((addr & USB_EP_DIR_IN) &&
-                (attr & USB_EP_ATTR_TYPE_MASK) == USB_EP_ATTR_INTERRUPT) {
-                *ep_addr      = (uint8_t)(addr & 0x0F);
-                *ep_maxpacket = buf[off + 4]; /* wMaxPacketSize low byte
-                                                * -- fine for the small
-                                                * (<256) sizes interrupt
-                                                * endpoints actually use */
-                return true;
+            uint8_t ep_type = attr & USB_EP_ATTR_TYPE_MASK;
+            bool is_in = (addr & USB_EP_DIR_IN) != 0;
+            uint8_t ep_num = (uint8_t)(addr & 0x0F);
+            uint8_t maxpacket = buf[off + 4]; /* low byte -- fine for the
+                                                * small (<256) sizes these
+                                                * endpoint types use */
+
+            if (ep_type == USB_EP_ATTR_INTERRUPT && is_in &&
+                !info->have_interrupt_in) {
+                info->have_interrupt_in = true;
+                info->interrupt_in_addr = ep_num;
+                info->interrupt_in_maxpacket = maxpacket;
+            } else if (ep_type == USB_EP_ATTR_BULK && is_in &&
+                       !info->have_bulk_in) {
+                info->have_bulk_in = true;
+                info->bulk_in_addr = ep_num;
+                info->bulk_in_maxpacket = maxpacket;
+            } else if (ep_type == USB_EP_ATTR_BULK && !is_in &&
+                       !info->have_bulk_out) {
+                info->have_bulk_out = true;
+                info->bulk_out_addr = ep_num;
+                info->bulk_out_maxpacket = maxpacket;
             }
         }
         off += len;
     }
-    return false;
+}
+
+/*
+ * Bulk transfer -- like uhci_interrupt_in() but for bulk endpoints,
+ * and supports IN or OUT, and multi-packet transfers (chained TDs
+ * with alternating toggle, same splitting logic as the control
+ * transfer's DATA stage). No SETUP/STATUS phases -- those are
+ * control-transfer-only concepts; a bulk transfer is just the data
+ * packets themselves.
+ *
+ * Bulk endpoints don't get the "NAK doesn't mean error" treatment
+ * interrupt endpoints do in the same forgiving way -- a bulk OUT to
+ * a mass-storage device is expected to be accepted promptly, so a
+ * timeout here is treated as a real failure, not a normal "nothing
+ * to report yet" (there's no periodic-polling concept for bulk).
+ */
+static bool uhci_bulk_transfer(uint8_t device_addr, uint8_t endpoint,
+                                bool *toggle, uint8_t *buf, uint16_t len,
+                                uint8_t max_packet, bool data_in,
+                                uint16_t *actual_len_out)
+{
+    static uhci_td_t tds[UHCI_MAX_DATA_TDS] __attribute__((aligned(16)));
+
+    if (max_packet == 0) max_packet = 8;
+    uint32_t n = (len + max_packet - 1) / max_packet;
+    if (n == 0) n = 1; /* a zero-length bulk transfer is still 1 packet */
+    if (n > UHCI_MAX_DATA_TDS) {
+        serial_print("[UHCI] bulk transfer: too large for TD chain\n");
+        return false;
+    }
+
+    uint16_t remaining = len;
+    uint8_t *cursor = buf;
+    for (uint32_t i = 0; i < n; i++) {
+        uint16_t this_len = remaining < max_packet
+                           ? remaining : (uint16_t)max_packet;
+        tds[i].token = td_token(data_in ? USB_PID_IN : USB_PID_OUT,
+                                 device_addr, endpoint, *toggle, this_len);
+        tds[i].buffer = (uint32_t)(uintptr_t)cursor;
+        tds[i].ctrl_status = TD_CTRL_ACTIVE | TD_CTRL_CERR3;
+        tds[i].link = (i + 1 < n)
+            ? ((uint32_t)(uintptr_t)&tds[i + 1] | UHCI_PTR_DEPTH)
+            : UHCI_PTR_TERMINATE;
+        *toggle = !*toggle;
+        cursor += this_len;
+        remaining -= this_len;
+    }
+
+    g_control_qh.element_link = (uint32_t)(uintptr_t)&tds[0];
+
+    bool ok = false;
+    for (uint32_t i = 0; i < 1000; i++) { /* ~1s bound -- storage commands
+                                            * can legitimately take a
+                                            * while (spin-up, seeks) */
+        if (!(tds[n - 1].ctrl_status & TD_CTRL_ACTIVE)) {
+            ok = !(tds[n - 1].ctrl_status & TD_CTRL_ERROR_MASK);
+            break;
+        }
+        busy_wait_ms(1);
+    }
+
+    g_control_qh.element_link = UHCI_PTR_TERMINATE;
+
+    if (!ok) {
+        serial_print("[UHCI] bulk transfer failed/timed out\n");
+        for (uint32_t i = 0; i < n; i++) dump_td("BULK  ", &tds[i]);
+        return false;
+    }
+
+    if (actual_len_out) {
+        uint16_t total = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            total += (uint16_t)((tds[i].ctrl_status & TD_CTRL_ACTLEN_MASK) + 1);
+        }
+        *actual_len_out = total;
+    }
+    return true;
+}
+
+/*
+ * USB Mass Storage: Bulk-Only Transport (BOT), the near-universal
+ * transport for USB flash drives. Every command is:
+ *   1. bulk-OUT a 31-byte Command Block Wrapper (CBW): fixed
+ *      signature, a tag we choose, expected response length/
+ *      direction, and a SCSI Command Descriptor Block (CDB) of up to
+ *      16 bytes.
+ *   2. bulk-IN or bulk-OUT the actual data, if the command has a
+ *      data phase (direction/length came from the CBW).
+ *   3. bulk-IN a 13-byte Command Status Wrapper (CSW): matching
+ *      signature/tag, and a status byte (0 = success).
+ *
+ * SCSI INQUIRY (CDB opcode 0x12) is the standard first command to
+ * send to any SCSI-family device -- it doesn't touch media at all,
+ * just asks the device to identify itself (vendor/product strings,
+ * device type), making it the natural analogue of HID's
+ * GET_DESCRIPTOR for proving the bulk/BOT layer works end-to-end.
+ */
+#define CBW_SIGNATURE 0x43425355u /* "USBC" little-endian */
+#define CSW_SIGNATURE 0x53425355u /* "USBS" little-endian */
+
+typedef struct {
+    uint8_t device_addr;
+    uint8_t bulk_in, bulk_in_mp;
+    bool   *toggle_in;
+    uint8_t bulk_out, bulk_out_mp;
+    bool   *toggle_out;
+} usb_msc_ep_t;
+
+/*
+ * Generic Bulk-Only Transport command: CBW out, optional data phase
+ * (IN or OUT, direction taken from data_in), CSW in. Handles the
+ * bookkeeping every SCSI command needs; callers just supply a CDB
+ * and, if there's a data phase, a buffer.
+ *
+ * Returns true only if the whole exchange succeeded AND the device
+ * reported CSW status 0 (command succeeded) -- "the transport worked
+ * but the drive rejected the command" is deliberately still false
+ * here, since callers only care about "did I get valid data back".
+ */
+static bool uhci_scsi_command(const usb_msc_ep_t *ep,
+                               const uint8_t *cdb, uint8_t cdb_len,
+                               uint8_t *data, uint16_t data_len, bool data_in,
+                               uint16_t *actual_len_out)
+{
+    static uint8_t cbw[31] __attribute__((aligned(16)));
+    static uint8_t csw[13] __attribute__((aligned(16)));
+    memset(cbw, 0, sizeof(cbw));
+    memset(csw, 0, sizeof(csw));
+
+    static uint32_t tag_counter = 0x51535430u;
+    uint32_t tag = ++tag_counter; /* doesn't need to be meaningful, just
+                                    * echoed back in the CSW -- unique
+                                    * per command in case that ever
+                                    * matters for matching outstanding
+                                    * commands later */
+
+    cbw[0] = (uint8_t)(CBW_SIGNATURE);
+    cbw[1] = (uint8_t)(CBW_SIGNATURE >> 8);
+    cbw[2] = (uint8_t)(CBW_SIGNATURE >> 16);
+    cbw[3] = (uint8_t)(CBW_SIGNATURE >> 24);
+    cbw[4] = (uint8_t)(tag);
+    cbw[5] = (uint8_t)(tag >> 8);
+    cbw[6] = (uint8_t)(tag >> 16);
+    cbw[7] = (uint8_t)(tag >> 24);
+    cbw[8]  = (uint8_t)(data_len);
+    cbw[9]  = (uint8_t)(data_len >> 8);
+    cbw[10] = 0; cbw[11] = 0; /* data_len is uint16_t, top bytes always 0 */
+    cbw[12] = (data_len > 0 && data_in) ? 0x80 : 0x00;
+    cbw[13] = 0; /* LUN 0 */
+    cbw[14] = cdb_len;
+    memcpy(&cbw[15], cdb, cdb_len);
+
+    uint16_t junk = 0;
+    if (!uhci_bulk_transfer(ep->device_addr, ep->bulk_out, ep->toggle_out,
+                             cbw, sizeof(cbw), ep->bulk_out_mp, false,
+                             &junk)) {
+        serial_print("[UHCI] SCSI command: CBW send failed\n");
+        return false;
+    }
+
+    uint16_t data_actual = 0;
+    if (data_len > 0) {
+        if (!uhci_bulk_transfer(ep->device_addr, ep->bulk_in, ep->toggle_in,
+                                 data, data_len, ep->bulk_in_mp, data_in,
+                                 &data_actual)) {
+            serial_print("[UHCI] SCSI command: data phase failed\n");
+            return false;
+        }
+    }
+
+    uint16_t csw_actual = 0;
+    if (!uhci_bulk_transfer(ep->device_addr, ep->bulk_in, ep->toggle_in,
+                             csw, sizeof(csw), ep->bulk_in_mp, true,
+                             &csw_actual)) {
+        serial_print("[UHCI] SCSI command: CSW read failed\n");
+        return false;
+    }
+
+    uint32_t csw_sig = (uint32_t)csw[0] | ((uint32_t)csw[1] << 8) |
+                        ((uint32_t)csw[2] << 16) | ((uint32_t)csw[3] << 24);
+    uint8_t csw_status = csw[12];
+
+    if (csw_sig != CSW_SIGNATURE) {
+        serial_print("[UHCI] SCSI command: bad CSW signature=");
+        serial_printhex(csw_sig);
+        serial_print("\n");
+        return false;
+    }
+    if (csw_status != 0) {
+        serial_print("[UHCI] SCSI command: device reported status=");
+        serial_printhex(csw_status);
+        serial_print(" (0=success, 1=command failed, 2=phase error)\n");
+        return false;
+    }
+
+    if (actual_len_out) *actual_len_out = data_actual;
+    return true;
+}
+
+/*
+ * SCSI INQUIRY (CDB opcode 0x12) -- the standard first command to
+ * send to any SCSI-family device. Doesn't touch media at all, just
+ * asks the device to identify itself (vendor/product strings, device
+ * type) -- the natural analogue of HID's GET_DESCRIPTOR for proving
+ * the bulk/BOT layer works end-to-end.
+ */
+static bool uhci_scsi_inquiry(const usb_msc_ep_t *ep)
+{
+    static uint8_t data[36] __attribute__((aligned(16)));
+    memset(data, 0, sizeof(data));
+
+    uint8_t cdb[6] = {
+        0x12,           /* INQUIRY */
+        0x00,           /* EVPD=0 (standard inquiry data) */
+        0x00,           /* page code (unused, EVPD=0) */
+        0x00,           /* reserved */
+        sizeof(data),   /* allocation length = 36 */
+        0x00            /* control */
+    };
+
+    uint16_t actual = 0;
+    if (!uhci_scsi_command(ep, cdb, sizeof(cdb), data, sizeof(data), true,
+                            &actual)) {
+        serial_print("[UHCI] SCSI INQUIRY failed\n");
+        return false;
+    }
+
+    serial_print("[UHCI] INQUIRY data (");
+    serial_printhex(actual);
+    serial_print(" bytes): ");
+    hexdump(data, (uint16_t)(actual > sizeof(data) ? sizeof(data) : actual));
+
+    if (actual < 36) return false;
+
+    serial_print("[UHCI]   peripheral device type=");
+    serial_printhex((uint64_t)(data[0] & 0x1F));
+    serial_print(" vendor=\"");
+    for (int i = 8; i < 16; i++) {
+        char c = (char)data[i];
+        serial_putc(c >= 0x20 && c < 0x7F ? c : '.');
+    }
+    serial_print("\" product=\"");
+    for (int i = 16; i < 32; i++) {
+        char c = (char)data[i];
+        serial_putc(c >= 0x20 && c < 0x7F ? c : '.');
+    }
+    serial_print("\"\n");
+    return true;
+}
+
+/*
+ * SCSI READ CAPACITY (10) (CDB opcode 0x25) -- returns the address of
+ * the LAST valid logical block (not the total count -- off by one!)
+ * and the block size in bytes, both 4-byte big-endian. Standard
+ * follow-up to INQUIRY: needed before any READ/WRITE, since those
+ * need to know the device's actual block size.
+ */
+static bool uhci_scsi_read_capacity(const usb_msc_ep_t *ep,
+                                     uint32_t *last_lba_out,
+                                     uint32_t *block_size_out)
+{
+    static uint8_t data[8] __attribute__((aligned(16)));
+    memset(data, 0, sizeof(data));
+
+    uint8_t cdb[10] = {
+        0x25,                   /* READ CAPACITY (10) */
+        0x00,                   /* reserved */
+        0x00, 0x00, 0x00, 0x00, /* LBA = 0 (ignored unless PMI bit set) */
+        0x00, 0x00,             /* reserved */
+        0x00,                   /* PMI=0 (bit 0): "give me the real last LBA" */
+        0x00                    /* control */
+    };
+
+    uint16_t actual = 0;
+    if (!uhci_scsi_command(ep, cdb, sizeof(cdb), data, sizeof(data), true,
+                            &actual) || actual < 8) {
+        serial_print("[UHCI] SCSI READ CAPACITY failed\n");
+        return false;
+    }
+
+    uint32_t last_lba = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+                         ((uint32_t)data[2] << 8)  |  (uint32_t)data[3];
+    uint32_t block_size = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) |
+                           ((uint32_t)data[6] << 8)  |  (uint32_t)data[7];
+
+    serial_print("[UHCI] READ CAPACITY: last_lba=");
+    serial_printhex(last_lba);
+    serial_print(" block_size=");
+    serial_printhex(block_size);
+    serial_print(" (total ");
+    serial_printhex((uint64_t)(last_lba + 1) * block_size);
+    serial_print(" bytes)\n");
+
+    if (last_lba_out) *last_lba_out = last_lba;
+    if (block_size_out) *block_size_out = block_size;
+    return true;
+}
+
+/*
+ * SCSI READ (10) (CDB opcode 0x28) -- read transfer_blocks logical
+ * blocks starting at lba into buf (must be >= transfer_blocks *
+ * block_size bytes). Capped by UHCI_MAX_DATA_TDS (8 TDs) at the
+ * endpoint's max packet size -- e.g. one 512-byte sector at a 64-byte
+ * bulk max packet is exactly 8 packets, right at the limit. Reading
+ * more than that in one call isn't supported yet (would need
+ * multiple back-to-back uhci_bulk_transfer calls within one SCSI
+ * command's data phase).
+ */
+static bool uhci_scsi_read10(const usb_msc_ep_t *ep, uint32_t lba,
+                              uint16_t transfer_blocks, uint32_t block_size,
+                              uint8_t *buf, uint32_t buf_len)
+{
+    uint32_t want = (uint32_t)transfer_blocks * block_size;
+    if (want == 0 || want > buf_len) {
+        serial_print("[UHCI] READ(10): bad length request\n");
+        return false;
+    }
+    if (want > (uint32_t)UHCI_MAX_DATA_TDS * ep->bulk_in_mp) {
+        serial_print("[UHCI] READ(10): more data than this driver's "
+                     "single-command TD chain can carry yet\n");
+        return false;
+    }
+
+    uint8_t cdb[10] = {
+        0x28, 0x00,
+        (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
+        (uint8_t)(lba >> 8),  (uint8_t)lba,
+        0x00,
+        (uint8_t)(transfer_blocks >> 8), (uint8_t)transfer_blocks,
+        0x00
+    };
+
+    uint16_t actual = 0;
+    if (!uhci_scsi_command(ep, cdb, sizeof(cdb), buf, (uint16_t)want, true,
+                            &actual) || actual < want) {
+        serial_print("[UHCI] SCSI READ(10) failed\n");
+        return false;
+    }
+
+    serial_print("[UHCI] READ(10): lba=");
+    serial_printhex(lba);
+    serial_print(" blocks=");
+    serial_printhex(transfer_blocks);
+    serial_print(" -> ");
+    serial_printhex(actual);
+    serial_print(" bytes ok\n");
+    return true;
 }
 
 /*
@@ -627,18 +1012,14 @@ static void uhci_enumerate_device(void)
     serial_print("[UHCI] full config descriptor: ");
     hexdump(cfg_full, total_len);
 
-    uint8_t ep_addr = 0, ep_maxpacket = 0;
-    bool have_int_ep = find_interrupt_in_endpoint(cfg_full, total_len,
-                                                   &ep_addr, &ep_maxpacket);
-    if (!have_int_ep) {
-        serial_print("[UHCI] no interrupt-IN endpoint found in config "
-                     "descriptor, stopping here\n");
-        return;
-    }
-    serial_print("[UHCI] interrupt-IN endpoint=");
-    serial_printhex(ep_addr);
-    serial_print(" wMaxPacketSize=");
-    serial_printhex(ep_maxpacket);
+    usb_config_info_t cfg_info;
+    parse_config_descriptor(cfg_full, total_len, &cfg_info);
+    serial_print("[UHCI] interface class=");
+    serial_printhex(cfg_info.if_class);
+    serial_print(" subclass=");
+    serial_printhex(cfg_info.if_subclass);
+    serial_print(" protocol=");
+    serial_printhex(cfg_info.if_protocol);
     serial_print("\n");
 
     /* --- Step 5: SET_CONFIGURATION --- */
@@ -656,37 +1037,103 @@ static void uhci_enumerate_device(void)
     serial_printhex(config_value);
     serial_print(") ok, device configured\n");
 
-    /* --- Step 6: one interrupt-IN poll, just to prove the endpoint
-     * actually responds (a real driver would poll this periodically
-     * from the frame-list schedule, not once at boot -- see the
-     * follow-up note below). --- */
-    static uint8_t report[16] __attribute__((aligned(16)));
-    memset(report, 0, sizeof(report));
-    bool toggle = false; /* interrupt/bulk endpoints start at DATA0 */
-    uint16_t rep_len = 0;
-    bool had_error = false;
-    uint16_t read_len = ep_maxpacket < sizeof(report)
-                       ? ep_maxpacket : (uint16_t)sizeof(report);
+    /* --- Step 6: class-specific probe, just to prove the relevant
+     * transfer type works end-to-end. Neither of these is a real,
+     * persistent driver (see the NOTE at the end of each branch). */
+    if (cfg_info.if_class == USB_CLASS_HID && cfg_info.have_interrupt_in) {
+        serial_print("[UHCI] interrupt-IN endpoint=");
+        serial_printhex(cfg_info.interrupt_in_addr);
+        serial_print(" wMaxPacketSize=");
+        serial_printhex(cfg_info.interrupt_in_maxpacket);
+        serial_print("\n");
 
-    if (uhci_interrupt_in(1, ep_addr, &toggle, report, read_len,
-                          &rep_len, &had_error)) {
-        serial_print("[UHCI] HID report (");
-        serial_printhex(rep_len);
-        serial_print(" bytes): ");
-        hexdump(report, rep_len);
-    } else if (had_error) {
-        serial_print("[UHCI] interrupt-IN poll hit a real error\n");
+        static uint8_t report[16] __attribute__((aligned(16)));
+        memset(report, 0, sizeof(report));
+        bool toggle = false; /* interrupt/bulk endpoints start at DATA0 */
+        uint16_t rep_len = 0;
+        bool had_error = false;
+        uint16_t read_len = cfg_info.interrupt_in_maxpacket < sizeof(report)
+                           ? cfg_info.interrupt_in_maxpacket
+                           : (uint16_t)sizeof(report);
+
+        if (uhci_interrupt_in(1, cfg_info.interrupt_in_addr, &toggle,
+                              report, read_len, &rep_len, &had_error)) {
+            serial_print("[UHCI] HID report (");
+            serial_printhex(rep_len);
+            serial_print(" bytes): ");
+            hexdump(report, rep_len);
+        } else if (had_error) {
+            serial_print("[UHCI] interrupt-IN poll hit a real error\n");
+        } else {
+            serial_print("[UHCI] interrupt-IN poll: no data within ~50ms "
+                         "(NAK-retried by hardware -- not necessarily a "
+                         "problem, just nothing new to report yet)\n");
+        }
+
+        serial_print("[UHCI] NOTE: one-shot poll, not a persistent "
+                     "schedule -- a real HID driver needs this endpoint "
+                     "linked into the frame list at its own bInterval, "
+                     "polled continuously in the background. Not "
+                     "implemented yet.\n");
+
+    } else if (cfg_info.if_class == USB_CLASS_MASS_STORAGE &&
+               cfg_info.have_bulk_in && cfg_info.have_bulk_out) {
+        serial_print("[UHCI] bulk-IN endpoint=");
+        serial_printhex(cfg_info.bulk_in_addr);
+        serial_print(" wMaxPacketSize=");
+        serial_printhex(cfg_info.bulk_in_maxpacket);
+        serial_print(" bulk-OUT endpoint=");
+        serial_printhex(cfg_info.bulk_out_addr);
+        serial_print(" wMaxPacketSize=");
+        serial_printhex(cfg_info.bulk_out_maxpacket);
+        serial_print("\n");
+
+        bool toggle_in = false, toggle_out = false; /* bulk endpoints
+                                                       * start at DATA0 */
+        usb_msc_ep_t ep = {
+            .device_addr = 1,
+            .bulk_in = cfg_info.bulk_in_addr,
+            .bulk_in_mp = cfg_info.bulk_in_maxpacket,
+            .toggle_in = &toggle_in,
+            .bulk_out = cfg_info.bulk_out_addr,
+            .bulk_out_mp = cfg_info.bulk_out_maxpacket,
+            .toggle_out = &toggle_out,
+        };
+
+        if (!uhci_scsi_inquiry(&ep)) {
+            serial_print("[UHCI] stopping (INQUIRY failed)\n");
+            return;
+        }
+
+        uint32_t last_lba = 0, block_size = 0;
+        if (!uhci_scsi_read_capacity(&ep, &last_lba, &block_size)) {
+            serial_print("[UHCI] stopping (READ CAPACITY failed)\n");
+            return;
+        }
+
+        if (block_size == 0 || block_size > 4096) {
+            serial_print("[UHCI] block_size out of the range this demo "
+                         "handles, stopping here\n");
+            return;
+        }
+
+        static uint8_t sector[4096] __attribute__((aligned(16)));
+        memset(sector, 0, sizeof(sector));
+        if (uhci_scsi_read10(&ep, 0, 1, block_size, sector, sizeof(sector))) {
+            serial_print("[UHCI] LBA 0 first 32 bytes: ");
+            hexdump(sector, 32);
+        }
+
+        serial_print("[UHCI] NOTE: INQUIRY + READ CAPACITY + one READ(10) "
+                     "proven end-to-end. Still missing: WRITE(10), reading "
+                     "more than ~8 packets per command, and VFS/block-"
+                     "device integration -- not a usable storage driver, "
+                     "just a working transport + command set.\n");
+
     } else {
-        serial_print("[UHCI] interrupt-IN poll: no data within ~50ms "
-                     "(NAK-retried by hardware -- not necessarily a "
-                     "problem, just nothing new to report yet)\n");
+        serial_print("[UHCI] no driver for this interface class yet, "
+                     "stopping here\n");
     }
-
-    serial_print("[UHCI] NOTE: this was a single one-shot poll, not a "
-                 "persistent schedule -- a real HID driver needs this "
-                 "endpoint linked into the frame list at its own "
-                 "bInterval, polled continuously in the background. "
-                 "Not implemented yet.\n");
 }
 
 /*
