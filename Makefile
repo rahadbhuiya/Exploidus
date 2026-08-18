@@ -55,7 +55,7 @@ KERNEL_C_SRCS := \
     kernel/proc/process.c kernel/proc/scheduler.c \
     kernel/proc/fork_exec.c kernel/syscall/table.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \
-    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c \
+    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c kernel/drivers/blockdev.c \
     kernel/fs/vfs/vfs.c kernel/fs/exfs/exfs.c \
     kernel/elf/elf.c \
     kernel/net/net.c kernel/net/netstack.c \

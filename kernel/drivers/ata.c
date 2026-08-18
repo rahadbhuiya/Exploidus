@@ -233,3 +233,30 @@ bool ata_write_sector(uint32_t lba, const uint8_t *buf)
     ata_wait_not_busy();
     return true;
 }
+
+/*  Block-device interface (see kernel/drivers/blockdev.h)  */
+
+static bool ata_bd_read(block_device_t *dev, uint32_t lba, uint8_t *buf)
+{
+    (void)dev; /* single controller/drive -- no per-device state needed */
+    return ata_read_sector(lba, buf);
+}
+
+static bool ata_bd_write(block_device_t *dev, uint32_t lba,
+                          const uint8_t *buf)
+{
+    (void)dev;
+    return ata_write_sector(lba, buf);
+}
+
+static block_device_t g_ata_blockdev = {
+    .name = "ata0",
+    .read_sector = ata_bd_read,
+    .write_sector = ata_bd_write,
+    .driver_data = NULL,
+};
+
+block_device_t *ata_get_blockdev(void)
+{
+    return &g_ata_blockdev;
+}
