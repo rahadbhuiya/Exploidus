@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../vfs/vfs.h"
+#include "../../drivers/blockdev.h"
 
 #define EXFS_MAGIC           0x45584653   /* "EXFS" */
 #define EXFS_VERSION         1
@@ -102,6 +103,7 @@ typedef struct {
 typedef struct {
     exfs_superblock_t sb;
     uint8_t          *block_bitmap;  /* one bit per block */
+    struct block_device *dev;        /* backing storage (ata0, usb0, ...) */
     uint32_t          dev_lba_base;  /* LBA of first sector */
     bool              dirty;
 
@@ -117,7 +119,8 @@ typedef struct {
 } exfs_volume_t;
 
 /* Initialize ExFS on a block device starting at lba_base */
-vfs_node_t *exfs_mount(uint32_t lba_base);
+vfs_node_t *exfs_mount(struct block_device *dev, uint32_t lba_base);
 
 /* Format a block device with a fresh ExFS volume */
-bool exfs_format(uint32_t lba_base, uint64_t total_blocks);
+bool exfs_format(struct block_device *dev, uint32_t lba_base,
+                  uint64_t total_blocks);

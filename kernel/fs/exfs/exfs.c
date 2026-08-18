@@ -1,5 +1,4 @@
 #include "exfs.h"
-#include "../../drivers/ata.h"
 #include "../../drivers/serial.h"
 #include "../../mm/kmalloc.h"
 #include "../../audit/audit.h"
@@ -26,13 +25,13 @@ static bool exfs_read_block(exfs_volume_t *vol, uint64_t block_idx,
     uint32_t base_lba = vol->dev_lba_base + (uint32_t)(block_idx * 8);
     uint8_t *dst      = (uint8_t *)buf;
     for (int s = 0; s < 8; s++) {
-        if (!ata_read_sector(base_lba + (uint32_t)s, dst)) {
+        if (!vol->dev->read_sector(vol->dev, base_lba + (uint32_t)s, dst)) {
             serial_print("[ExFS] read_block failed at LBA ");
             serial_printhex((uint64_t)(base_lba + s));
             serial_print("\n");
             return false;
         }
-        dst += ATA_SECTOR_SIZE;
+        dst += BLOCKDEV_SECTOR_SIZE;
     }
 
     /* Populate the cache (simple round-robin eviction — good enough
@@ -54,13 +53,13 @@ static bool exfs_write_block(exfs_volume_t *vol, uint64_t block_idx,
     uint32_t       base_lba = vol->dev_lba_base + (uint32_t)(block_idx * 8);
     const uint8_t *src      = (const uint8_t *)buf;
     for (int s = 0; s < 8; s++) {
-        if (!ata_write_sector(base_lba + (uint32_t)s, src)) {
+        if (!vol->dev->write_sector(vol->dev, base_lba + (uint32_t)s, src)) {
             serial_print("[ExFS] write_block failed at LBA ");
             serial_printhex((uint64_t)(base_lba + s));
             serial_print("\n");
             return false;
         }
-        src += ATA_SECTOR_SIZE;
+        src += BLOCKDEV_SECTOR_SIZE;
     }
 
     /* Write-through: keep any cached copy of this block in sync (or
@@ -763,11 +762,17 @@ static const vfs_ops_t g_exfs_ops = {
 /*  Mount   */
 
 
-vfs_node_t *exfs_mount(uint32_t lba_base)
+vfs_node_t *exfs_mount(block_device_t *dev, uint32_t lba_base)
 {
+    if (!dev || !dev->read_sector || !dev->write_sector) {
+        serial_print("[ExFS] mount: invalid block device\n");
+        return NULL;
+    }
+
     exfs_volume_t *vol = kzalloc(sizeof(exfs_volume_t));
     if (!vol) return NULL;
 
+    vol->dev          = dev;
     vol->dev_lba_base = lba_base;
 
     /* Cache allocation failure is non-fatal — exfs_read_block/
@@ -847,8 +852,13 @@ vfs_node_t *exfs_mount(uint32_t lba_base)
 /*  Format  */
 
 
-bool exfs_format(uint32_t lba_base, uint64_t total_blocks)
+bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
 {
+    if (!dev || !dev->read_sector || !dev->write_sector) {
+        serial_print("[ExFS] format: invalid block device\n");
+        return false;
+    }
+
     uint64_t inode_blocks = (EXFS_MAX_INODES * EXFS_INODE_SIZE
                            + EXFS_BLOCK_SIZE - 1) / EXFS_BLOCK_SIZE;
     uint64_t inode_table_block = 2;
@@ -862,6 +872,7 @@ bool exfs_format(uint32_t lba_base, uint64_t total_blocks)
 
     exfs_volume_t vol;
     memset(&vol, 0, sizeof(vol));
+    vol.dev          = dev;
     vol.dev_lba_base = lba_base;
 
     static uint8_t zero_block[EXFS_BLOCK_SIZE];

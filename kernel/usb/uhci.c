@@ -1,5 +1,6 @@
 #include "uhci.h"
 #include "../drivers/serial.h"
+#include "../drivers/blockdev.h"
 #include <string.h>
 
 /*  Port I/O helpers (same pattern as e1000.c / ata.c)  */
@@ -684,9 +685,23 @@ static bool uhci_scsi_command(const usb_msc_ep_t *ep,
 
     uint16_t data_actual = 0;
     if (data_len > 0) {
-        if (!uhci_bulk_transfer(ep->device_addr, ep->bulk_in, ep->toggle_in,
-                                 data, data_len, ep->bulk_in_mp, data_in,
-                                 &data_actual)) {
+        /* Data phase direction picks the endpoint: IN data comes back
+         * on the bulk-IN endpoint, OUT data (a write) goes out on the
+         * bulk-OUT endpoint. This was a real bug -- the data phase
+         * used ep->bulk_in unconditionally, which happened to be
+         * correct for READ/INQUIRY (always data_in=true) but sent
+         * WRITE(10)'s data to the wrong endpoint (the device's IN
+         * endpoint instead of its OUT endpoint), which the device
+         * correctly refused -- every TD in the chain NAKed forever
+         * and the transfer timed out. */
+        bool ok = data_in
+            ? uhci_bulk_transfer(ep->device_addr, ep->bulk_in, ep->toggle_in,
+                                  data, data_len, ep->bulk_in_mp, true,
+                                  &data_actual)
+            : uhci_bulk_transfer(ep->device_addr, ep->bulk_out, ep->toggle_out,
+                                  data, data_len, ep->bulk_out_mp, false,
+                                  &data_actual);
+        if (!ok) {
             serial_print("[UHCI] SCSI command: data phase failed\n");
             return false;
         }
@@ -870,6 +885,97 @@ static bool uhci_scsi_read10(const usb_msc_ep_t *ep, uint32_t lba,
     serial_print(" bytes ok\n");
     return true;
 }
+
+/*
+ * SCSI WRITE (10) (CDB opcode 0x2A) -- mirror of READ(10), data phase
+ * is OUT instead of IN. Same TD-chain size limit applies.
+ *
+ * CAUTION: this actually writes to the device's media. Fine for a
+ * throwaway QEMU test image; would be genuinely destructive pointed
+ * at a real drive with real data on it. There is no write-protect
+ * check or confirmation here -- callers are responsible for only
+ * calling this when they mean it.
+ */
+static bool uhci_scsi_write10(const usb_msc_ep_t *ep, uint32_t lba,
+                               uint16_t transfer_blocks, uint32_t block_size,
+                               const uint8_t *buf, uint32_t buf_len)
+{
+    uint32_t want = (uint32_t)transfer_blocks * block_size;
+    if (want == 0 || want > buf_len) {
+        serial_print("[UHCI] WRITE(10): bad length request\n");
+        return false;
+    }
+    if (want > (uint32_t)UHCI_MAX_DATA_TDS * ep->bulk_out_mp) {
+        serial_print("[UHCI] WRITE(10): more data than this driver's "
+                     "single-command TD chain can carry yet\n");
+        return false;
+    }
+
+    uint8_t cdb[10] = {
+        0x2A, 0x00,
+        (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
+        (uint8_t)(lba >> 8),  (uint8_t)lba,
+        0x00,
+        (uint8_t)(transfer_blocks >> 8), (uint8_t)transfer_blocks,
+        0x00
+    };
+
+    /* uhci_scsi_command()'s data buffer parameter is non-const (it's
+     * shared with the read path, which needs to write into it) --
+     * safe to cast away const here since a data_in=false transfer
+     * only ever reads from this buffer, never writes into it. */
+    uint16_t actual = 0;
+    if (!uhci_scsi_command(ep, cdb, sizeof(cdb), (uint8_t *)buf,
+                            (uint16_t)want, false, &actual) ||
+        actual < want) {
+        serial_print("[UHCI] SCSI WRITE(10) failed\n");
+        return false;
+    }
+
+    serial_print("[UHCI] WRITE(10): lba=");
+    serial_printhex(lba);
+    serial_print(" blocks=");
+    serial_printhex(transfer_blocks);
+    serial_print(" -> ");
+    serial_printhex(actual);
+    serial_print(" bytes ok\n");
+    return true;
+}
+
+/* Global mass-storage device state, persisted across calls -- needed
+ * because block_device_t's read_sector/write_sector get called later
+ * (e.g. from a future `mount` command), not just during this one
+ * enumeration pass. Single-device only (like the rest of this driver
+ * -- see the address-1-only LIMITATION note above); a second stick
+ * would overwrite this. */
+static bool g_msc_present = false;
+static usb_msc_ep_t g_msc_ep;
+static bool g_msc_toggle_in, g_msc_toggle_out;
+static uint32_t g_msc_block_size;
+
+static bool usb_msc_bd_read(block_device_t *dev, uint32_t lba, uint8_t *buf)
+{
+    (void)dev;
+    if (!g_msc_present) return false;
+    return uhci_scsi_read10(&g_msc_ep, lba, 1, g_msc_block_size, buf,
+                             BLOCKDEV_SECTOR_SIZE);
+}
+
+static bool usb_msc_bd_write(block_device_t *dev, uint32_t lba,
+                              const uint8_t *buf)
+{
+    (void)dev;
+    if (!g_msc_present) return false;
+    return uhci_scsi_write10(&g_msc_ep, lba, 1, g_msc_block_size, buf,
+                              BLOCKDEV_SECTOR_SIZE);
+}
+
+static block_device_t g_usb_blockdev = {
+    .name = "usb0",
+    .read_sector = usb_msc_bd_read,
+    .write_sector = usb_msc_bd_write,
+    .driver_data = NULL,
+};
 
 /*
  * Full enumeration sequence for one device found on a root port:
@@ -1111,9 +1217,12 @@ static void uhci_enumerate_device(void)
             return;
         }
 
-        if (block_size == 0 || block_size > 4096) {
-            serial_print("[UHCI] block_size out of the range this demo "
-                         "handles, stopping here\n");
+        if (block_size != BLOCKDEV_SECTOR_SIZE) {
+            serial_print("[UHCI] block_size != ");
+            serial_printhex(BLOCKDEV_SECTOR_SIZE);
+            serial_print(" -- the block-device wrapper (usb_msc_bd_read/"
+                         "write) assumes standard 512-byte sectors and "
+                         "won't register this device, stopping here\n");
             return;
         }
 
@@ -1124,11 +1233,61 @@ static void uhci_enumerate_device(void)
             hexdump(sector, 32);
         }
 
-        serial_print("[UHCI] NOTE: INQUIRY + READ CAPACITY + one READ(10) "
-                     "proven end-to-end. Still missing: WRITE(10), reading "
-                     "more than ~8 packets per command, and VFS/block-"
-                     "device integration -- not a usable storage driver, "
-                     "just a working transport + command set.\n");
+        /* Round-trip test: write a known pattern to LBA 1 (leaving
+         * LBA 0 -- where a real partition table/boot sector would
+         * live -- untouched), read it back, and byte-compare. This
+         * is the real proof WRITE(10) works, not just that the
+         * device said "ok" -- a transport bug could still ack a
+         * write that silently didn't land. */
+        static uint8_t pattern[4096] __attribute__((aligned(16)));
+        static uint8_t verify[4096] __attribute__((aligned(16)));
+        memset(pattern, 0, sizeof(pattern));
+        for (uint32_t i = 0; i < block_size && i < sizeof(pattern); i++) {
+            pattern[i] = (uint8_t)(i ^ 0xA5); /* arbitrary but easy to
+                                                * recognize/verify */
+        }
+
+        if (uhci_scsi_write10(&ep, 1, 1, block_size,
+                              pattern, sizeof(pattern))) {
+            memset(verify, 0, sizeof(verify));
+            if (uhci_scsi_read10(&ep, 1, 1, block_size,
+                                 verify, sizeof(verify))) {
+                bool match = memcmp(pattern, verify, block_size) == 0;
+                serial_print("[UHCI] WRITE(10)+READ(10) round-trip on "
+                             "LBA 1: ");
+                serial_print(match ? "MATCH (write verified)\n"
+                                   : "MISMATCH -- data did not round-trip "
+                                     "correctly!\n");
+                if (!match) hexdump(verify, 32);
+            }
+        }
+
+        /* Register with the block-device layer -- persist the
+         * endpoint/toggle state globally (see the g_msc_* comment
+         * above) since usb_msc_bd_read/write will be called later,
+         * independent of this function's stack frame. Deliberately
+         * does NOT call blockdev_set_root() -- the ATA drive is
+         * already the working root filesystem; this just makes the
+         * USB stick available (as "usb0") for something like a
+         * future `mount` command to use. */
+        g_msc_ep = ep;
+        g_msc_toggle_in = toggle_in;
+        g_msc_toggle_out = toggle_out;
+        g_msc_ep.toggle_in = &g_msc_toggle_in;
+        g_msc_ep.toggle_out = &g_msc_toggle_out;
+        g_msc_block_size = block_size;
+        g_msc_present = true;
+        blockdev_register(&g_usb_blockdev);
+        serial_print("[UHCI] registered as block device \"usb0\" "
+                     "(512-byte sectors via SCSI READ(10)/WRITE(10))\n");
+
+        serial_print("[UHCI] NOTE: block-device registration only -- no "
+                     "VFS mount happens automatically. A real integration "
+                     "would need something like `mount usb0 /media/usb0` "
+                     "wired up in the shell/VFS layer. Also still "
+                     "missing: reading/writing more than ~8 packets per "
+                     "command (i.e. more than one 512-byte sector per "
+                     "call), and multi-device address allocation.\n");
 
     } else {
         serial_print("[UHCI] no driver for this interface class yet, "

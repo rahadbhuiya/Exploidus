@@ -23,6 +23,7 @@ extern void syscall_init_msr(void);
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
 #include "drivers/ata.h"
+#include "drivers/blockdev.h"
 #include "drivers/driver.h"
 #include "arch/x86_64/fpu.h"
 #include "fs/vfs/vfs.h"
@@ -259,6 +260,8 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     ata_init();
     driver_register("ata");
     driver_mark_initialized("ata");
+    blockdev_register(ata_get_blockdev());
+    blockdev_set_root(ata_get_blockdev());
 
     kprint("[KBD ] Registering PS/2 keyboard IRQ...\n");
     keyboard_init();
@@ -309,7 +312,7 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     hc_add_server(&g_cluster, "exploidus-0", 0x0a00020f, 80, 1);
 
     kprint("[ExFS] Attempting to mount root filesystem...\n");
-    vfs_node_t *fs_root = exfs_mount(0);
+    vfs_node_t *fs_root = exfs_mount(ata_get_blockdev(), 0);
     if (fs_root) {
         vfs_mount("/", fs_root);
         kprint("[ExFS] Root mounted at /\n");
