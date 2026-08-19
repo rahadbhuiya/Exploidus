@@ -29,6 +29,8 @@ extern int vfs_create(const char *path, uint8_t type);
 #include "../mm/vmm.h"
 #include "../crypto/blake3.h"
 #include "../net/dns/dns.h"
+#include "../drivers/blockdev.h"
+#include "../fs/exfs/exfs.h"
 #include <string.h>
 
 /*  MSR constants  */
@@ -851,6 +853,38 @@ static __attribute__((unused)) int64_t sys_rmdir(syscall_frame_t *f)
     return vfs_rmdir(path);
 }
 
+/*
+ * sys_mount(dev_name, mountpoint) — mount a registered block device
+ * (e.g. "usb0", "ata0") as a fresh ExFS volume at a VFS path.
+ *
+ * Deliberately minimal: LBA 0 only (no partition table support), no
+ * unmount, no re-mount-over-existing-mountpoint check (vfs_mount()
+ * itself doesn't reject that -- longest-prefix-match lookup just
+ * means the newest mount at a given path wins, which is enough for
+ * this to be usable without being a real mount-table manager).
+ *
+ * Returns: 0 on success, -1 on bad arguments, -2 if the named device
+ * isn't registered, -3 if exfs_mount() failed (e.g. no valid ExFS
+ * superblock at LBA 0 -- a blank/unformatted USB stick, for
+ * instance), -4 if vfs_mount() failed (mount table full).
+ */
+static __attribute__((unused)) int64_t sys_mount(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1) || !uptr_ok(f->rsi, 1)) return -1;
+    const char *dev_name    = (const char *)(uintptr_t)f->rdi;
+    const char *mountpoint  = (const char *)(uintptr_t)f->rsi;
+
+    block_device_t *dev = blockdev_find(dev_name);
+    if (!dev) return -2;
+
+    vfs_node_t *root = exfs_mount(dev, 0);
+    if (!root) return -3;
+
+    if (vfs_mount(mountpoint, root) != 0) return -4;
+
+    return 0;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1464,6 +1498,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_RMDIR]          = sys_rmdir,
     [SYS_SIGRETURN]      = sys_sigreturn,
     [SYS_KILL]           = sys_kill,
+    [SYS_MOUNT]          = sys_mount,
     [SYS_FB_FLIP_RECT]   = sys_fb_flip_rect,
     [SYS_FB_BLEND_RECT]  = sys_fb_blend_rect,
 };
