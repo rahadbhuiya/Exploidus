@@ -779,3 +779,17 @@ static inline int64_t fb_blit(int32_t dst_x, int32_t dst_y,
                      (uint64_t)w, (uint64_t)h, (uint64_t)(uintptr_t)src,
                      (uint64_t)bg_color);
 }
+
+#define SYS_MOUNT 86
+
+/*
+ * mount — mount a registered block device (e.g. "usb0", "ata0") as
+ * an ExFS volume at a VFS path. Returns 0 on success; -1 bad
+ * arguments, -2 no such device, -3 exfs_mount failed (e.g. not a
+ * valid ExFS volume), -4 vfs_mount failed (mount table full).
+ */
+static inline int mount(const char *dev_name, const char *mountpoint)
+{
+    return (int)syscall2(SYS_MOUNT, (uint64_t)(uintptr_t)dev_name,
+                          (uint64_t)(uintptr_t)mountpoint);
+}

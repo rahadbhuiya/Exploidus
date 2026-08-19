@@ -116,6 +116,44 @@ void cmd_ext_rm(const char *path) {
     _println("rm: not yet implemented");
 }
 
+void cmd_ext_mount(const char *args)
+{
+    const char *p = _skip(args);
+    if (!*p) {
+        _println("mount: usage: mount <device> <mountpoint>");
+        _println("  e.g.: mount usb0 /media/usb0");
+        return;
+    }
+
+    char dev_name[32];
+    int i = 0;
+    while (*p && *p != ' ' && i < (int)sizeof(dev_name) - 1) {
+        dev_name[i++] = *p++;
+    }
+    dev_name[i] = '\0';
+
+    p = _skip(p);
+    if (!*p) { _println("mount: missing mountpoint"); return; }
+
+    char mountpoint[256];
+    _abs(p, mountpoint, sizeof(mountpoint));
+
+    int r = mount(dev_name, mountpoint);
+    if (r == 0) {
+        _print("mounted "); _print(dev_name);
+        _print(" at "); _println(mountpoint);
+        return;
+    }
+    switch (r) {
+        case -2: _println("mount: no such device (check the name -- "
+                          "e.g. \"usb0\")"); break;
+        case -3: _println("mount: not a valid ExFS volume on that "
+                          "device (unformatted stick?)"); break;
+        case -4: _println("mount: mount table full"); break;
+        default: _println("mount: failed"); break;
+    }
+}
+
 void cmd_ext_free(void) {
     _println("              total        used        free");
     _println("Mem:          262144      --          --");

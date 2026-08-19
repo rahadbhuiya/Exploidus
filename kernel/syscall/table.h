@@ -90,8 +90,10 @@
 #define SYS_UPTIME_TICKS   80   /* raw 100Hz tick count, no seconds truncation */
 #define SYS_SIGRETURN      81   /* resume the code a signal handler interrupted */
 #define SYS_KILL           82   /* send a signal to another (or the same) process */
+#define SYS_MOUNT          86   /* mount a registered block device (e.g. "usb0")
+                                  * as an ExFS volume at a VFS path */
 
-#define SYS_COUNT          86
+#define SYS_COUNT          87
 
 
 /*
