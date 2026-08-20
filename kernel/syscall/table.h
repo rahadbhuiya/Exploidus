@@ -92,8 +92,10 @@
 #define SYS_KILL           82   /* send a signal to another (or the same) process */
 #define SYS_MOUNT          86   /* mount a registered block device (e.g. "usb0")
                                   * as an ExFS volume at a VFS path */
+#define SYS_MKFS           87   /* format a registered block device with a
+                                  * fresh ExFS volume */
 
-#define SYS_COUNT          87
+#define SYS_COUNT          88
 
 
 /*

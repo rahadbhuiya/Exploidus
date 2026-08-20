@@ -13,6 +13,13 @@ static void _print_int(int64_t n) {
     for (int j = i-1; j >= 0; j--) putc(buf[j]);
 }
 static const char *_skip(const char *s) { while (*s == ' ') s++; return s; }
+static int _atoi(const char *s) {
+    int sign = 1;
+    if (*s == '-') { sign = -1; s++; }
+    int n = 0;
+    while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); s++; }
+    return n * sign;
+}
 
 static void _abs(const char *path, char *out, int max) {
     char tmp[256];
@@ -151,6 +158,45 @@ void cmd_ext_mount(const char *args)
                           "device (unformatted stick?)"); break;
         case -4: _println("mount: mount table full"); break;
         default: _println("mount: failed"); break;
+    }
+}
+
+void cmd_ext_mkfs(const char *args)
+{
+    const char *p = _skip(args);
+    if (!*p) {
+        _println("mkfs: usage: mkfs <device> <blocks>");
+        _println("  e.g.: mkfs usb0 2000   (2000 * 4096 bytes = ~8MB)");
+        _println("  WARNING: destroys any existing data on the device.");
+        _println("  <blocks> must fit within the device's real capacity");
+        _println("  -- check the READ CAPACITY line in the boot log.");
+        return;
+    }
+
+    char dev_name[32];
+    int i = 0;
+    while (*p && *p != ' ' && i < (int)sizeof(dev_name) - 1) {
+        dev_name[i++] = *p++;
+    }
+    dev_name[i] = '\0';
+
+    p = _skip(p);
+    if (!*p) { _println("mkfs: missing block count"); return; }
+
+    int blocks = _atoi(p);
+    if (blocks <= 0) { _println("mkfs: invalid block count"); return; }
+
+    int r = mkfs(dev_name, (uint64_t)blocks);
+    if (r == 0) {
+        _print("formatted "); _print(dev_name);
+        _println(" with a fresh ExFS volume");
+        return;
+    }
+    switch (r) {
+        case -2: _println("mkfs: no such device"); break;
+        case -3: _println("mkfs: format failed (block count too small, "
+                          "or a write to the device failed)"); break;
+        default: _println("mkfs: failed"); break;
     }
 }
 

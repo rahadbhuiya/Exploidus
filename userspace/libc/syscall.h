@@ -793,3 +793,18 @@ static inline int mount(const char *dev_name, const char *mountpoint)
     return (int)syscall2(SYS_MOUNT, (uint64_t)(uintptr_t)dev_name,
                           (uint64_t)(uintptr_t)mountpoint);
 }
+
+#define SYS_MKFS 87
+
+/*
+ * mkfs — format a registered block device with a fresh ExFS volume.
+ * total_blocks * 4096 bytes must fit within the device's real
+ * capacity (not validated here or in the kernel -- see sys_mkfs()'s
+ * comment). Returns 0 on success; -1 bad arguments, -2 no such
+ * device, -3 format failed.
+ */
+static inline int mkfs(const char *dev_name, uint64_t total_blocks)
+{
+    return (int)syscall2(SYS_MKFS, (uint64_t)(uintptr_t)dev_name,
+                          total_blocks);
+}

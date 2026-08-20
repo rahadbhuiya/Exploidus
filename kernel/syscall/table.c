@@ -885,6 +885,42 @@ static __attribute__((unused)) int64_t sys_mount(syscall_frame_t *f)
     return 0;
 }
 
+/*
+ * sys_mkfs(dev_name, total_blocks) — format a registered block
+ * device with a fresh ExFS volume at LBA 0 (see exfs_format()).
+ *
+ * total_blocks is caller-specified rather than auto-derived from the
+ * device's real capacity -- this driver doesn't have a generic
+ * "query capacity" hook on block_device_t yet (ATA/USB each expose
+ * it differently: ATA doesn't expose it as a callable function at
+ * all today, USB's is packed into the SCSI READ CAPACITY response
+ * seen once at enumeration time and not persisted anywhere
+ * queryable). Caller is responsible for picking a total_blocks that
+ * fits the real device -- exfs_format() itself doesn't validate
+ * against actual device size either, so requesting more blocks than
+ * the device has will silently write past the end of small devices.
+ * A real implementation would add block_device_t.get_capacity() and
+ * default to it if total_blocks is 0; not done yet.
+ *
+ * Returns: 0 success, -1 bad arguments, -2 no such device, -3
+ * exfs_format() failed (total_blocks too small for even the
+ * metadata, or a write failed).
+ */
+static __attribute__((unused)) int64_t sys_mkfs(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *dev_name = (const char *)(uintptr_t)f->rdi;
+    uint64_t total_blocks = f->rsi;
+    if (total_blocks == 0) return -1;
+
+    block_device_t *dev = blockdev_find(dev_name);
+    if (!dev) return -2;
+
+    if (!exfs_format(dev, 0, total_blocks)) return -3;
+
+    return 0;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1499,6 +1535,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_SIGRETURN]      = sys_sigreturn,
     [SYS_KILL]           = sys_kill,
     [SYS_MOUNT]          = sys_mount,
+    [SYS_MKFS]           = sys_mkfs,
     [SYS_FB_FLIP_RECT]   = sys_fb_flip_rect,
     [SYS_FB_BLEND_RECT]  = sys_fb_blend_rect,
 };

@@ -391,6 +391,8 @@ static void cmd_help(void)
     println("  ys <script>     Run a Yolish script");
     println("  mount <dev> <mountpoint>   Mount a block device "
              "(e.g. mount usb0 /media/usb0)");
+    println("  mkfs <dev> <blocks>        Format a block device with "
+             "fresh ExFS (e.g. mkfs usb0 2000)");
 }
 
 static void cmd_echo(const char *args)
@@ -1583,6 +1585,8 @@ static void dispatch(const char *line)
         cmd_ext_rm(skip_spaces(l + 3));
     } else if (str_starts(l, "mount ")) {
         cmd_ext_mount(skip_spaces(l + 6));
+    } else if (str_starts(l, "mkfs ")) {
+        cmd_ext_mkfs(skip_spaces(l + 5));
     } else if (str_eq(l, "free")) {
         cmd_ext_free();
     } else if (str_eq(l, "uptime")) {
