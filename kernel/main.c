@@ -34,6 +34,9 @@ extern void syscall_init_msr(void);
 #include "ipc/ipc.h"
 #include "shm/shm.h"
 #include "usb/uhci.h"
+
+/* kernel/arch/x86_64/stack_protector.c */
+void stack_protector_init(void);
 #include <stdint.h>
 #include <string.h>
 
@@ -187,6 +190,13 @@ static void kprint(const char *s)
 
 void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 {
+    /* As early as possible: replace the fixed startup canary
+     * placeholder with a real RDRAND-sourced one. Everything before
+     * this point (basically nothing -- this is the first statement)
+     * runs under the weaker placeholder; see
+     * kernel/arch/x86_64/stack_protector.c for the full reasoning. */
+    stack_protector_init();
+
     serial_init();
     driver_register("serial");
     driver_mark_initialized("serial");

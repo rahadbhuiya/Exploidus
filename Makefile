@@ -4,7 +4,14 @@ AS  := nasm
 LD  := x86_64-elf-ld
 
 #  FLAGS 
-CFLAGS := -std=c11 -ffreestanding -fno-stack-protector \
+# -fstack-protector-strong: emit stack canaries for functions with
+# local arrays/address-taken locals (the main buffer-overflow class
+# this actually catches, without -fstack-protector-all's cost of
+# instrumenting every single function regardless of risk). Requires
+# __stack_chk_guard + __stack_chk_fail() to exist somewhere linkable
+# since this is freestanding/no-libc -- see
+# kernel/arch/x86_64/stack_protector.c.
+CFLAGS := -std=c11 -ffreestanding -fstack-protector-strong \
           -fno-pic -fno-pie -mno-red-zone              \
           -mno-mmx -mno-sse -mno-sse2                  \
           -Wall -Wextra -Werror -Wno-unused-parameter  \
@@ -20,8 +27,10 @@ LDFLAGS := -T linker.ld -nostdlib \
 SHELL_LDFLAGS := -T userspace/bin/pie.ld -nostdlib \
                  -z max-page-size=0x1000 --no-dynamic-linker
 
-# Shell-specific C flags (freestanding, no stdlib, debug info)
-SHELL_CFLAGS := -std=c11 -ffreestanding -fno-stack-protector \
+# Shell-specific C flags (freestanding, no stdlib, debug info).
+# -fstack-protector-strong here too -- see userspace/libc/stack_protector.c
+# for the userspace-side __stack_chk_guard/__stack_chk_fail.
+SHELL_CFLAGS := -std=c11 -ffreestanding -fstack-protector-strong \
                 -fPIC -mno-red-zone                            \
                 -Wall -Wextra -Werror -Wno-unused-parameter   \
                 -D__EXPLOIDUS_USERSPACE__                      \
@@ -49,6 +58,7 @@ KERNEL_C_SRCS := \
     kernel/arch/x86_64/gdt.c kernel/arch/x86_64/idt.c \
     kernel/arch/x86_64/irq.c kernel/arch/x86_64/apic.c \
     kernel/arch/x86_64/fpu.c \
+    kernel/arch/x86_64/stack_protector.c \
     kernel/mm/pmm.c kernel/mm/vmm.c kernel/mm/kmalloc.c \
     kernel/cap/capability.c kernel/cap/broker.c \
     kernel/crypto/blake3.c kernel/audit/audit.c \
@@ -111,7 +121,8 @@ LIBC_C_SRCS := \
     userspace/libc/locale.c \
     userspace/libc/signal.c \
     userspace/libc/ctype.c \
-    userspace/libc/assert.c
+    userspace/libc/assert.c \
+    userspace/libc/stack_protector.c
 
 LIBC_OBJS := $(patsubst %.c, build/%.o, $(LIBC_C_SRCS))
 
@@ -238,10 +249,13 @@ build/exploidus.elf: $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/in
 	$(LD) $(LDFLAGS) -o $@ $(ALL_KOBJS) build/shell_blob.o build/hello_blob.o build/init_blob.o
 
 #  SHELL ELF 
-build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) userspace/bin/pie.ld
+# Needs stack_protector.o explicitly (not just via $(SA_OBJS)
+# $(SC_OBJS)) because the shell deliberately doesn't link the rest of
+# libc ($(LIBC_OBJS)) -- see the atoi/_atoi lesson in exploish_cmds.c.
+build/userspace/shell/exploish.elf: $(SA_OBJS) $(SC_OBJS) build/userspace/libc/stack_protector.o userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  shell  -> $@"
-	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(SC_OBJS) build/userspace/libc/stack_protector.o
 	x86_64-elf-strip --strip-debug $@
 	@echo "[STRIP] exploish done"
 
@@ -467,7 +481,7 @@ build/userspace/yolish/%.o: userspace/yolish/%.c
 	@echo "[CC]  yolish: $<"
 	$(CC) $(SHELL_CFLAGS) -Iuserspace/yolish -Iuserspace/libc -c $< -o $@
 
-build/userspace/yolish/ys.elf: $(SA_OBJS) $(YOLISH_OBJS) userspace/bin/pie.ld
+build/userspace/yolish/ys.elf: $(SA_OBJS) $(YOLISH_OBJS) build/userspace/libc/stack_protector.o userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  ys -> $@"
-	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(YOLISH_OBJS)
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(SA_OBJS) $(YOLISH_OBJS) build/userspace/libc/stack_protector.o
