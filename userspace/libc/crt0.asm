@@ -3,6 +3,7 @@ section .text._start
 global _start
 extern main
 extern __bss_end
+extern __stack_chk_init
 
 
 section .text._start
@@ -15,6 +16,12 @@ _start:
     xor  al, al
     rep  stosb
 .done_bss:
+    ; Seed the real stack-protector canary as early as possible.
+    ; Called before argc/argv/envp are read from rsp below (not
+    ; after) because a function call clobbers rdi/rsi/rdx per the
+    ; System V ABI -- reading them first and calling after would lose
+    ; them.
+    call __stack_chk_init
     ; System V ABI: kernel placed argc at rsp, argv at rsp+8
     mov  rdi, [rsp]            ; argc
     lea  rsi, [rsp + 8]        ; argv
