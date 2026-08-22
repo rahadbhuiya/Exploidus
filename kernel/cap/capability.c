@@ -2,14 +2,45 @@
 #include "../crypto/blake3.h"
 #include "../audit/audit.h"
 #include "../drivers/serial.h"
+#include "../mm/kmalloc.h"
 #include <string.h>
 
-#define REVOKE_TABLE_SIZE 256
+/*
+ * Revocation table -- grows on demand (kmalloc, doubling capacity)
+ * instead of a fixed 256-entry array. The old fixed size meant a
+ * long-running server that revoked more than 256 capabilities over
+ * its lifetime would have every revocation AFTER the 256th silently
+ * fail (cap_revoke() returning false) -- a real, permanent security
+ * regression for anything long-lived, not a hypothetical: a
+ * capability that genuinely needs revoking (e.g. after a compromise)
+ * could no longer be revoked, and cap_validate() would keep accepting
+ * it forever.
+ *
+ * Bounded at REVOKE_TABLE_MAX_CAPACITY (not literally unbounded) as
+ * a defensive limit against unbounded kernel memory growth --
+ * cap_revoke() requires CAP_RIGHT_REVOKE authority (see cap_validate()
+ * call at the top of cap_revoke()), so this isn't reachable by an
+ * arbitrary unauthenticated caller, but a buggy or compromised
+ * privileged caller spamming revocations of never-before-seen tokens
+ * still shouldn't be able to grow this without limit.
+ *
+ * NOTE (performance, not correctness): cap_validate() linearly scans
+ * this table on every single capability check, so validation cost is
+ * O(revocation count) and grows as revocations accumulate -- fine at
+ * the scale this hobby OS actually sees, but if this table ever grows
+ * into the thousands under real load, a hash set would keep
+ * validation O(1) instead. Not done here; flagged as a known
+ * follow-up rather than solved, since it's a performance concern, not
+ * the correctness bug this change actually fixes.
+ */
+#define REVOKE_TABLE_INITIAL_CAPACITY 256
+#define REVOKE_TABLE_MAX_CAPACITY     65536
 
 typedef struct { uint64_t upper; uint64_t lower; } revoke_entry_t;
 
-static revoke_entry_t g_revoke_table[REVOKE_TABLE_SIZE];
+static revoke_entry_t *g_revoke_table = NULL;
 static uint32_t g_revoke_count = 0;
+static uint32_t g_revoke_capacity = 0;
 
 static uint8_t g_kernel_secret[32];
 
@@ -65,6 +96,42 @@ static inline uint64_t rdrand64(void)
 /* 
    INIT
  */
+/*
+ * Grow g_revoke_table if it's full (doubling capacity, starting at
+ * REVOKE_TABLE_INITIAL_CAPACITY), up to REVOKE_TABLE_MAX_CAPACITY.
+ * Returns false if already at the cap or the allocation failed --
+ * callers must treat that as "revoke this specific token failed",
+ * not crash/assert, since it's driven by external (if authorized)
+ * input.
+ */
+static bool revoke_table_ensure_capacity(void)
+{
+    if (g_revoke_count < g_revoke_capacity) return true;
+
+    if (g_revoke_capacity >= REVOKE_TABLE_MAX_CAPACITY) return false;
+
+    uint32_t new_capacity = g_revoke_capacity == 0
+        ? REVOKE_TABLE_INITIAL_CAPACITY
+        : g_revoke_capacity * 2;
+    if (new_capacity > REVOKE_TABLE_MAX_CAPACITY) {
+        new_capacity = REVOKE_TABLE_MAX_CAPACITY;
+    }
+
+    revoke_entry_t *new_table =
+        kmalloc(sizeof(revoke_entry_t) * new_capacity);
+    if (!new_table) return false;
+
+    if (g_revoke_table) {
+        memcpy(new_table, g_revoke_table,
+               sizeof(revoke_entry_t) * g_revoke_count);
+        kfree(g_revoke_table);
+    }
+
+    g_revoke_table = new_table;
+    g_revoke_capacity = new_capacity;
+    return true;
+}
+
 void cap_subsystem_init(void)
 {
     for (int i = 0; i < 4; i++) {
@@ -72,8 +139,12 @@ void cap_subsystem_init(void)
         memcpy(g_kernel_secret + i * 8, &r, 8);
     }
 
-    memset(g_revoke_table, 0, sizeof(g_revoke_table));
+    /* Reset (not just zero) so re-init after a hypothetical restart
+     * doesn't leak a previous boot's allocation. */
+    if (g_revoke_table) kfree(g_revoke_table);
+    g_revoke_table = NULL;
     g_revoke_count = 0;
+    g_revoke_capacity = 0;
 
     serial_print("[CAP] Kernel secret seeded (safe RNG)\n");
 }
@@ -180,8 +251,9 @@ bool cap_revoke(cap_token_t authority, cap_token_t target,
             return true;
     }
 
-    if (g_revoke_count >= REVOKE_TABLE_SIZE) {
-        serial_print("[CAP] revocation table full\n");
+    if (!revoke_table_ensure_capacity()) {
+        serial_print("[CAP] revocation table: allocation failed or "
+                     "hit the hard cap, revoke rejected\n");
         return false;
     }
 
