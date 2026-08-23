@@ -55,6 +55,23 @@ process_t *proc_create(proc_intent_t intent, uint32_t parent_pid)
     p->state      = PROC_BLOCKED;   /* NOT ready until sys_spawn finishes setup */
     p->intent     = intent;
 
+    /*
+     * UID: parent_pid==0 means this is the true root of the process
+     * tree (only main.c's boot-time creation of init/PID 1 does this
+     * -- every syscall-driven spawn always has a real calling process
+     * and passes its pid), so that one process gets UID_ROOT. Every
+     * other process inherits its parent's uid, same as a real Unix
+     * fork() would (a process doesn't get to choose its own identity
+     * upward). Honest limitation: since nothing ever changes a
+     * process's uid downward except sys_setuid() (which a process has
+     * to call on itself), every process in this kernel is root today
+     * unless it voluntarily drops -- this wiring exists so the
+     * permission-check logic around it is meaningful once something
+     * does.
+     */
+    process_t *parent = parent_pid ? proc_get(parent_pid) : NULL;
+    p->uid = parent ? parent->uid : UID_ROOT;
+
     /*  KERNEL STACK  */
     p->kernel_stack = (uint8_t *)kmalloc(KERNEL_STACK_SIZE);
     if (!p->kernel_stack)

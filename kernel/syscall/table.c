@@ -921,6 +921,38 @@ static __attribute__((unused)) int64_t sys_mkfs(syscall_frame_t *f)
     return 0;
 }
 
+/*
+ * sys_setuid(new_uid) -- voluntary, one-way privilege drop. Only
+ * callable by a process currently at UID_ROOT, and only to switch to
+ * a non-root uid; a process that has already dropped can never call
+ * this again (whether to go back to root or to another non-root
+ * uid), matching the real Unix setuid() rule that a non-privileged
+ * process can't change its uid at all. There is deliberately no way
+ * back up -- this is NOT a real setuid()/login mechanism (no
+ * password/credential check backs it), it's a minimal, honest
+ * building block so a process can voluntarily stop being root, which
+ * is what makes the owner-vs-other distinction in vfs_open() actually
+ * observable/testable rather than dead code every process trivially
+ * bypasses via UID_ROOT.
+ */
+static __attribute__((unused)) int64_t sys_setuid(syscall_frame_t *f)
+{
+    if (!g_current_proc) return -1;
+    if (g_current_proc->uid != UID_ROOT) return -1; /* already dropped */
+
+    uint32_t new_uid = (uint32_t)f->rdi;
+    if (new_uid == UID_ROOT) return -1; /* this call only ever lowers */
+
+    g_current_proc->uid = new_uid;
+    return 0;
+}
+
+static __attribute__((unused)) int64_t sys_getuid(syscall_frame_t *f)
+{
+    (void)f;
+    return g_current_proc ? (int64_t)g_current_proc->uid : (int64_t)UID_ROOT;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1536,6 +1568,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_KILL]           = sys_kill,
     [SYS_MOUNT]          = sys_mount,
     [SYS_MKFS]           = sys_mkfs,
+    [SYS_SETUID]         = sys_setuid,
+    [SYS_GETUID]         = sys_getuid,
     [SYS_FB_FLIP_RECT]   = sys_fb_flip_rect,
     [SYS_FB_BLEND_RECT]  = sys_fb_blend_rect,
 };

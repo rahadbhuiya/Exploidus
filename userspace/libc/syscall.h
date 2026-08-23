@@ -808,3 +808,34 @@ static inline int mkfs(const char *dev_name, uint64_t total_blocks)
     return (int)syscall2(SYS_MKFS, (uint64_t)(uintptr_t)dev_name,
                           total_blocks);
 }
+
+#define SYS_SETUID 88
+#define SYS_GETUID 89
+
+#define UID_ROOT         0
+#define UID_DEFAULT_USER 1000
+
+/*
+ * setuid — voluntary, one-way privilege drop from root to new_uid.
+ * Only works once, only from root, only downward -- see sys_setuid()'s
+ * comment in kernel/syscall/table.c. Returns 0 on success, -1 if not
+ * currently root (already dropped) or new_uid is 0 (root).
+ */
+static inline int setuid(uint32_t new_uid)
+{
+    return (int)syscall1(SYS_SETUID, (uint64_t)new_uid);
+}
+
+/*
+ * getuid — a real syscall round-trip, not a locally cached value.
+ * (A locally cached static would be tempting to avoid the syscall
+ * cost, but a "static" variable in a header gets a SEPARATE copy per
+ * translation unit under internal linkage -- setuid() updating it in
+ * one .c file wouldn't be visible to getuid() called from a
+ * different .c file in the same process. Not worth the bug for a
+ * syscall this cheap and this rarely called.)
+ */
+static inline uint32_t getuid(void)
+{
+    return (uint32_t)syscall0(SYS_GETUID);
+}

@@ -393,6 +393,7 @@ static void cmd_help(void)
              "(e.g. mount usb0 /media/usb0)");
     println("  mkfs <dev> <blocks>        Format a block device with "
              "fresh ExFS (e.g. mkfs usb0 2000)");
+    println("  whoami / id     Show current uid");
 }
 
 static void cmd_echo(const char *args)
@@ -1587,6 +1588,11 @@ static void dispatch(const char *line)
         cmd_ext_mount(skip_spaces(l + 6));
     } else if (str_starts(l, "mkfs ")) {
         cmd_ext_mkfs(skip_spaces(l + 5));
+    } else if (str_eq(l, "whoami") || str_eq(l, "id")) {
+        uint32_t u = getuid();
+        print("uid=");
+        print_int((int64_t)u);
+        println(u == UID_ROOT ? " (root)" : " (star)");
     } else if (str_eq(l, "free")) {
         cmd_ext_free();
     } else if (str_eq(l, "uptime")) {
@@ -1724,6 +1730,15 @@ int main(void)
      * see read_line() above) — opt out of the kernel's cooked-mode
      * echo/backspace handling so it doesn't double up with ours. */
     tty_set_raw(1);
+
+    /* Drop from root (inherited from init) to the regular user the
+     * prompt already claims to be ("star@exploidus") -- see
+     * sys_setuid()'s comment for what this is and isn't. This is what
+     * makes the owner/other permission distinction in vfs_open()
+     * actually observable from here on: without this, the shell (and
+     * everything it spawns, like rahu/lua) would stay root and every
+     * file's owner check would trivially bypass. */
+    setuid(UID_DEFAULT_USER);
 
     println("");
     println("Exploidus v0.1.0 -- exploish (Exploidus Interactive Shell)");

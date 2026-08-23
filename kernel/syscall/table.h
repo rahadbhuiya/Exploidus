@@ -94,8 +94,13 @@
                                   * as an ExFS volume at a VFS path */
 #define SYS_MKFS           87   /* format a registered block device with a
                                   * fresh ExFS volume */
+#define SYS_SETUID         88   /* voluntarily drop from UID_ROOT to a
+                                  * non-root uid (one-way -- Unix
+                                  * privilege-drop semantics, not a real
+                                  * setuid()) */
+#define SYS_GETUID         89   /* current process's uid */
 
-#define SYS_COUNT          88
+#define SYS_COUNT          90
 
 
 /*
