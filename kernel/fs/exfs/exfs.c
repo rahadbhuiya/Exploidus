@@ -2,6 +2,7 @@
 #include "../../drivers/serial.h"
 #include "../../mm/kmalloc.h"
 #include "../../audit/audit.h"
+#include "../../proc/process.h"
 #include <string.h>
 
 
@@ -428,6 +429,7 @@ static vfs_node_t *exfs_op_lookup(vfs_node_t *dir, const char *name)
                 child->fs_data = cnd;
                 child->parent  = dir;
                 child->mode    = child_inode.mode;
+                child->owner_uid = child_inode.owner_uid;
                 return child;
             }
 
@@ -498,6 +500,13 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     memset(&new_inode, 0, sizeof(new_inode));
     new_inode.mode        = (ftype == 1) ? 0755 : 0644;
     new_inode.creator_pid = 1;
+    /* Real owner, unlike creator_pid above (a pre-existing hardcoded
+     * placeholder, not this change's concern). g_current_proc is
+     * already correctly set to the calling process by the time this
+     * runs (vfs_create() -> here happens synchronously inside
+     * whatever syscall handler is servicing the calling process),
+     * same pattern vfs.c already uses for fd owner_pid. */
+    new_inode.owner_uid = g_current_proc ? g_current_proc->uid : UID_ROOT;
     exfs_write_inode(vol, free_ino, &new_inode);
 
     /* Add dirent to parent directory */
@@ -558,6 +567,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     child->fs_data = cnd;
     child->parent  = dir;
     child->mode    = new_inode.mode;
+    child->owner_uid = new_inode.owner_uid;
     return child;
 }
 
@@ -843,6 +853,7 @@ vfs_node_t *exfs_mount(block_device_t *dev, uint32_t lba_base)
     root->fs_data = rnd;
     root->parent  = NULL;
     root->mode    = rnd->inode.mode;
+    root->owner_uid = rnd->inode.owner_uid;
 
     serial_print("[ExFS] Root mounted\n");
     return root;

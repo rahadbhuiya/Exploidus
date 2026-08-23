@@ -42,6 +42,13 @@ struct vfs_node {
      * newly restricted unless a filesystem actually sets a tighter
      * value (ExFS does, from its on-disk inode). */
     uint32_t        mode;
+
+    /* Owning user ID (see process_t.uid / exfs_inode_t.owner_uid).
+     * Default UID_ROOT for filesystems/pseudo-nodes that don't track
+     * an owner -- combined with vfs_open()'s "UID_ROOT bypasses all
+     * checks" rule, that's the same "fully permissive by default"
+     * behavior as the mode field above, for the same reason. */
+    uint32_t        owner_uid;
 };
 
 void        vfs_init(void);

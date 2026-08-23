@@ -60,7 +60,18 @@ typedef struct __attribute__((packed)) {
     uint64_t prov_head;              /* offset of first provenance record */
     uint32_t prov_count;
     uint8_t  block_hash[8];          /* first 8 bytes of BLAKE3 of last write */
-    uint8_t  reserved[16];
+    /* Owning user ID -- see process_t.uid in kernel/proc/process.h for
+     * the full explanation of what this does and doesn't mean yet
+     * (no real login/auth exists). Carved out of what used to be
+     * reserved[16] rather than appended, so this is the ONE field
+     * that changes the on-disk struct layout -- safe because the
+     * on-disk stride is EXFS_INODE_SIZE (256, a fixed macro), not
+     * sizeof(exfs_inode_t), so pre-existing formatted volumes just
+     * read this as 0 (UID_ROOT) for every existing file, which is a
+     * safe default: "owned by root", not "owned by nobody, bypass
+     * permission checks". */
+    uint32_t owner_uid;
+    uint8_t  reserved[12];
 } exfs_inode_t;
 
 /*

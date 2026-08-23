@@ -125,7 +125,23 @@ typedef struct process {
      * consumed once by fork_child_entry() the first time the
      * scheduler runs this process. */
     interrupt_frame_t  fork_frame;
+
+    /* Owning user ID. UID_ROOT (0) bypasses all VFS owner/other
+     * permission checks (see vfs_open() in kernel/fs/vfs/vfs.c); every
+     * other process defaults to UID_ROOT too until something calls
+     * sys_setuid() -- there is no login/auth mechanism yet, so this
+     * isn't a real multi-user system. It's the minimal identity
+     * primitive needed to make "owner" vs. "everyone else" a
+     * meaningful distinction in permission checks at all, which it
+     * wasn't before (every process was treated as every file's owner
+     * unconditionally, since there was no identity to compare
+     * against). Appended last, same reasoning as ipc/fs_base/
+     * fpu_state/etc above: safe, no offset reuse. */
+    uint32_t           uid;
 } process_t;
+
+#define UID_ROOT         0
+#define UID_DEFAULT_USER 1000
 
 void       proc_init(void);
 process_t *proc_create(proc_intent_t intent, uint32_t parent_pid);

@@ -166,24 +166,40 @@ int vfs_open(const char *path, uint32_t flags)
     }
 
     /*
-     * Permission enforcement — this didn't exist before: node->mode
-     * was stored (set at file creation, see exfs.c) but nothing ever
-     * checked it, so any process could read or write any file
-     * regardless of its permission bits. Checks owner bits only —
-     * Exploidus doesn't have a multi-user/uid model yet, so "owner"
-     * is the only meaningful category right now.
+     * Permission enforcement. Previously checked owner bits (0400/
+     * 0200) unconditionally against every caller regardless of who
+     * they were, because there was no process identity to compare
+     * against -- every process was effectively treated as the file's
+     * owner. Now that process_t has a real uid (see
+     * kernel/proc/process.h), this can distinguish "the owner" from
+     * "everyone else": UID_ROOT always bypasses (root convention),
+     * a uid match against the file's owner_uid checks the owner bits,
+     * and anyone else is checked against the "other" bits. There is
+     * still no group concept (no gid anywhere), so this is a
+     * two-tier model (owner / other), not the full Unix three-tier
+     * (owner / group / other) -- the group bits in `mode` exist on
+     * disk but are never consulted, which is an honest simplification
+     * rather than a bug: without a gid concept there is nothing
+     * meaningful to check them against yet.
      */
     {
+        uint32_t caller_uid = g_current_proc ? g_current_proc->uid : UID_ROOT;
+        bool is_owner = (caller_uid == UID_ROOT) ||
+                        (caller_uid == node->owner_uid);
+
         uint32_t access = flags & 0x3; /* O_RDONLY=0, O_WRONLY=1, O_RDWR=2 */
         bool wants_read  = (access == 0 /*O_RDONLY*/ || access == 2 /*O_RDWR*/);
         bool wants_write = (access == 1 /*O_WRONLY*/ || access == 2 /*O_RDWR*/) ||
                             (flags & 0x400 /*O_APPEND*/);
 
-        if (wants_read && !(node->mode & 0400)) {
+        uint32_t read_bit  = is_owner ? 0400 : 0004;
+        uint32_t write_bit = is_owner ? 0200 : 0002;
+
+        if (wants_read && !(node->mode & read_bit)) {
             if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
             return -1;
         }
-        if (wants_write && !(node->mode & 0200)) {
+        if (wants_write && !(node->mode & write_bit)) {
             if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
             return -1;
         }
