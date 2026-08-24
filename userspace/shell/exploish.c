@@ -1574,8 +1574,6 @@ static void dispatch(const char *line)
         cmd_ext_cd(skip_spaces(l + 2));
     } else if (str_eq(l, "pwd")) {
         cmd_ext_pwd();
-    } else if (str_eq(l, "whoami")) {
-        cmd_ext_whoami();
     } else if (str_eq(l, "hostname")) {
         cmd_ext_hostname();
     } else if (str_starts(l, "mkdir ")) {
