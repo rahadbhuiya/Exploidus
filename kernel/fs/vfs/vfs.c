@@ -352,6 +352,31 @@ int vfs_create(const char *path, uint8_t type)
     if (!*name) return -1;
     if (strlen(name) > VFS_NAME_MAX) return -1;
 
+    /*
+     * Reject "." and ".." as a creatable name. Without this, `mkdir
+     * /some/dir/..` would succeed and create a REAL directory entry
+     * literally named ".." (pointing at a fresh, empty inode -- not
+     * the actual parent). That's dangerous specifically because
+     * vfs_lookup() treats ".." as nothing special today -- it's just
+     * another component name to search a directory for, and since
+     * ExFS never creates a real ".." dirent on its own, any raw path
+     * containing ".." currently just fails lookup harmlessly (there's
+     * nothing to find). An attacker-planted ".." dirent would flip
+     * that from "safely fails" to "silently resolves into a
+     * directory the attacker controls" for any code that ever passes
+     * an unnormalized path straight to vfs_lookup()/vfs_open()
+     * instead of going through something like the shell's own
+     * string-based path normalizer (_abs() in exploish_cmds.c, which
+     * resolves ".." before it ever reaches the VFS layer and is
+     * correctly bounded at root -- but nothing *forces* every caller
+     * to go through that). Standard Unix filesystems refuse this
+     * exact thing for the same reason.
+     */
+    if ((name[0] == '.' && name[1] == '\0') ||
+        (name[0] == '.' && name[1] == '.' && name[2] == '\0')) {
+        return -1;
+    }
+
     if (last_slash == path) {
         parent[0] = '/'; parent[1] = '\0';
     } else {
