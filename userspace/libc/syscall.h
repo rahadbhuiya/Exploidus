@@ -419,6 +419,19 @@ static inline int unlink(const char *path)
 {
     return (int)syscall1(SYS_UNLINK, (uint64_t)(uintptr_t)path);
 }
+#define SYS_RENAME      90
+/* Real atomic rename() syscall wrapper -- kept here (not exposed as a
+ * plain "rename" symbol) because stdio.c already defines the libc
+ * entry point named `rename`, previously a cp+delete fallback since
+ * no atomic rename syscall existed. stdio.c's rename() now calls this
+ * directly instead of doing its own syscall2(), so there is exactly
+ * one `rename` symbol in the final libc. */
+static inline int __sys_rename(const char *old_path, const char *new_path)
+{
+    return (int)syscall2(SYS_RENAME,
+        (uint64_t)(uintptr_t)old_path,
+        (uint64_t)(uintptr_t)new_path);
+}
 static inline int64_t http_download(const char *url, const char *dest_path, uint8_t *hash_out)
 {
     return syscall3(SYS_HTTP_DOWNLOAD,

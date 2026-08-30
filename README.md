@@ -1,50 +1,86 @@
 # Exploidus — Reactive Capability Kernel
 
-A custom x86-64 operating system kernel built from scratch.
+**A custom x86-64 operating system kernel, built from scratch.**
+
+![C](https://img.shields.io/badge/language-C-blue)
+![Arch](https://img.shields.io/badge/arch-x86--64-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-active--development-brightgreen)
+
+## Table of Contents
+
+- [About](#about)
+- [Demo](#demo)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start-kali-linux--wsl2)
+- [Run Options](#run-options)
+- [Shell Commands](#shell-commands)
+- [Project Structure](#project-structure)
+- [Build Targets](#build-targets)
+- [Troubleshooting](#troubleshooting)
+- [Author & License](#author-rahad-bhuiya)
+- [Development Log / Technical Deep-Dives](#development-log--technical-deep-dives)
+
+---
 
 ## About
 
-Exploidus is a personal operating system project developed in Bangladesh for operating system research and education.
-The project is built from scratch and continues to evolve with new kernel subsystems, userspace applications, networking, and graphics support.
-To the best of the author's knowledge, Exploidus is among the earliest publicly documented from-scratch operating system projects developed in Bangladesh. If you are aware of an earlier publicly documented project, please open an issue with supporting evidence.
+Exploidus is a personal operating system project developed in Bangladesh for
+operating system research and education. The project is built from scratch
+and continues to evolve with new kernel subsystems, userspace applications,
+networking, and graphics support.
 
+> To the best of the author's knowledge, Exploidus is among the earliest
+> publicly documented from-scratch operating system projects developed in
+> Bangladesh. If you are aware of an earlier publicly documented project,
+> please open an issue with supporting evidence.
+
+---
 
 ## Demo
 
 ![Exploidus Boot Demo](docs/exploidus_demo.gif)
 
+---
 
+## Features
 
-
-**Features:**
+**Core kernel**
 - Multiboot2 boot via GRUB2
 - 4-level x86-64 paging with NX enforcement
 - Colored zone physical memory manager (GREEN / YELLOW / RED)
-- BLAKE3 capability token system with RDRAND seeding
-- Intent-based preemptive scheduler (5 priority classes)
-- Blocking waitpid (no busy-spin)
-- Crash isolation — a fault in a userspace process kills only that
-  process; the kernel keeps running (kernel-mode faults still halt)
-- Kernel synchronization primitives: IRQ-safe spinlocks, blocking
-  mutexes/semaphores (kernel/sync/)
-- Additive driver registry (kernel/drivers/driver.c) tracking every
-  hardware driver initialized at boot
+- Intent-based preemptive scheduler (5 priority classes), blocking `waitpid` (no busy-spin)
+- Crash isolation — a fault in a userspace process kills only that process; the kernel keeps running (kernel-mode faults still halt)
+- Kernel synchronization primitives: IRQ-safe spinlocks, blocking mutexes/semaphores (`kernel/sync/`)
+- Additive driver registry (`kernel/drivers/driver.c`) tracking every hardware driver initialized at boot
+
+**Security**
+- BLAKE3 capability token system with RDRAND seeding, growable revocation table
+- `-fstack-protector-strong` kernel-wide (RDRAND-seeded canaries, kernel + every userspace binary)
+- ELF loader with real `R_X86_64_RELATIVE` relocation processing — every userspace binary is static-PIE with working ASLR (code **and** stack)
+- Minimal multi-user foundation: per-process UID, real owner-vs-other VFS permission checks, one-way `setuid()` privilege drop
+- `kmalloc()` integer-overflow guard, IRQ-driven ATA I/O with a safe pre-boot fallback
+
+**Storage & filesystem**
 - VFS + ExFS filesystem with provenance records
-- Generic block-device abstraction (kernel/drivers/blockdev.c) — ATA
-  and USB mass-storage both register as named block devices (`ata0`,
-  `usb0`); filesystem code goes through this interface instead of
-  calling a specific driver directly
-- USB stack: UHCI host controller driver (kernel/usb/uhci.c) — PCI
-  detection, control/interrupt/bulk transfers, full device
-  enumeration, HID reports, and USB Mass Storage (Bulk-Only
-  Transport + SCSI READ/WRITE) with a `mount` shell command to attach
-  a USB stick's ExFS volume into the VFS
-- TCP/IP network stack (e1000, ARP, IP fragment reassembly, TCP, UDP, ICMP)
-- 82 syscalls fully implemented (open/close/mmap/munmap/ps/audit/net/fb_blit/sigaction/chmod/rmdir/rtc/futex/tls/mount)
-- exploish interactive shell with real ps and audit commands
-- Userspace compositor (`alien` command) with double-buffered
-  rendering, dirty-region-aware redraws, single-syscall window
-  blitting (SYS_FB_BLIT), and real-time-paced frame pacing
+- Generic block-device abstraction (`kernel/drivers/blockdev.c`) — ATA and USB mass-storage both register as named block devices (`ata0`, `usb0`)
+- `mount`/`mkfs` shell commands — format and mount a USB stick's ExFS volume into the VFS
+
+**USB stack (UHCI)**
+- PCI-detected UHCI host controller driver (`kernel/usb/uhci.c`) with a full Transfer Descriptor/Queue Head transfer layer
+- Control transfers (full device enumeration), interrupt transfers (HID reports), bulk transfers + USB Mass Storage (Bulk-Only Transport, SCSI `INQUIRY`/`READ`/`WRITE`)
+
+**Networking**
+- TCP/IP network stack: e1000 driver, ARP, IP fragment reassembly, TCP, UDP, ICMP, loopback
+
+**Userspace**
+- 89 syscalls fully implemented
+- `exploish` interactive shell with real `ps`, `audit`, `mount`, `mkfs`, `whoami` commands
+- Native Lua 5.5.0 port with a real libc foundation (`setjmp`, `math.h`, FPU/SSE, TLS, futexes)
+- Userspace compositor (`alien` command) — double-buffered, dirty-region-aware, single-syscall window blitting
+
+*(Full changelog of bugs found and fixed along the way — ASLR, networking, VFS, scheduling, hardening — is in the [Development Log](#development-log--technical-deep-dives) at the bottom.)*
 
 ---
 
@@ -143,12 +179,14 @@ Terminal 2:
     echo <text>     Print text
     clear           Clear screen
     cap             Show capability info
+    whoami / id     Show current uid
     rahu install    Install package (downloads from registry)
     rahu remove     Remove package (stub — not yet implemented)
     rahu list       List installed packages (stub — use 'ls /bin')
     rahu search     Search local package index
     rahu update     Refresh local package index
     mount <dev> <mountpoint>   Mount a block device (e.g. mount usb0 /media/usb0)
+    mkfs <dev> <blocks>        Format a block device with fresh ExFS (e.g. mkfs usb0 2000)
     exit [code]     Exit
 
 ---
@@ -159,11 +197,11 @@ Terminal 2:
     kernel/arch/x86_64/    GDT, IDT, IRQ, ISR stubs, crash-isolating fault handler
     kernel/boot/           Multiboot2 entry, long mode
     kernel/mm/             PMM, VMM, kmalloc (spinlock-protected heap)
-    kernel/cap/            BLAKE3 capability tokens
+    kernel/cap/            BLAKE3 capability tokens, growable revocation table
     kernel/audit/          Ring-buffer audit log
     kernel/proc/           Process table, scheduler, fork/exec
     kernel/sync/           Spinlock, mutex, semaphore primitives
-    kernel/syscall/        82 syscalls
+    kernel/syscall/        89 syscalls
     kernel/drivers/        VGA, serial, keyboard, mouse, ATA, framebuffer,
                            driver.c (hardware driver registry),
                            blockdev.c (generic block-device abstraction)
@@ -231,14 +269,156 @@ GUI (`alien`)/mouse feels slow or stuttery:
     VT-x/AMD-V") and make sure the kvm kernel module is loaded
     (`sudo modprobe kvm_intel` or `kvm_amd`).
 
+---
 
-## Author Rahad Bhuiya
+## Author & License
 
-## License MIT
+**Author:** Rahad Bhuiya
+**License:** MIT
 
 ---
 
-## Recent Stability Fixes
+## Development Log / Technical Deep-Dives
+
+<details>
+<summary><b>Click to expand</b> — bugs found and fixed along the way, organized by subsystem. Long, detailed, and honest about limitations; not required reading to build or run Exploidus.</summary>
+
+### Security hardening (Tier 2)
+
+- **Stack protector**: `-fno-stack-protector` → `-fstack-protector-strong`,
+  kernel-wide. `__stack_chk_guard`/`__stack_chk_fail()` implemented for both
+  the kernel (`kernel/arch/x86_64/stack_protector.c`) and userspace
+  (`userspace/libc/stack_protector.c`, since every process needs its own
+  guard) — freestanding/no-libc means neither existed before. Guard reseeded
+  from RDRAND as early as possible (literally the first statement in
+  `kernel_main()`; right after BSS-zeroing in `crt0.asm` for userspace).
+- **Capability revocation table**: was a fixed 256-entry array — past 256
+  revocations, `cap_revoke()` silently failed forever afterward, meaning a
+  capability that genuinely needed revoking (e.g. after a compromise)
+  couldn't be, on any long-running system. Now grows on demand (doubling,
+  capped at 65536 as a defensive limit). Known follow-up, not fixed:
+  `cap_validate()` still linearly scans this table on every check, so
+  validation cost grows with revocation count — fine at this OS's actual
+  scale, a hash set would be needed for O(1) validation under real load.
+- **Multi-user foundation**: `process_t` gained a real `uid` field
+  (`UID_ROOT`/`UID_DEFAULT_USER`), inherited from parent at `proc_create()`.
+  `exfs_inode_t`/`vfs_node_t` gained `owner_uid`. `vfs_open()`'s permission
+  check — which previously checked owner bits against *every* caller
+  unconditionally, since there was no identity to compare against — now
+  does a real owner-vs-other comparison. New `SYS_SETUID` (one-way,
+  root-only, privilege-drop — not a real login mechanism) and `SYS_GETUID`.
+  The shell calls `setuid(1000)` at startup so the permission distinction
+  is actually observable (otherwise the whole process tree stays root and
+  every check trivially bypasses). Honest scope: two-tier owner/other, no
+  group concept yet, and nothing except `setuid()` itself ever assigns a
+  non-root uid — this is real plumbing, not a finished login/multi-user
+  system.
+- **Setuid/symlink-attack audit**: no symlinks exist anywhere in the
+  codebase, so symlink attacks are N/A until symlinks are implemented.
+  Raw `..` path traversal was already safe by omission — `vfs_lookup()`
+  doesn't special-case `..` at all, and ExFS never created a real `..`
+  dirent, so any path containing `..` just failed lookup harmlessly. But
+  `vfs_create()` never rejected `.`/`..` as a *target* name, so
+  `mkdir /some/dir/..` would succeed and plant a real `..` directory
+  entry — turning that "safely fails" behavior into "silently resolves
+  into a directory the attacker controls" for any code path that passes
+  an unnormalized path straight to the VFS instead of through the shell's
+  own bounded path normalizer. Fixed by rejecting `.`/`..` at creation,
+  matching standard Unix filesystem behavior.
+- **`kmalloc()` integer-overflow guard**: a request size near
+  `UINT64_MAX` used to wrap `(size + 15) & ~15` around to a tiny value,
+  silently handing back a 16-byte buffer while the caller believed it got
+  the huge size it asked for — a heap-overflow primitive. Now rejected
+  before any arithmetic on the size happens. Verified with a
+  host-compiled standalone stress-test harness (`tests/test_kmalloc.c`)
+  covering OOM exhaustion + recovery, double-free safety, coalescing, and
+  a documented (not yet fixed) fragmentation limitation: first-fit +
+  adjacent-only coalescing can fail a request even when total free
+  memory is sufficient, if free blocks are scattered between still-used
+  ones.
+- **IRQ-driven ATA driver**: `ata_wait_not_busy()`/`ata_wait_drq()` now
+  use `hlt` instead of busy-spinning when interrupts are enabled, falling
+  back to the original busy-poll automatically when they aren't (early
+  boot, before `sti` — `exfs_mount()` for the root filesystem runs in
+  exactly that window, so an IRQ-only wait would hang boot).
+
+### Block devices & USB storage
+
+- **Generic block-device abstraction**: `kernel/drivers/blockdev.c` — a
+  `block_device_t` interface (`read_sector`/`write_sector`) that ATA and
+  USB mass-storage both implement and register under a name (`ata0`,
+  `usb0`). `exfs_mount()`/`exfs_format()` take a `block_device_t*` now
+  instead of being hardcoded to ATA.
+- **USB stack (UHCI)** — `kernel/usb/uhci.c`: PCI class-code detection
+  (not vendor-specific, finds any UHCI controller), controller reset, and
+  a full Transfer Descriptor/Queue Head transfer layer:
+  - **Control transfers**: full device enumeration — partial (8-byte)
+    device descriptor, `SET_ADDRESS`, full 18-byte descriptor via
+    multi-packet chaining, configuration descriptor parsing,
+    `SET_CONFIGURATION`.
+  - **Interrupt transfers**: HID report reads (verified against a QEMU
+    `usb-tablet`), correctly distinguishing "NAK, nothing new to report"
+    from a real transfer error.
+  - **Bulk transfers + USB Mass Storage (Bulk-Only Transport)**: CBW/CSW
+    command wrapping, SCSI `INQUIRY`, `READ CAPACITY (10)`, `READ (10)`,
+    `WRITE (10)` — verified end-to-end against QEMU's `usb-storage`
+    (vendor/product strings decoded correctly, capacity matched the test
+    image's real size exactly, a `WRITE(10)`+`READ(10)` round-trip
+    byte-matched).
+  - Registers a detected mass-storage device as block device `usb0` —
+    `mount usb0 /media/usb0` mounts its ExFS volume into the VFS, `mkfs
+    usb0 <blocks>` formats it first if needed.
+  - Honest limitations: single-device only (hardcoded to USB address 1),
+    no interrupt-endpoint periodic background polling (HID reads are
+    one-shot), no multi-packet reads/writes beyond ~512 bytes (one TD
+    chain's worth).
+  - Test in QEMU with `make qemu-usb-storage-test` (separate from
+    `qemu-disk`, which attaches a `usb-tablet` for mouse/GUI testing).
+
+### Resolved: function pointers now survive ASLR (real relocation processing + static-PIE)
+
+The loader used to give ET_EXEC binaries ASLR (random load base) by
+shifting the whole image without processing ELF relocations — RIP-
+relative code self-corrected under a pure shift, but an explicit
+function pointer **value** (a signal handler passed to `signal()`, a
+static callback table, anything stored as data rather than computed
+at the call site) kept its **link-time** (base-0) address instead of
+the real runtime one, jumping to the wrong place if called. The old
+workaround was linking anything that took a function pointer against
+a fixed, non-ASLR'd base (`fixed.ld`) instead.
+
+This is now fixed properly:
+
+- `kernel/elf/elf.c`'s `apply_relocations()` correctly processes
+  `R_X86_64_RELATIVE` entries at load time.
+- **Every userspace binary migrated from ET_EXEC to static-PIE**
+  (`pie.ld` + `PIE_LDFLAGS` in the Makefile) — `shell`, `rahu`, `lua`,
+  `compositor`, and everything else now actually exercises the
+  relocation path instead of opting out via `fixed.ld`. The old
+  fixed-base `.ld` scripts are left in-tree for reference but are no
+  longer used.
+- ASLR entropy widened (7→8 bits of real 2MB-granularity randomness)
+  and the **stack** is now randomized too (previously fixed at
+  `USER_STACK_TOP`) — both within the existing safe pd0 user address
+  range, no page-table changes needed.
+- A real bug this surfaced and fixed: `syscall1()`/`syscall2()`
+  (`userspace/libc/syscall.h`) left `rsi`/`rdx` unset for syscalls
+  that only logically need one argument (e.g. `spawn(path)`). Under
+  the old fixed-address build this happened to be harmless; under PIE
+  (different code addresses → different leftover register values)
+  `spawn("/bin/lua")`'s stale `rdx` sometimes looked like a valid
+  pointer, and `sys_spawn()` reads `rdx` unconditionally to detect an
+  optional args string — so garbage leaked into the child's `argv[1]`
+  and corrupted Lua's `collectargs()`/`handle_script()`, crashing on
+  a bad `strcmp()` pointer. Fixed by explicitly zeroing the unused
+  registers in the syscall wrappers.
+
+Remaining honest limitation: 8 bits of ASLR entropy is still weak
+compared to a desktop OS (Linux gives 28+) — going further needs
+`make_isolated_pml4()` to clear more than one PD table's worth of
+user address space, a bigger architectural change not done yet.
+
+### Recent Stability Fixes
 
 A round of fixes to the GUI/compositor path and kernel core:
 
@@ -280,7 +460,7 @@ A round of fixes to the GUI/compositor path and kernel core:
   `-accel kvm:tcg`, using KVM hardware acceleration when the host
   supports it (see Troubleshooting if `/dev/kvm` isn't available).
 
-## Native Language-Porting Foundation + Lua 5.5.0
+### Native Language-Porting Foundation + Lua 5.5.0
 
 Exploidus now has a real, working **Lua 5.5.0** port (`userspace/lua/`,
 run with `lua` from the shell) — the first third-party language
@@ -324,7 +504,7 @@ real libc foundation that mostly didn't exist before:
   `yolish`). New `SYS_TTY_SET_RAW` lets exploish opt out; everyone
   else gets real echo/backspace by default now.
 
-## VFS / Filesystem
+### VFS / Filesystem
 
 - **Permission enforcement**: file mode bits were stored at creation
   but never checked anywhere — any process could read/write any file
@@ -342,7 +522,7 @@ real libc foundation that mostly didn't exist before:
   didn't already exist. Not specific to any one program; anything
   writing a new file via `fopen()` hit this.
 
-## Networking
+### Networking
 
 - Fixed busy-spin polling (no yield, up to 500 back-to-back retries)
   and a silent stack-buffer-overflow risk in `http_get()`/
@@ -363,7 +543,7 @@ real libc foundation that mostly didn't exist before:
   count, not real elapsed time (so it didn't reliably mean what it
   claimed to). Converted to a real wall-clock deadline.
 
-## Process / Scheduling
+### Process / Scheduling
 
 - Per-process CPU time accounting (`ticks_used`) was declared and
   exposed via `ps`'s TICKS column but never actually incremented
@@ -375,100 +555,4 @@ real libc foundation that mostly didn't exist before:
   scheduler-level idle-vs-running distinction Exploidus doesn't make
   yet, not just a display bug.
 
-## Resolved: function pointers now survive ASLR (real relocation processing + static-PIE)
-
-The loader used to give ET_EXEC binaries ASLR (random load base) by
-shifting the whole image without processing ELF relocations — RIP-
-relative code self-corrected under a pure shift, but an explicit
-function pointer **value** (a signal handler passed to `signal()`, a
-static callback table, anything stored as data rather than computed
-at the call site) kept its **link-time** (base-0) address instead of
-the real runtime one, jumping to the wrong place if called. The old
-workaround was linking anything that took a function pointer against
-a fixed, non-ASLR'd base (`fixed.ld`) instead.
-
-This is now fixed properly:
-
-- `kernel/elf/elf.c`'s `apply_relocations()` correctly processes
-  `R_X86_64_RELATIVE` entries at load time.
-- **Every userspace binary migrated from ET_EXEC to static-PIE**
-  (`pie.ld` + `PIE_LDFLAGS` in the Makefile) — `shell`, `rahu`, `lua`,
-  `compositor`, and everything else now actually exercises the
-  relocation path instead of opting out via `fixed.ld`. The old
-  fixed-base `.ld` scripts are left in-tree for reference but are no
-  longer used.
-- ASLR entropy widened (7→8 bits of real 2MB-granularity randomness)
-  and the **stack** is now randomized too (previously fixed at
-  `USER_STACK_TOP`) — both within the existing safe pd0 user address
-  range, no page-table changes needed.
-- A real bug this surfaced and fixed: `syscall1()`/`syscall2()`
-  (`userspace/libc/syscall.h`) left `rsi`/`rdx` unset for syscalls
-  that only logically need one argument (e.g. `spawn(path)`). Under
-  the old fixed-address build this happened to be harmless; under PIE
-  (different code addresses → different leftover register values)
-  `spawn("/bin/lua")`'s stale `rdx` sometimes looked like a valid
-  pointer, and `sys_spawn()` reads `rdx` unconditionally to detect an
-  optional args string — so garbage leaked into the child's `argv[1]`
-  and corrupted Lua's `collectargs()`/`handle_script()`, crashing on
-  a bad `strcmp()` pointer. Fixed by explicitly zeroing the unused
-  registers in the syscall wrappers.
-
-Remaining honest limitation: 8 bits of ASLR entropy is still weak
-compared to a desktop OS (Linux gives 28+) — going further needs
-`make_isolated_pml4()` to clear more than one PD table's worth of
-user address space, a bigger architectural change not done yet.
-
-## USB stack (UHCI)
-
-`kernel/usb/uhci.c` — PCI class-code detection (not vendor-specific,
-finds any UHCI controller), controller reset, and a real transfer
-layer built from Transfer Descriptors / Queue Heads:
-
-- **Control transfers**: full device enumeration — partial (8-byte)
-  device descriptor, `SET_ADDRESS`, full 18-byte descriptor via
-  multi-packet chaining, configuration descriptor parsing (interface
-  class/endpoints), `SET_CONFIGURATION`.
-- **Interrupt transfers**: HID report reads (verified against a QEMU
-  `usb-tablet`), correctly distinguishing "NAK, nothing new to report"
-  from a real transfer error.
-- **Bulk transfers + USB Mass Storage (Bulk-Only Transport)**: CBW/CSW
-  command wrapping, SCSI `INQUIRY`, `READ CAPACITY (10)`, `READ (10)`,
-  `WRITE (10)` — verified end-to-end against QEMU's `usb-storage`
-  (vendor/product strings decoded correctly, capacity matched the
-  test image's real size exactly, and a `WRITE(10)` + `READ(10)`
-  round-trip byte-matched).
-- Registers a detected mass-storage device as block device `usb0`
-  (see the block-device section above) — `mount usb0 /media/usb0`
-  from the shell mounts its ExFS volume into the VFS.
-
-Honest limitations: single-device only (hardcoded to USB address 1 —
-a second simultaneously-connected device would collide), no
-interrupt-endpoint periodic background polling (HID reads are
-one-shot, not scheduled), no multi-packet reads/writes beyond what
-fits in one TD chain (~512 bytes at typical bulk packet sizes), and
-no `WRITE`-based filesystem operations tested yet (only raw sector
-read/write, and the `mount` path so far).
-
-To test the mass-storage path in QEMU: `make qemu-usb-storage-test`
-(separate from `qemu-disk`, which attaches a `usb-tablet` for
-mouse/GUI testing instead).
-
-## Kernel hardening
-
-- **`kmalloc()` integer-overflow guard**: a request size near
-  `UINT64_MAX` used to wrap `(size + 15) & ~15` around to a tiny
-  value, silently handing back a 16-byte buffer while the caller
-  believed it got the huge size it asked for — a heap-overflow
-  primitive. Now rejected before any arithmetic on the size happens.
-  Verified with a host-compiled standalone stress-test harness
-  (`tests/test_kmalloc.c`) covering OOM exhaustion + recovery,
-  double-free safety, coalescing, and a documented (not yet fixed)
-  fragmentation limitation: first-fit + adjacent-only coalescing can
-  fail a request even when total free memory is sufficient, if free
-  blocks are scattered between still-used ones.
-- **IRQ-driven ATA driver**: `ata_wait_not_busy()`/`ata_wait_drq()`
-  now use `hlt` instead of busy-spinning when interrupts are enabled,
-  falling back to the original busy-poll automatically when they
-  aren't (early boot, before `sti` — `exfs_mount()` for the root
-  filesystem runs in exactly that window, so an IRQ-only wait would
-  hang boot).
+</details>

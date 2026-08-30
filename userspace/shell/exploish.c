@@ -394,6 +394,28 @@ static void cmd_help(void)
     println("  mkfs <dev> <blocks>        Format a block device with "
              "fresh ExFS (e.g. mkfs usb0 2000)");
     println("  whoami / id     Show current uid");
+    println("");
+    println("Files:");
+    println("  ls [path]              List directory");
+    println("  cd <path>              Change directory");
+    println("  pwd                    Print working directory");
+    println("  cat <file>             Print file contents");
+    println("  touch <file>           Create an empty file");
+    println("  mkdir <dir>            Create a directory");
+    println("  rm <file>              Remove a file");
+    println("  rmdir <dir>            Remove an empty directory");
+    println("  cp <src> <dst>         Copy a file");
+    println("  mv <src> <dst>         Move/rename a file (atomic)");
+    println("  cmp <f1> <f2>          Compare two files byte-for-byte");
+    println("  find <path>            List files recursively");
+    println("  chmod <mode> <file>    Change permission bits");
+    println("  wc <file>              Count lines/words/bytes");
+    println("  grep <pat> <file>      Search file for a pattern");
+    println("  head/tail <file>       Show first/last lines");
+    println("  xxd <file>             Hex dump a file");
+    println("  sed s/a/b/ <file>      Stream-edit a file");
+    println("  tee <file>             Write stdin to a file");
+    println("  env                    Show environment");
 }
 
 static void cmd_echo(const char *args)
@@ -1607,6 +1629,24 @@ static void dispatch(const char *line)
         cmd_ext_head(skip_spaces(l + 4));
     } else if (str_starts(l, "xxd")) {
         cmd_ext_xxd(skip_spaces(l + 3));
+    } else if (str_starts(l, "cp ")) {
+        cmd_ext_cp(skip_spaces(l + 3));
+    } else if (str_starts(l, "mv ")) {
+        cmd_ext_mv(skip_spaces(l + 3));
+    } else if (str_starts(l, "cmp ")) {
+        cmd_ext_cmp(skip_spaces(l + 4));
+    } else if (str_starts(l, "tail")) {
+        cmd_ext_tail(skip_spaces(l + 4));
+    } else if (str_starts(l, "find")) {
+        cmd_ext_find(skip_spaces(l + 4));
+    } else if (str_starts(l, "sed ")) {
+        cmd_ext_sed(skip_spaces(l + 4));
+    } else if (str_starts(l, "chmod ")) {
+        cmd_ext_chmod(skip_spaces(l + 6));
+    } else if (str_eq(l, "env")) {
+        cmd_ext_env();
+    } else if (str_starts(l, "tee ")) {
+        cmd_ext_tee(skip_spaces(l + 4));
     } else if (str_starts(l, "ping ")) {
         cmd_ping(skip_spaces(l + 5));
     } else if (str_eq(l, "alien")) {

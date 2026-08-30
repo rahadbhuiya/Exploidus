@@ -1250,6 +1250,16 @@ static __attribute__((unused)) int64_t sys_blake3(syscall_frame_t *f)
 static __attribute__((unused)) int64_t sys_unlink(syscall_frame_t *f)
 { if (!uptr_ok(f->rdi,1)) return -1; return vfs_unlink((const char *)(uintptr_t)f->rdi); }
 
+/* sys_rename(old_path, new_path) */
+static __attribute__((unused)) int64_t sys_rename(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    if (!uptr_ok(f->rsi, 1)) return -1;
+    const char *old_path = (const char *)(uintptr_t)f->rdi;
+    const char *new_path = (const char *)(uintptr_t)f->rsi;
+    return vfs_rename(old_path, new_path);
+}
+
 static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
 {
     if (!uptr_ok(f->rdi,1)) return -1;
@@ -1541,6 +1551,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_FILE_WRITE]   = sys_file_write,
     [SYS_BLAKE3]       = sys_blake3,
     [SYS_UNLINK]       = sys_unlink,
+    [SYS_RENAME]       = sys_rename,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
     /* GUI Phase 1 */

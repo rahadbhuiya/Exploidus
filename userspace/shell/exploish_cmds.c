@@ -120,7 +120,9 @@ void cmd_ext_rmdir(const char *path) {
 
 void cmd_ext_rm(const char *path) {
     if (!*path) { _println("Usage: rm <file>"); return; }
-    _println("rm: not yet implemented");
+    char ap[256]; _abs(path, ap, 256);
+    int r = unlink(ap);
+    if (r != 0) { puts("rm: failed: "); _println(ap); }
 }
 
 void cmd_ext_mount(const char *args)
@@ -417,7 +419,6 @@ void cmd_ext_cp(const char *args)
 /*  mv  */
 void cmd_ext_mv(const char *args)
 {
-    /* mv = cp + unlink src */
     const char *p = _skip(args);
     char src[256], dst[256];
     int i = 0;
@@ -432,16 +433,17 @@ void cmd_ext_mv(const char *args)
     char asrc[256], adst[256];
     _abs(src, asrc, 256); _abs(dst, adst, 256);
 
-    int fdin = open(asrc, O_RDONLY);
-    if (fdin < 0) { puts("mv: cannot open: "); _println(asrc); return; }
-    int fdout = open(adst, O_WRONLY | O_CREAT);
-    if (fdout < 0) { close(fdin); puts("mv: cannot create: "); _println(adst); return; }
-
-    char buf[512]; int64_t n;
-    while ((n = read(fdin, buf, sizeof(buf))) > 0)
-        write(fdout, buf, (size_t)n);
-    close(fdin); close(fdout);
-    unlink(asrc);
+    /* Used to be implemented as cp-then-unlink (a full read+write copy
+     * followed by removing the source). Now that ExFS supports a real
+     * rename(), use that instead: it's a single atomic (journaled)
+     * directory-entry move rather than a byte-for-byte copy, so it's
+     * both faster (no data ever moves) and safe against a crash
+     * midway leaving both a partial destination and a deleted
+     * source -- the old cp+unlink approach had exactly that failure
+     * window. */
+    if (__sys_rename(asrc, adst) != 0) {
+        puts("mv: failed: "); puts(asrc); puts(" -> "); _println(adst);
+    }
 }
 
 /*  tail  */

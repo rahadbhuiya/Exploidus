@@ -23,6 +23,11 @@ def make_dirent(inode_num, name, ftype):
 disk_path  = sys.argv[1]
 elf_paths  = sys.argv[2:]   # all remaining args are ELF files
 
+# Journal region: 1 header block + 16 data slots, must match
+# EXFS_JOURNAL_MAX_BLOCKS in kernel/fs/exfs/exfs.h.
+JOURNAL_MAX_BLOCKS = 16
+JOURNAL_SIZE = 1 + JOURNAL_MAX_BLOCKS
+
 disk_size    = os.path.getsize(disk_path)
 total_blocks = disk_size // BLOCK_SIZE
 inode_blocks = (MAX_INODES * INODE_SIZE + BLOCK_SIZE - 1) // BLOCK_SIZE
@@ -31,24 +36,31 @@ bitmap_block      = 1
 data_start_block  = inode_table_block + inode_blocks
 provenance_block  = total_blocks - 16
 provenance_size   = 16
-free_blocks       = total_blocks - data_start_block - provenance_size
+journal_block     = provenance_block - JOURNAL_SIZE
+journal_size      = JOURNAL_SIZE
+free_blocks       = total_blocks - data_start_block - provenance_size - journal_size
 
 img = bytearray(disk_size)
 
-# Superblock
-sb = struct.pack("<II"+"Q"*9+"16s4000s",
+# Superblock. Layout must match exfs_superblock_t in exfs.h exactly:
+# magic, version, 9 x uint64 (total/free_blocks, total/free_inodes,
+# inode_table_block, block_bitmap_block, data_start_block,
+# provenance_block, provenance_size), fs_uuid[16], journal_block,
+# journal_size, reserved[3984] (padded to EXFS_BLOCK_SIZE).
+sb = struct.pack("<II"+"Q"*9+"16s"+"QQ"+"3984s",
     EXFS_MAGIC, 1,
     total_blocks, free_blocks,
     MAX_INODES, MAX_INODES - 1,
     inode_table_block, bitmap_block, data_start_block,
     provenance_block, provenance_size,
     b'\x45\x58\x46\x53'+b'\x00'*12,
-    b'\x00'*4000)
+    journal_block, journal_size,
+    b'\x00'*3984)
 img[0:BLOCK_SIZE] = sb[:BLOCK_SIZE]
 
 # Block allocator
 used_blocks = set(range(data_start_block))
-for b in range(provenance_block, total_blocks):
+for b in range(journal_block, total_blocks):
     used_blocks.add(b)
 
 def alloc_block():
