@@ -520,6 +520,71 @@ int vfs_rmdir(const char *path)
     return result;
 }
 
+/* Splits a path into (parent dir path, final component), same helper
+ * logic vfs_create/vfs_unlink/vfs_rmdir each already duplicate. Returns
+ * false on a malformed path (matches those functions' existing checks). */
+static bool split_path(const char *path, char *parent_out, const char **name_out)
+{
+    const char *p = path;
+    const char *last_slash = path;
+    while (*p) { if (*p == '/') last_slash = p; p++; }
+    const char *name = (*last_slash == '/') ? last_slash + 1 : path;
+    if (!*name) return false;
+    if (strlen(name) > VFS_NAME_MAX) return false;
+
+    if (last_slash == path) {
+        parent_out[0] = '/'; parent_out[1] = '\0';
+    } else {
+        int plen = (int)(last_slash - path);
+        if (plen >= 255) return false;
+        for (int i = 0; i < plen; i++) parent_out[i] = path[i];
+        parent_out[plen] = '\0';
+    }
+    *name_out = name;
+    return true;
+}
+
+int vfs_rename(const char *old_path, const char *new_path)
+{
+    char old_parent[256], new_parent[256];
+    const char *old_name, *new_name;
+
+    if (!split_path(old_path, old_parent, &old_name)) return -1;
+    if (!split_path(new_path, new_parent, &new_name)) return -1;
+
+    /* Reject "." / ".." as either endpoint's final component -- same
+     * reasoning as vfs_create's check (see the long comment there). */
+    if ((old_name[0] == '.' && (old_name[1] == '\0' ||
+        (old_name[1] == '.' && old_name[2] == '\0')))) return -1;
+    if ((new_name[0] == '.' && (new_name[1] == '\0' ||
+        (new_name[1] == '.' && new_name[2] == '\0')))) return -1;
+
+    vfs_node_t *old_dir = vfs_lookup(old_parent);
+    if (!old_dir || old_dir->type != VFS_DIRECTORY) return -1;
+
+    vfs_node_t *new_dir = vfs_lookup(new_parent);
+    if (!new_dir || new_dir->type != VFS_DIRECTORY) {
+        if (old_dir->parent != NULL) { kfree(old_dir->fs_data); kfree(old_dir); }
+        return -1;
+    }
+
+    int result = -1;
+    /* Same filesystem check: comparing ops tables is a cheap proxy for
+     * "same driver", and combined with rename only ever being called
+     * on nodes that came out of vfs_lookup() (always resolved through
+     * whichever single vfs_node_t mount root owns that ops table),
+     * this is sufficient here -- ExFS is the only filesystem with a
+     * writable rename op today. */
+    if (old_dir->ops && old_dir->ops->rename && old_dir->ops == new_dir->ops) {
+        result = old_dir->ops->rename(old_dir, old_name, new_dir, new_name);
+    }
+
+    if (old_dir->parent != NULL) { kfree(old_dir->fs_data); kfree(old_dir); }
+    if (new_dir != old_dir && new_dir->parent != NULL) { kfree(new_dir->fs_data); kfree(new_dir); }
+
+    return result;
+}
+
 int vfs_chdir(const char *path)
 {
     static char abspath[512];

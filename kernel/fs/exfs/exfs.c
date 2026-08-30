@@ -3,7 +3,17 @@
 #include "../../mm/kmalloc.h"
 #include "../../audit/audit.h"
 #include "../../proc/process.h"
+#include "../../crypto/blake3.h"
 #include <string.h>
+
+/* Forward declarations: exfs_write_inode() needs to route through the
+ * journal-aware metadata writer, but the journal machinery itself
+ * (defined further down, right after exfs_write_inode) also calls
+ * exfs_write_inode() indirectly via callers throughout this file — so
+ * neither can textually come first without one of them forward-
+ * declaring the other. */
+static bool exfs_meta_write_block(exfs_volume_t *vol, uint64_t block_idx,
+                                   const void *data);
 
 
 /*  Low-level block I/O                                                 */
@@ -194,7 +204,338 @@ static bool exfs_write_inode(exfs_volume_t *vol, uint64_t inode_num,
     if (!exfs_read_block(vol, block_idx, block_buf)) return false;
 
     memcpy(block_buf + offset, in, sizeof(exfs_inode_t));
-    return exfs_write_block(vol, block_idx, block_buf);
+    return exfs_meta_write_block(vol, block_idx, block_buf);
+}
+
+
+/*  Metadata journal — crash-consistent redo log                        */
+/*                                                                       */
+/*  See EXFS_JOURNAL_MAGIC in exfs.h for the design/scope. Usage        */
+/*  pattern throughout this file:                                       */
+/*                                                                       */
+/*      exfs_journal_begin(vol);                                        */
+/*      ... exfs_meta_write_block()/exfs_write_inode() calls, which     */
+/*          transparently stage into the transaction while it's active */
+/*      exfs_journal_commit(vol);   // atomically applies everything    */
+
+
+/*
+ * exfs_journal_stage — record a block's new content as part of the
+ * current transaction. If this exact block was already staged earlier
+ * in the same transaction, overwrite that staged copy (last write
+ * wins) instead of consuming another slot — a single operation can
+ * legitimately touch the same directory block twice (e.g. remove one
+ * entry, add another) and that must not overflow the fixed-size
+ * journal.
+ */
+static bool exfs_journal_stage(exfs_volume_t *vol, uint64_t block_idx,
+                                const void *data)
+{
+    if (!vol->jtxn_data) {
+        /* Journal staging buffer failed to allocate at mount time (low
+         * memory) — fall back to writing straight through, same as a
+         * legacy (journal_size == 0) volume. Loses crash-atomicity but
+         * keeps the filesystem usable rather than failing every write. */
+        return exfs_write_block(vol, block_idx, data);
+    }
+
+    for (uint32_t i = 0; i < vol->jtxn_count; i++) {
+        if (vol->jtxn_blocks[i] == block_idx) {
+            memcpy(vol->jtxn_data[i], data, EXFS_BLOCK_SIZE);
+            return true;
+        }
+    }
+
+    if (vol->jtxn_count >= EXFS_JOURNAL_MAX_BLOCKS) {
+        /* Transaction grew past what the journal can hold — extremely
+         * unlikely for any single ExFS operation (create/unlink/rmdir/
+         * rename/write each touch only a handful of metadata blocks),
+         * but if it ever happens, write straight through rather than
+         * silently drop the update. Documented, not fixed: a bigger
+         * journal region or a growable one would remove this cap. */
+        serial_print("[ExFS] journal: transaction exceeded capacity, "
+                      "writing block directly (crash-atomicity not "
+                      "guaranteed for this block)\n");
+        return exfs_write_block(vol, block_idx, data);
+    }
+
+    vol->jtxn_blocks[vol->jtxn_count] = block_idx;
+    memcpy(vol->jtxn_data[vol->jtxn_count], data, EXFS_BLOCK_SIZE);
+    vol->jtxn_count++;
+    return true;
+}
+
+/*
+ * exfs_meta_write_block — write a metadata block (inode table block,
+ * directory block, indirect/double-indirect pointer block). Routes
+ * through the journal while a transaction is active; writes straight
+ * through otherwise (matches old behavior for any call site outside a
+ * begin/commit pair, and for legacy/no-journal volumes).
+ */
+static bool exfs_meta_write_block(exfs_volume_t *vol, uint64_t block_idx,
+                                   const void *data)
+{
+    if (vol->jtxn_active) return exfs_journal_stage(vol, block_idx, data);
+    return exfs_write_block(vol, block_idx, data);
+}
+
+static void exfs_journal_begin(exfs_volume_t *vol)
+{
+    vol->jtxn_active = true;
+    vol->jtxn_count  = 0;
+}
+
+/*
+ * exfs_journal_commit — atomically apply everything staged since the
+ * matching exfs_journal_begin(). Sequence: (1) write every staged
+ * block's new content into the journal's data slots, (2) write the
+ * journal header last, with a valid magic and the block count/index
+ * list — this single block write is the commit point: if the kernel
+ * crashes before it lands, exfs_journal_replay() at next mount sees no
+ * valid header and does nothing, so the real (pre-transaction) blocks
+ * are untouched. (3) apply every staged block to its real location.
+ * (4) clear the header. Because step 3 writes the exact same final
+ * content step 1 already durably recorded, replaying step 3 again
+ * after a crash between (3) and (4) is always safe (idempotent) — so
+ * is re-replaying an already-fully-applied transaction if the crash
+ * landed between (2) and (4) in general.
+ */
+static bool exfs_journal_commit(exfs_volume_t *vol)
+{
+    if (!vol->jtxn_active) return true;
+    vol->jtxn_active = false;
+
+    if (vol->jtxn_count == 0) return true;
+
+    if (!vol->sb.journal_size || !vol->jtxn_data) {
+        /* Legacy volume (formatted before journaling existed) or
+         * staging buffer unavailable — apply directly, same as
+         * pre-journal behavior. No crash-atomicity, by design for
+         * these two cases (see exfs_journal_stage/exfs_mount). */
+        bool ok = true;
+        for (uint32_t i = 0; i < vol->jtxn_count; i++)
+            ok &= exfs_write_block(vol, vol->jtxn_blocks[i], vol->jtxn_data[i]);
+        vol->jtxn_count = 0;
+        return ok;
+    }
+
+    if (vol->jtxn_count > vol->sb.journal_size - 1) {
+        serial_print("[ExFS] journal: transaction larger than journal "
+                      "region, applying directly (crash-atomicity not "
+                      "guaranteed)\n");
+        bool ok = true;
+        for (uint32_t i = 0; i < vol->jtxn_count; i++)
+            ok &= exfs_write_block(vol, vol->jtxn_blocks[i], vol->jtxn_data[i]);
+        vol->jtxn_count = 0;
+        return ok;
+    }
+
+    /* (1) durably record the new content in the journal region */
+    for (uint32_t i = 0; i < vol->jtxn_count; i++) {
+        if (!exfs_write_block(vol, vol->sb.journal_block + 1 + i,
+                               vol->jtxn_data[i])) {
+            vol->jtxn_count = 0;
+            return false; /* journal write itself failed — nothing was
+                            * ever applied to real locations, so the
+                            * volume is still in its pre-transaction
+                            * (consistent) state. */
+        }
+    }
+
+    /* (2) commit point */
+    typedef struct __attribute__((packed)) {
+        uint32_t magic;
+        uint32_t block_count;
+        uint64_t block_idx[EXFS_JOURNAL_MAX_BLOCKS];
+    } jhdr_t;
+
+    static uint8_t hdr_buf[EXFS_BLOCK_SIZE];
+    memset(hdr_buf, 0, EXFS_BLOCK_SIZE);
+    jhdr_t *hdr = (jhdr_t *)hdr_buf;
+    hdr->magic       = EXFS_JOURNAL_MAGIC;
+    hdr->block_count = vol->jtxn_count;
+    for (uint32_t i = 0; i < vol->jtxn_count; i++)
+        hdr->block_idx[i] = vol->jtxn_blocks[i];
+
+    if (!exfs_write_block(vol, vol->sb.journal_block, hdr_buf)) {
+        vol->jtxn_count = 0;
+        return false;
+    }
+
+    /* (3) apply to real locations */
+    for (uint32_t i = 0; i < vol->jtxn_count; i++)
+        exfs_write_block(vol, vol->jtxn_blocks[i], vol->jtxn_data[i]);
+
+    /* (4) clear the journal */
+    memset(hdr_buf, 0, EXFS_BLOCK_SIZE);
+    exfs_write_block(vol, vol->sb.journal_block, hdr_buf);
+
+    vol->jtxn_count = 0;
+    return true;
+}
+
+/*
+ * exfs_journal_replay — called once at mount, before the volume is
+ * handed back to the VFS. If a committed transaction was left behind
+ * by a crash (header has a valid magic), redo it: write every staged
+ * block back to its real location, then clear the header. No-op for
+ * legacy (journal_size == 0) volumes and for a clean unmount (header
+ * already cleared by the last exfs_journal_commit()).
+ */
+static void exfs_journal_replay(exfs_volume_t *vol)
+{
+    if (!vol->sb.journal_size) return;
+
+    typedef struct __attribute__((packed)) {
+        uint32_t magic;
+        uint32_t block_count;
+        uint64_t block_idx[EXFS_JOURNAL_MAX_BLOCKS];
+    } jhdr_t;
+
+    static uint8_t hdr_buf[EXFS_BLOCK_SIZE];
+    if (!exfs_read_block(vol, vol->sb.journal_block, hdr_buf)) return;
+
+    jhdr_t *hdr = (jhdr_t *)hdr_buf;
+    if (hdr->magic != EXFS_JOURNAL_MAGIC) return; /* nothing to replay */
+
+    serial_print("[ExFS] Journal: replaying committed transaction after "
+                 "an unclean shutdown\n");
+
+    static uint8_t blk[EXFS_BLOCK_SIZE];
+    uint32_t count = hdr->block_count;
+    if (count > EXFS_JOURNAL_MAX_BLOCKS) count = EXFS_JOURNAL_MAX_BLOCKS;
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (exfs_read_block(vol, vol->sb.journal_block + 1 + i, blk))
+            exfs_write_block(vol, hdr->block_idx[i], blk);
+    }
+
+    memset(hdr_buf, 0, EXFS_BLOCK_SIZE);
+    exfs_write_block(vol, vol->sb.journal_block, hdr_buf);
+
+    serial_print("[ExFS] Journal: replay complete\n");
+}
+
+
+/*  Logical file-block -> disk-block resolution (direct/indirect/       */
+/*  double-indirect), shared by read and write                         */
+
+
+/*
+ * exfs_resolve_block — translate a logical block index within a file
+ * into a disk block number, walking direct pointers, then single
+ * indirect, then double indirect (see EXFS_INDIRECT_PTRS in exfs.h for
+ * the addressable range each level covers).
+ *
+ * If `alloc` is false: returns 0 for a hole (unallocated block) —
+ * used by reads, which should treat holes as EOF/end-of-data, same as
+ * the original direct-only code did.
+ *
+ * If `alloc` is true: allocates any missing index blocks and the
+ * final data block as needed, staging every index-block write as
+ * metadata (so it participates in whatever journal transaction the
+ * caller has open). Sets *inode_dirty = true if a *top-level* inode
+ * field (direct[i], indirect, or double_indirect) was assigned for
+ * the first time — the caller is responsible for persisting the
+ * inode itself afterward (exfs_write_inode) when that happens;
+ * changes to blocks an existing pointer already points *at* are
+ * written here directly and don't require an inode rewrite.
+ *
+ * Returns 0 on allocation failure (volume full) or if file_block is
+ * beyond what direct+indirect+double_indirect can address (triple
+ * indirect is not implemented — see EXFS_INDIRECT_PTRS comment).
+ */
+static uint64_t exfs_resolve_block(exfs_volume_t *vol, exfs_inode_t *in,
+                                    uint64_t file_block, bool alloc,
+                                    bool *inode_dirty)
+{
+    if (file_block < EXFS_DIRECT_BLOCKS) {
+        if (!in->direct[file_block]) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            in->direct[file_block] = nb;
+            *inode_dirty = true;
+        }
+        return in->direct[file_block];
+    }
+    file_block -= EXFS_DIRECT_BLOCKS;
+
+    if (file_block < EXFS_INDIRECT_PTRS) {
+        if (!in->indirect) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            static uint8_t zero_blk[EXFS_BLOCK_SIZE];
+            memset(zero_blk, 0, EXFS_BLOCK_SIZE);
+            exfs_meta_write_block(vol, nb, zero_blk);
+            in->indirect = nb;
+            *inode_dirty = true;
+        }
+
+        static uint8_t ind[EXFS_BLOCK_SIZE];
+        if (!exfs_read_block(vol, in->indirect, ind)) return 0;
+        uint64_t *ptrs = (uint64_t *)ind;
+
+        if (!ptrs[file_block]) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            ptrs[file_block] = nb;
+            exfs_meta_write_block(vol, in->indirect, ind);
+        }
+        return ptrs[file_block];
+    }
+    file_block -= EXFS_INDIRECT_PTRS;
+
+    if (file_block < EXFS_INDIRECT_PTRS * EXFS_INDIRECT_PTRS) {
+        uint64_t l1_idx = file_block / EXFS_INDIRECT_PTRS;
+        uint64_t l2_idx = file_block % EXFS_INDIRECT_PTRS;
+
+        if (!in->double_indirect) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            static uint8_t zero_blk[EXFS_BLOCK_SIZE];
+            memset(zero_blk, 0, EXFS_BLOCK_SIZE);
+            exfs_meta_write_block(vol, nb, zero_blk);
+            in->double_indirect = nb;
+            *inode_dirty = true;
+        }
+
+        static uint8_t l1[EXFS_BLOCK_SIZE];
+        if (!exfs_read_block(vol, in->double_indirect, l1)) return 0;
+        uint64_t *l1ptrs = (uint64_t *)l1;
+
+        if (!l1ptrs[l1_idx]) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            static uint8_t zero_blk2[EXFS_BLOCK_SIZE];
+            memset(zero_blk2, 0, EXFS_BLOCK_SIZE);
+            exfs_meta_write_block(vol, nb, zero_blk2);
+            l1ptrs[l1_idx] = nb;
+            exfs_meta_write_block(vol, in->double_indirect, l1);
+        }
+
+        static uint8_t l2[EXFS_BLOCK_SIZE];
+        if (!exfs_read_block(vol, l1ptrs[l1_idx], l2)) return 0;
+        uint64_t *l2ptrs = (uint64_t *)l2;
+
+        if (!l2ptrs[l2_idx]) {
+            if (!alloc) return 0;
+            uint64_t nb = exfs_alloc_block(vol);
+            if (!nb) return 0;
+            l2ptrs[l2_idx] = nb;
+            exfs_meta_write_block(vol, l1ptrs[l1_idx], l2);
+        }
+        return l2ptrs[l2_idx];
+    }
+
+    /* Beyond direct+indirect+double_indirect range. triple_indirect
+     * exists in the on-disk inode but resolving through it is not
+     * implemented (see EXFS_INDIRECT_PTRS comment in exfs.h). */
+    return 0;
 }
 
 
@@ -299,18 +640,10 @@ static int64_t exfs_op_read(vfs_node_t *node, uint64_t offset,
         uint64_t can_read    = EXFS_BLOCK_SIZE - block_off;
         if (can_read > len - bytes_read) can_read = len - bytes_read;
 
-        uint64_t disk_block;
-        if (file_block < EXFS_DIRECT_BLOCKS) {
-            disk_block = in->direct[file_block];
-            if (!disk_block) break;
-        } else {
-            uint64_t indirect_idx = file_block - EXFS_DIRECT_BLOCKS;
-            if (!in->indirect) break;
-            static uint8_t ind_buf[EXFS_BLOCK_SIZE];
-            if (!exfs_read_block(nd->vol, in->indirect, ind_buf)) break;
-            disk_block = ((uint64_t *)ind_buf)[indirect_idx];
-            if (!disk_block) break;
-        }
+        bool unused_dirty = false;
+        uint64_t disk_block = exfs_resolve_block(nd->vol, in, file_block,
+                                                   false, &unused_dirty);
+        if (!disk_block) break; /* hole / EOF for this block */
 
         static uint8_t block_buf[EXFS_BLOCK_SIZE];
         if (!exfs_read_block(nd->vol, disk_block, block_buf)) break;
@@ -328,28 +661,32 @@ static int64_t exfs_op_read(vfs_node_t *node, uint64_t offset,
 static int64_t exfs_op_write(vfs_node_t *node, uint64_t offset,
                               const void *buf, uint64_t len)
 {
-    exfs_node_data_t *nd = (exfs_node_data_t *)node->fs_data;
-    exfs_inode_t     *in = &nd->inode;
+    exfs_node_data_t *nd  = (exfs_node_data_t *)node->fs_data;
+    exfs_volume_t    *vol = nd->vol;
+    exfs_inode_t     *in  = &nd->inode;
 
     uint64_t       written = 0;
     const uint8_t *src     = (const uint8_t *)buf;
+    bool           inode_dirty = false;
 
+    /* Metadata (inode + any newly allocated indirect/double-indirect
+     * pointer blocks) written during this call is journaled as one
+     * transaction, so a crash mid-write never leaves a half-updated
+     * inode or a pointer block referencing garbage. The data blocks
+     * themselves are written directly, below, before the transaction
+     * even opens — ordered-mode, see EXFS_JOURNAL_MAGIC in exfs.h. */
     while (written < len) {
         uint64_t file_block = (offset + written) / EXFS_BLOCK_SIZE;
         uint64_t block_off  = (offset + written) % EXFS_BLOCK_SIZE;
         uint64_t can_write  = EXFS_BLOCK_SIZE - block_off;
         if (can_write > len - written) can_write = len - written;
 
-        if (file_block >= EXFS_DIRECT_BLOCKS) break;
-
-        /* Allocate block if not present */
-        if (!in->direct[file_block]) {
-            uint64_t new_blk = exfs_alloc_block(nd->vol);
-            if (!new_blk) {
-                serial_print("[ExFS] write: no free blocks\n");
-                break;
-            }
-            in->direct[file_block] = new_blk;
+        uint64_t disk_block = exfs_resolve_block(vol, in, file_block,
+                                                   true, &inode_dirty);
+        if (!disk_block) {
+            serial_print("[ExFS] write: allocation failed (volume full "
+                         "or file exceeds max addressable size)\n");
+            break;
         }
 
         static uint8_t block_buf[EXFS_BLOCK_SIZE];
@@ -357,22 +694,46 @@ static int64_t exfs_op_write(vfs_node_t *node, uint64_t offset,
 
         /* Read-modify-write if we are not writing a full block */
         if (block_off != 0 || can_write != EXFS_BLOCK_SIZE)
-            exfs_read_block(nd->vol, in->direct[file_block], block_buf);
+            exfs_read_block(vol, disk_block, block_buf);
 
         memcpy(block_buf + block_off, src + written, can_write);
-        if (!exfs_write_block(nd->vol, in->direct[file_block], block_buf)) break;
+        if (!exfs_write_block(vol, disk_block, block_buf)) break;
 
         written += can_write;
     }
 
-    if (offset + written > in->size)
+    if (offset + written > in->size) {
         in->size = offset + written;
+        inode_dirty = true;
+    }
 
-    in->modified_at = audit_total();
-    exfs_write_inode(nd->vol, nd->inode_num, in);
+    if (written > 0) {
+        in->modified_at = audit_total();
+        inode_dirty = true;
+
+        /* Integrity: record a BLAKE3 digest of exactly the bytes this
+         * call wrote (the field is named/sized for "hash of last
+         * write", not a whole-file checksum — see exfs_inode_t in
+         * exfs.h). This lets a future fsck/audit pass detect silent
+         * on-disk corruption of the most recent write to a file by
+         * re-hashing that byte range and comparing. It does NOT catch
+         * corruption of bytes written by an *earlier* write() call —
+         * a real per-block or whole-file checksum would need on-disk
+         * format changes beyond this field's existing 8 bytes, which
+         * is out of scope here. */
+        uint8_t digest[32];
+        blake3_hash(src, written, digest);
+        memcpy(in->block_hash, digest, sizeof(in->block_hash));
+    }
+
+    if (inode_dirty) {
+        exfs_journal_begin(vol);
+        exfs_write_inode(vol, nd->inode_num, in);
+        exfs_journal_commit(vol);
+    }
     node->size = in->size;
 
-    exfs_append_prov(nd->vol, nd->inode_num, in,
+    exfs_append_prov(vol, nd->inode_num, in,
                      PROV_OP_WRITE, 0, 0, offset, written);
 
     return (int64_t)written;
@@ -495,6 +856,13 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     }
     if (!free_ino) return NULL;
 
+    /* Everything below (new inode, possibly a newly allocated dir
+     * block, and the dirent insertion) is one logical operation --
+     * journaled as a single transaction so a crash partway through
+     * never leaves e.g. a written inode with no dirent pointing at it
+     * yet visible, or vice versa, in a way that corrupts traversal. */
+    exfs_journal_begin(vol);
+
     /* Write new inode */
     exfs_inode_t new_inode;
     memset(&new_inode, 0, sizeof(new_inode));
@@ -517,13 +885,15 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
         if (!din->direct[b]) {
             dir_block = exfs_alloc_block(vol);
-            if (!dir_block) return NULL;
+            if (!dir_block) { exfs_journal_commit(vol); return NULL; }
             memset(block_buf, 0, EXFS_BLOCK_SIZE);
             din->direct[b] = dir_block;
             exfs_write_inode(vol, nd->inode_num, din);
             break;
         }
-        if (!exfs_read_block(vol, din->direct[b], block_buf)) return NULL;
+        if (!exfs_read_block(vol, din->direct[b], block_buf)) {
+            exfs_journal_commit(vol); return NULL;
+        }
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
             exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off);
@@ -532,7 +902,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
         }
         if (dir_block) break;
     }
-    if (!dir_block) return NULL;
+    if (!dir_block) { exfs_journal_commit(vol); return NULL; }
 
     /* Find empty slot and write dirent */
     uint64_t off2 = 0;
@@ -545,12 +915,13 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
             de->file_type = ftype;
             de->name_len  = (uint16_t)name_len;
             memcpy(de->name, name, name_len);
-            exfs_write_block(vol, dir_block, block_buf);
+            exfs_meta_write_block(vol, dir_block, block_buf);
             inserted = true;
             break;
         }
         off2 += sizeof(exfs_dirent_t);
     }
+    exfs_journal_commit(vol);
     if (!inserted) return NULL;
 
     exfs_node_data_t *cnd = kzalloc(sizeof(exfs_node_data_t));
@@ -625,21 +996,50 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
                     static uint8_t ind_buf[EXFS_BLOCK_SIZE];
                     if (exfs_read_block(vol, cin.indirect, ind_buf)) {
                         uint64_t *ptrs = (uint64_t *)ind_buf;
-                        uint64_t max_ptrs = EXFS_BLOCK_SIZE / sizeof(uint64_t);
-                        for (uint64_t pi = 0; pi < max_ptrs; pi++) {
+                        for (uint64_t pi = 0; pi < EXFS_INDIRECT_PTRS; pi++) {
                             if (ptrs[pi]) exfs_free_block(vol, ptrs[pi]);
                         }
                     }
                     exfs_free_block(vol, cin.indirect);
                 }
+                /* double_indirect: free every leaf data block, then
+                 * every level-1 pointer block, then the level-1 table
+                 * itself. This was previously missing entirely — any
+                 * file that used double_indirect (unreachable before
+                 * this change added write support for it) would have
+                 * leaked its whole double-indirect subtree on unlink. */
+                if (cin.double_indirect) {
+                    static uint8_t l1_buf[EXFS_BLOCK_SIZE];
+                    if (exfs_read_block(vol, cin.double_indirect, l1_buf)) {
+                        uint64_t *l1ptrs = (uint64_t *)l1_buf;
+                        for (uint64_t i1 = 0; i1 < EXFS_INDIRECT_PTRS; i1++) {
+                            if (!l1ptrs[i1]) continue;
+                            static uint8_t l2_buf[EXFS_BLOCK_SIZE];
+                            if (exfs_read_block(vol, l1ptrs[i1], l2_buf)) {
+                                uint64_t *l2ptrs = (uint64_t *)l2_buf;
+                                for (uint64_t i2 = 0; i2 < EXFS_INDIRECT_PTRS; i2++) {
+                                    if (l2ptrs[i2]) exfs_free_block(vol, l2ptrs[i2]);
+                                }
+                            }
+                            exfs_free_block(vol, l1ptrs[i1]);
+                        }
+                    }
+                    exfs_free_block(vol, cin.double_indirect);
+                }
+
+                /* Inode zeroing + dirent removal is one logical step:
+                 * journal it so a crash can't leave a live dirent
+                 * pointing at a zeroed (freed) inode, or vice versa. */
+                exfs_journal_begin(vol);
 
                 exfs_inode_t blank;
                 memset(&blank, 0, sizeof(blank));
                 exfs_write_inode(vol, child_ino, &blank);
 
                 memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_write_block(vol, din->direct[b], block_buf);
+                exfs_meta_write_block(vol, din->direct[b], block_buf);
 
+                exfs_journal_commit(vol);
                 return 0;
             }
 
@@ -732,14 +1132,24 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
                     if (cin.direct[db]) exfs_free_block(vol, cin.direct[db]);
                 }
                 if (cin.indirect) exfs_free_block(vol, cin.indirect);
+                /* Directories only ever use direct blocks today (see
+                 * exfs_op_create/lookup/readdir, which all iterate
+                 * EXFS_DIRECT_BLOCKS only) so cin.double_indirect is
+                 * never populated for a directory inode — nothing to
+                 * free there. Freeing cin.indirect above is itself
+                 * dead code for the same reason, kept only in case a
+                 * future change grows directories past 12 blocks. */
+
+                exfs_journal_begin(vol);
 
                 exfs_inode_t blank;
                 memset(&blank, 0, sizeof(blank));
                 exfs_write_inode(vol, child_ino, &blank);
 
                 memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_write_block(vol, din->direct[b], block_buf);
+                exfs_meta_write_block(vol, din->direct[b], block_buf);
 
+                exfs_journal_commit(vol);
                 return 0;
             }
 
@@ -748,6 +1158,174 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
     }
 
     return -1; /* not found */
+}
+
+/*
+ * exfs_op_rename — move/rename a directory entry from (old_dir,
+ * old_name) to (new_dir, new_name). old_dir and new_dir may be the
+ * same directory (plain rename) or different ones (move) — vfs_rename()
+ * has already confirmed both live on this same volume before calling
+ * in. If new_name already exists and is a regular file, it is removed
+ * first (POSIX rename() overwrite semantics); if it's a directory,
+ * the rename is refused (-1) rather than attempting a merge.
+ *
+ * This does not update ".." for a moved directory because ExFS
+ * directories don't store a real ".." dirent at all (see the comment
+ * in vfs_create() about why an on-disk ".." is deliberately never
+ * created) — so moving a directory to a new parent needs no such
+ * fixup here.
+ */
+static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
+                           vfs_node_t *new_dir, const char *new_name)
+{
+    exfs_node_data_t *ond = (exfs_node_data_t *)old_dir->fs_data;
+    exfs_node_data_t *nnd = (exfs_node_data_t *)new_dir->fs_data;
+    exfs_volume_t    *vol = ond->vol;
+    if (vol != nnd->vol) return -1; /* cross-volume — vfs_rename() should
+                                      * already have refused this via the
+                                      * ops-table check, this is a
+                                      * defense-in-depth backstop */
+
+    uint64_t old_len = strlen(old_name), new_len = strlen(new_name);
+    if (!old_len || old_len > EXFS_NAME_MAX) return -1;
+    if (!new_len || new_len > EXFS_NAME_MAX) return -1;
+
+    /* Locate the source entry */
+    exfs_inode_t *odin = &ond->inode;
+    static uint8_t old_buf[EXFS_BLOCK_SIZE];
+    int      src_blk_idx = -1;
+    uint64_t src_off      = 0;
+    exfs_dirent_t src_de;
+    bool found = false;
+
+    for (int b = 0; b < EXFS_DIRECT_BLOCKS && !found; b++) {
+        if (!odin->direct[b]) break;
+        if (!exfs_read_block(vol, odin->direct[b], old_buf)) return -1;
+        uint64_t off = 0;
+        while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+            exfs_dirent_t *de = (exfs_dirent_t *)(old_buf + off);
+            if (de->inode_num && de->name_len == (uint16_t)old_len &&
+                memcmp(de->name, old_name, old_len) == 0)
+            {
+                src_blk_idx = b;
+                src_off     = off;
+                src_de      = *de;
+                found       = true;
+                break;
+            }
+            off += sizeof(exfs_dirent_t);
+        }
+    }
+    if (!found) return -1; /* ENOENT */
+
+    /* Bail out early (no-op success) if this is a rename onto the
+     * exact same (dir, name) pair -- if we let it fall through, the
+     * "does the destination already exist" check below would find
+     * the source's own entry and try to unlink it out from under us. */
+    if (old_dir == new_dir && old_len == new_len &&
+        memcmp(old_name, new_name, old_len) == 0)
+        return 0;
+
+    /* If the destination name already exists: refuse for a directory,
+     * remove-then-continue for a file (matches POSIX rename()). Doing
+     * this lookup/unlink *before* opening our own journal transaction
+     * keeps it as its own independent, already-atomic operation
+     * (exfs_op_unlink journals itself) rather than nesting transactions
+     * (the journal is single-slot/single-transaction — see exfs.h). */
+    vfs_node_t *existing = exfs_op_lookup(new_dir, new_name);
+    if (existing) {
+        bool is_dir = (existing->type == VFS_DIRECTORY);
+        kfree(existing->fs_data);
+        kfree(existing);
+        if (is_dir) return -1;
+        if (exfs_op_unlink(new_dir, new_name) != 0) return -1;
+    }
+
+    /* Find an empty dirent slot in the destination directory. Read-only
+     * pass — nothing is mutated or staged yet. */
+    exfs_inode_t *ndin = &nnd->inode;
+    uint64_t dst_block = 0, dst_off = 0;
+    bool      need_new_block = false;
+    int       new_block_slot = -1;
+    static uint8_t dst_buf[EXFS_BLOCK_SIZE];
+
+    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
+        if (!ndin->direct[b]) { need_new_block = true; new_block_slot = b; break; }
+        if (!exfs_read_block(vol, ndin->direct[b], dst_buf)) return -1;
+        uint64_t off = 0;
+        bool slot_found = false;
+        while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+            exfs_dirent_t *de = (exfs_dirent_t *)(dst_buf + off);
+            if (!de->inode_num) { dst_block = ndin->direct[b]; dst_off = off; slot_found = true; break; }
+            off += sizeof(exfs_dirent_t);
+        }
+        if (slot_found) break;
+    }
+    if (!dst_block && !need_new_block) return -1; /* directory full */
+
+    /* The actual move: remove the source dirent, insert the
+     * destination dirent. One transaction — a crash between the two
+     * must never leave the entry visible in neither directory (lost)
+     * or in both (duplicated).
+     *
+     * When source and destination land in the *same* physical block
+     * (always true for a same-directory rename, and possible even
+     * across directories if their allocators happened to reuse the
+     * same block), both edits are applied to one in-memory copy and
+     * written/staged exactly once. Staging the same block twice with
+     * two different partial edits would be wrong: the journal's
+     * "same block staged again -> overwrite" dedup (see
+     * exfs_journal_stage) means only the *second* staged copy would
+     * survive, silently discarding whichever edit was staged first --
+     * this was an actual bug caught by testing, not a hypothetical. */
+    exfs_journal_begin(vol);
+
+    if (need_new_block) {
+        uint64_t nb = exfs_alloc_block(vol);
+        if (!nb) { exfs_journal_commit(vol); return -1; }
+        memset(dst_buf, 0, EXFS_BLOCK_SIZE);
+        ndin->direct[new_block_slot] = nb;
+        exfs_write_inode(vol, nnd->inode_num, ndin);
+        dst_block = nb;
+        dst_off   = 0;
+    } else if (dst_block != odin->direct[src_blk_idx]) {
+        /* Different block from the source -- re-read fresh now that
+         * we're inside the transaction, in case anything upstream
+         * (the destination-overwrite unlink above) touched it. */
+        if (!exfs_read_block(vol, dst_block, dst_buf)) {
+            exfs_journal_commit(vol); return -1;
+        }
+    }
+    /* else: dst_block == the source's own block, and dst_buf already
+     * holds that exact block's current content from the scan above --
+     * reuse it as-is so the source-removal edit below and the
+     * insertion edit both land in this one copy. */
+
+    if (dst_block == odin->direct[src_blk_idx]) {
+        /* Same block: clear the source slot and write the new entry
+         * in this single buffer, then persist it once. */
+        memset(dst_buf + src_off, 0, sizeof(exfs_dirent_t));
+    } else {
+        /* Different block: clear the source slot in its own buffer
+         * and stage that separately. */
+        static uint8_t src_buf[EXFS_BLOCK_SIZE];
+        if (!exfs_read_block(vol, odin->direct[src_blk_idx], src_buf)) {
+            exfs_journal_commit(vol); return -1;
+        }
+        memset(src_buf + src_off, 0, sizeof(exfs_dirent_t));
+        exfs_meta_write_block(vol, odin->direct[src_blk_idx], src_buf);
+    }
+
+    exfs_dirent_t *de = (exfs_dirent_t *)(dst_buf + dst_off);
+    memset(de, 0, sizeof(exfs_dirent_t));
+    de->inode_num = src_de.inode_num;
+    de->file_type = src_de.file_type;
+    de->name_len  = (uint16_t)new_len;
+    memcpy(de->name, new_name, new_len);
+    exfs_meta_write_block(vol, dst_block, dst_buf);
+
+    exfs_journal_commit(vol);
+    return 0;
 }
 
 
@@ -762,6 +1340,7 @@ static const vfs_ops_t g_exfs_ops = {
     .unlink  = exfs_op_unlink,
     .rmdir   = exfs_op_rmdir,
     .chmod   = exfs_op_chmod,
+    .rename  = exfs_op_rename,
 };
 
 
@@ -828,6 +1407,19 @@ vfs_node_t *exfs_mount(block_device_t *dev, uint32_t lba_base)
     for (uint64_t b = 0; b < vol->sb.data_start_block; b++)
         bitmap_set(vol, b);
 
+    /* Journal transaction staging buffer. Allocated separately from
+     * exfs_volume_t (see the struct comment in exfs.h) — failure here
+     * is non-fatal, same reasoning as the block cache above: every
+     * journal call site falls back to a direct (non-atomic) write when
+     * vol->jtxn_data is NULL, so a low-memory boot still mounts. */
+    vol->jtxn_data = kzalloc(EXFS_JOURNAL_MAX_BLOCKS * EXFS_BLOCK_SIZE);
+    vol->jtxn_active = false;
+    vol->jtxn_count  = 0;
+
+    /* Replay any committed-but-not-fully-applied transaction left by
+     * an unclean shutdown, before this volume is handed to the VFS. */
+    exfs_journal_replay(vol);
+
     serial_print("[ExFS] Superblock OK. Total blocks: ");
     serial_printhex(vol->sb.total_blocks);
     serial_print(" Free: ");
@@ -875,11 +1467,18 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
     uint64_t inode_table_block = 2;
     uint64_t block_bitmap_block = 1;
     uint64_t provenance_size = 16;
-    if (total_blocks <= inode_table_block + inode_blocks + provenance_size)
+    /* Journal region: 1 header block + EXFS_JOURNAL_MAX_BLOCKS data
+     * slots (see EXFS_JOURNAL_MAGIC in exfs.h). Placed right before
+     * the provenance region, at the high end of the volume, same as
+     * provenance already was. */
+    uint64_t journal_size = 1 + EXFS_JOURNAL_MAX_BLOCKS;
+    if (total_blocks <= inode_table_block + inode_blocks
+                       + provenance_size + journal_size)
         return false;
 
     uint64_t data_start_block = inode_table_block + inode_blocks;
     uint64_t provenance_block = total_blocks - provenance_size;
+    uint64_t journal_block    = provenance_block - journal_size;
 
     exfs_volume_t vol;
     memset(&vol, 0, sizeof(vol));
@@ -894,7 +1493,8 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
     sb->magic              = EXFS_MAGIC;
     sb->version            = EXFS_VERSION;
     sb->total_blocks       = total_blocks;
-    sb->free_blocks        = total_blocks - data_start_block - provenance_size;
+    sb->free_blocks        = total_blocks - data_start_block
+                            - provenance_size - journal_size;
     sb->total_inodes       = EXFS_MAX_INODES;
     sb->free_inodes        = EXFS_MAX_INODES - 1;
     sb->inode_table_block  = inode_table_block;
@@ -902,6 +1502,8 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
     sb->data_start_block   = data_start_block;
     sb->provenance_block   = provenance_block;
     sb->provenance_size    = provenance_size;
+    sb->journal_block      = journal_block;
+    sb->journal_size       = journal_size;
 
     static uint8_t sb_buf[EXFS_BLOCK_SIZE];
     memset(sb_buf, 0, EXFS_BLOCK_SIZE);
@@ -929,7 +1531,18 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
          b < sb->total_blocks && b < BITS_PER_BLK; b++) {
         bitmap_buf[b / 8] |= (uint8_t)(1u << (b % 8));
     }
+    for (uint64_t b = sb->journal_block;
+         b < sb->journal_block + sb->journal_size && b < BITS_PER_BLK; b++) {
+        bitmap_buf[b / 8] |= (uint8_t)(1u << (b % 8));
+    }
     if (!exfs_write_block(&vol, block_bitmap_block, bitmap_buf)) return false;
+
+    /* Zero the journal region (header block's magic == 0 means "no
+     * committed transaction to replay" — see exfs_journal_replay). */
+    for (uint64_t b = 0; b < journal_size; b++) {
+        if (!exfs_write_block(&vol, journal_block + b, zero_block))
+            return false;
+    }
 
     /* Write root directory inode (inode 0) */
     exfs_inode_t root_inode;

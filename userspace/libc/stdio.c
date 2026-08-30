@@ -334,32 +334,18 @@ int remove(const char *path)
 }
 
 /*
- * rename — no atomic rename syscall exists yet, so this is a
- * best-effort copy-then-delete fallback: correct for regular files,
- * just not atomic (a crash mid-rename could leave both copies, or
- * neither, unlike a real rename()).
+ * rename — now backed by the real SYS_RENAME syscall (ExFS gained an
+ * atomic, journaled rename() — see exfs_op_rename() in
+ * kernel/fs/exfs/exfs.c). Previously this was a best-effort
+ * copy-then-delete fallback because no such syscall existed; that had
+ * a real failure window (a crash mid-copy could leave both a partial
+ * destination and a since-deleted source). The syscall wrapper lives
+ * in syscall.h as __sys_rename() rather than as `rename` itself, so
+ * this remains the one and only `rename` symbol in the libc.
  */
 int rename(const char *from, const char *to)
 {
-    FILE *src = fopen(from, "r");
-    if (!src) return -1;
-
-    FILE *dst = fopen(to, "w");
-    if (!dst) { fclose(src); return -1; }
-
-    char buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
-        if (fwrite(buf, 1, n, dst) != n) {
-            fclose(src); fclose(dst);
-            return -1;
-        }
-    }
-
-    fclose(src);
-    fclose(dst);
-    unlink(from);
-    return 0;
+    return __sys_rename(from, to);
 }
 
 size_t fread(void *buf, size_t sz, size_t n, FILE *f)

@@ -24,6 +24,12 @@ typedef struct {
     int      (*unlink)(vfs_node_t *dir, const char *name);
     int      (*rmdir) (vfs_node_t *dir, const char *name); /* refuses non-empty dirs (-2) */
     int      (*chmod) (vfs_node_t *node, uint32_t mode); /* persist mode to disk; NULL = unsupported */
+    /* Move/rename a dirent from (old_dir,old_name) to (new_dir,new_name).
+     * old_dir and new_dir are always on the same mounted filesystem
+     * (vfs_rename() refuses cross-filesystem moves before calling this,
+     * same EXDEV-style restriction real rename(2) has). NULL = unsupported. */
+    int      (*rename)(vfs_node_t *old_dir, const char *old_name,
+                        vfs_node_t *new_dir, const char *new_name);
 } vfs_ops_t;
 
 struct vfs_node {
@@ -63,6 +69,7 @@ int64_t     vfs_readdir(int fd, void *buf, uint64_t max);
 int         vfs_create(const char *path, uint8_t type);
 int         vfs_unlink(const char *path);
 int         vfs_rmdir(const char *path);
+int         vfs_rename(const char *old_path, const char *new_path);
 int         vfs_chmod(const char *path, uint32_t mode);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);

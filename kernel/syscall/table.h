@@ -99,8 +99,11 @@
                                   * privilege-drop semantics, not a real
                                   * setuid()) */
 #define SYS_GETUID         89   /* current process's uid */
+#define SYS_RENAME         90   /* rename/move a file or empty-or-not
+                                  * directory: rename(old_path, new_path).
+                                  * See vfs_rename()/exfs_op_rename(). */
 
-#define SYS_COUNT          90
+#define SYS_COUNT          91
 
 
 /*
