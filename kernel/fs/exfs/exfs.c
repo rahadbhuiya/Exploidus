@@ -6,6 +6,56 @@
 #include "../../crypto/blake3.h"
 #include <string.h>
 
+/*
+ * Deterministic crash-injection hook for testing journal recovery
+ * (EXFS_JOURNAL_MAGIC above). Timing a real crash by hand against a
+ * live QEMU session can't reliably land inside a multi-microsecond
+ * window, so this lets a test deliberately halt execution at one of
+ * the three points that matter for exfs_journal_commit()'s
+ * correctness argument, armed via SYS_DEBUG_EXFS_CRASH from the
+ * shell's `crashtest` command:
+ *
+ *   1 = after the journal's data slots are written, before the
+ *       header (commit point) — nothing should be replayed on
+ *       reboot; the operation should look like it never happened.
+ *   2 = after the header (commit point), before the real blocks are
+ *       applied — this is the case the whole journal exists for:
+ *       replay must apply the operation on the next mount.
+ *   3 = after the real blocks are applied, before the header is
+ *       cleared — replay must be safe to run again (idempotent):
+ *       the operation already happened, reapplying it must be a
+ *       no-op, not corruption.
+ *
+ * Disabled (0) in normal operation; this file is not conditionally
+ * compiled out because the hook is inert (single branch, single
+ * global) unless explicitly armed, and keeping it always-present
+ * means the exact same kernel binary is what's being tested rather
+ * than a special "test build".
+ */
+static volatile int g_exfs_crash_point = 0;
+
+void exfs_debug_arm_crash(int point)
+{
+    g_exfs_crash_point = point;
+    serial_print("[ExFS] CRASH TEST: armed, crash point=");
+    serial_printhex((uint64_t)point);
+    serial_print("\n");
+}
+
+static void exfs_debug_crash_now(void)
+{
+    serial_print("[ExFS] CRASH TEST: halting now (armed crash point "
+                 "reached)\n");
+    /* Immediate triple fault: no cleanup, no delay, no cli-then-wait
+     * like a graceful reboot -- this is meant to look exactly like
+     * a power loss, i.e. nothing else gets to run after this. */
+    static const struct __attribute__((packed)) {
+        uint16_t limit; uint64_t base;
+    } null_idt = { 0, 0 };
+    __asm__ volatile ("lidt %0\n int $0x3\n" :: "m"(null_idt));
+    for (;;) { __asm__ volatile ("hlt"); }
+}
+
 /* Forward declarations: exfs_write_inode() needs to route through the
  * journal-aware metadata writer, but the journal machinery itself
  * (defined further down, right after exfs_write_inode) also calls
@@ -14,6 +64,8 @@
  * declaring the other. */
 static bool exfs_meta_write_block(exfs_volume_t *vol, uint64_t block_idx,
                                    const void *data);
+static bool exfs_txn_read_block(exfs_volume_t *vol, uint64_t block_idx,
+                                 void *buf);
 
 
 /*  Low-level block I/O                                                 */
@@ -201,7 +253,7 @@ static bool exfs_write_inode(exfs_volume_t *vol, uint64_t inode_num,
     uint64_t offset    = (inode_num % inodes_per_block) * EXFS_INODE_SIZE;
 
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
-    if (!exfs_read_block(vol, block_idx, block_buf)) return false;
+    if (!exfs_txn_read_block(vol, block_idx, block_buf)) return false;
 
     memcpy(block_buf + offset, in, sizeof(exfs_inode_t));
     return exfs_meta_write_block(vol, block_idx, block_buf);
@@ -279,6 +331,44 @@ static bool exfs_meta_write_block(exfs_volume_t *vol, uint64_t block_idx,
     return exfs_write_block(vol, block_idx, data);
 }
 
+/*
+ * exfs_txn_read_block — read a block's *current logical* content: if
+ * it's already been staged earlier in the active transaction, that
+ * staged (not-yet-committed-to-disk) copy is authoritative and is
+ * returned instead of the on-disk version. Falls back to a normal
+ * exfs_read_block() when there's no active transaction or this block
+ * hasn't been touched by it yet.
+ *
+ * This matters for any read-modify-write against a block that more
+ * than one call in the same transaction might touch -- the clearest
+ * example is the inode table: EXFS_BLOCK_SIZE / EXFS_INODE_SIZE = 16
+ * inodes share one on-disk block, so creating a file in a directory
+ * that needs its first data block allocated writes *two* different
+ * inodes (the new file's, and the parent directory's, for its updated
+ * direct[] pointer) that can easily land in the same block. Without
+ * this, exfs_write_inode()'s plain exfs_read_block() would miss the
+ * first inode's still-only-staged update, and journal_stage's
+ * same-block dedup ("stage again -> overwrite") would silently
+ * discard it -- exactly the rename() bug fixed earlier, but for
+ * inodes instead of dirents. Caught in testing: creating the first
+ * file in a freshly made subdirectory left the new file's own inode
+ * effectively blank (mode 0), so opening it for write failed
+ * permission checks that a mode of 0 always fails.
+ */
+static bool exfs_txn_read_block(exfs_volume_t *vol, uint64_t block_idx,
+                                 void *buf)
+{
+    if (vol->jtxn_active && vol->jtxn_data) {
+        for (uint32_t i = 0; i < vol->jtxn_count; i++) {
+            if (vol->jtxn_blocks[i] == block_idx) {
+                memcpy(buf, vol->jtxn_data[i], EXFS_BLOCK_SIZE);
+                return true;
+            }
+        }
+    }
+    return exfs_read_block(vol, block_idx, buf);
+}
+
 static void exfs_journal_begin(exfs_volume_t *vol)
 {
     vol->jtxn_active = true;
@@ -342,6 +432,8 @@ static bool exfs_journal_commit(exfs_volume_t *vol)
         }
     }
 
+    if (g_exfs_crash_point == 1) exfs_debug_crash_now();
+
     /* (2) commit point */
     typedef struct __attribute__((packed)) {
         uint32_t magic;
@@ -362,9 +454,13 @@ static bool exfs_journal_commit(exfs_volume_t *vol)
         return false;
     }
 
+    if (g_exfs_crash_point == 2) exfs_debug_crash_now();
+
     /* (3) apply to real locations */
     for (uint32_t i = 0; i < vol->jtxn_count; i++)
         exfs_write_block(vol, vol->jtxn_blocks[i], vol->jtxn_data[i]);
+
+    if (g_exfs_crash_point == 3) exfs_debug_crash_now();
 
     /* (4) clear the journal */
     memset(hdr_buf, 0, EXFS_BLOCK_SIZE);
@@ -842,6 +938,35 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     uint64_t ipb = EXFS_BLOCK_SIZE / EXFS_INODE_SIZE;
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
 
+    /* Refuse to create a name that already exists in this directory.
+     * Without this check, two dirents with the identical name could
+     * both exist (each pointing at a different inode) — e.g. any
+     * caller that falls back to create() after a failed open() for an
+     * unrelated reason would silently duplicate the file instead of
+     * either failing or reusing the existing one. Real filesystems
+     * never allow this; POSIX create()/O_CREAT without O_EXCL opens
+     * the existing file instead of duplicating it, which callers
+     * needing that exact semantic should implement by open()-first,
+     * same as today — this only closes the "duplicate name" hole,
+     * it doesn't change create()'s own contract of "always makes a
+     * new file". */
+    {
+        exfs_inode_t *din = &nd->inode;
+        static uint8_t dup_check_buf[EXFS_BLOCK_SIZE];
+        for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
+            if (!din->direct[b]) break;
+            if (!exfs_read_block(vol, din->direct[b], dup_check_buf)) break;
+            uint64_t off = 0;
+            while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+                exfs_dirent_t *de = (exfs_dirent_t *)(dup_check_buf + off);
+                if (de->inode_num && de->name_len == (uint16_t)name_len &&
+                    memcmp(de->name, name, name_len) == 0)
+                    return NULL; /* EEXIST */
+                off += sizeof(exfs_dirent_t);
+            }
+        }
+    }
+
     /* Find free inode (skip 0 = root) */
     uint64_t free_ino = 0;
     for (uint64_t b = 0; b < (vol->sb.total_inodes / ipb) && !free_ino; b++) {
@@ -891,7 +1016,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
             exfs_write_inode(vol, nd->inode_num, din);
             break;
         }
-        if (!exfs_read_block(vol, din->direct[b], block_buf)) {
+        if (!exfs_txn_read_block(vol, din->direct[b], block_buf)) {
             exfs_journal_commit(vol); return NULL;
         }
         uint64_t off = 0;

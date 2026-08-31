@@ -96,6 +96,99 @@ anyway) would leak its entire double-indirect subtree.
 blocks → level-1 pointer blocks → the level-1 table itself) before
 zeroing the inode.
 
+## 6. Bugs found during live QEMU testing (not caught by code review)
+
+The above was reviewed carefully but never actually run before this
+point — the following were caught only once real commands were typed
+into a booted kernel, and are exactly the kind of bug that code review
+alone tends to miss.
+
+### 6a. `exfs_op_create()` allowed duplicate directory entries
+
+**Problem:** no check for an existing name before creating one. Two
+callers creating the same path (e.g. a caller falling back to
+`fs_create()` after an unrelated failed `open()` — which is in fact
+what the shell's `write` command does) could silently leave **two**
+dirents with the identical name, each pointing at a different inode.
+Surfaced as `ls` showing a file listed twice.
+
+**Fix:** `exfs_op_create()` now scans the target directory for the
+name first and refuses (`NULL`, EEXIST-style) if it already exists.
+
+### 6b. A same-block journal write could silently discard an earlier one in the same transaction
+
+Two separate manifestations of the same root cause, both found by
+running real commands, not by inspection:
+
+- **`rename()`**: staged the source-removal edit and the destination-
+  insertion edit as two separate writes. When source and destination
+  land in the same physical block — always true for a same-directory
+  rename, which is the common case — the journal's same-block dedup
+  rule ("staged again → overwrite in place") kept only whichever edit
+  was staged *second*, discarding the first. Observed as `mv` leaving
+  **both** the old and new name present after the move.
+
+- **`exfs_write_inode()`**: always read the inode-table block fresh
+  from disk, never checking whether the current transaction had
+  already staged an update to that same block. Since
+  `EXFS_INODE_SIZE=256` and `EXFS_BLOCK_SIZE=4096`, 16 inodes share
+  one on-disk block — so creating the *first* file in a freshly made
+  subdirectory (which needs to allocate that directory's first data
+  block, and therefore writes both the new file's own inode *and* the
+  parent directory's updated inode in one transaction) could have the
+  second `exfs_write_inode()` call silently erase the first one's
+  staged content. The new file's own inode came out of the
+  transaction blank (`mode=0`), so every subsequent `open()` on it
+  failed permission checks — observed as `write` and `cat` failing
+  with "not found" on a file `touch` had just reported creating.
+
+**Fix (general, not per-callsite):** `exfs_txn_read_block()` — any
+read-modify-write against a block during an active transaction now
+checks the transaction's own staged (not-yet-committed) content
+first, falling back to disk only if this transaction hasn't touched
+that block yet. `exfs_write_inode()` and `exfs_op_create()`'s
+directory-block scan were switched to use it; `rename()`'s
+same-block case was additionally hand-verified to apply both its
+edits to one in-memory buffer before a single write, rather than
+relying solely on the general fix.
+
+### 6c. `mv <src> <dir>/` (trailing slash) silently failed
+
+**Problem:** the shell-level convenience of "destination ending in
+`/` means keep the source's own name inside that directory" was
+implemented, but checked the *already-normalized* destination path —
+and the path-normalization helper (`_abs()`) always strips a trailing
+slash while resolving `.`/`..`, so the check could never fire. `mv
+/dir1/f /dir2/` was silently renaming `/dir1/f` to a file literally
+named `dir2` inside root, which then failed because `/dir2` already
+existed as a directory.
+
+**Fix:** check the raw, pre-`_abs()` argument for a trailing slash
+instead.
+
+## Verification: deterministic crash-injection testing
+
+Code review and interactive testing caught the bugs above, but neither
+proves the journal actually survives a real crash. A `crashtest
+<1|2|3>` shell command (`SYS_DEBUG_EXFS_CRASH`, test-only,
+`exfs_debug_arm_crash()` in `exfs.c`) halts the kernel via an
+immediate triple fault at one of the three points inside
+`exfs_journal_commit()` that matter for its correctness argument:
+
+1. after the journal's data slots are written, before the header
+   (commit point) — expect no replay, operation absent after reboot
+2. after the commit point, before the real blocks are applied — this
+   is the case the journal exists for; expect replay, operation
+   present
+3. after the real blocks are applied, before the journal is cleared —
+   expect a safe (idempotent) replay if it runs at all, operation
+   present, no corruption
+
+All three were run against the built kernel in QEMU and matched their
+expected outcome exactly, including the `"[ExFS] Journal: replaying
+committed transaction after an unclean shutdown"` boot message
+appearing only for cases 2 and 3.
+
 ## Explicitly out of scope for this pass
 
 Kept as honest, documented gaps rather than silently patched over:

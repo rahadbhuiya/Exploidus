@@ -235,6 +235,8 @@ QNX is a commercial real-time operating system used in automotive, medical, and 
 
 **Adaptive intent** — A future extension would allow the kernel to observe process behavior over time and adjust its intent classification dynamically.
 
+**ExFS crash consistency and extended addressing** — An earlier version of ExFS wrote metadata non-transactionally and could address only 12 direct blocks per file (48 KiB max). A subsequent pass added a write-ahead metadata journal, indirect/double-indirect block addressing (~1.03 GiB max file size), and an atomic `rename()`. Unlike the other items in this section, this one is not merely proposed: it was verified with deterministic crash-injection testing (a debug hook halts the kernel at each of the three points inside a journal commit that matter for its correctness argument, rather than relying on timing a real crash by hand) — see `CHANGELOG-exfs-completion.md` for the full design rationale, the bugs the journal itself surfaced during testing (a same-block write silently discarding an earlier one in the same transaction), and remaining gaps (no `fsck`, no `triple_indirect`, directories still capped at ~180 entries, no symlinks or hard links).
+
 ---
 
 ## 7. Conclusion

@@ -157,8 +157,12 @@ vfs_node_t *vfs_lookup(const char *path)
 int vfs_open(const char *path, uint32_t flags)
 {
     vfs_node_t *node = vfs_lookup(path);
-    if (!node)
+    if (!node) {
+        serial_print("[VFS] open: lookup failed for ");
+        serial_print(path);
+        serial_print("\n");
         return -1;
+    }
 
     if (!node->ops) {
         if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
@@ -196,10 +200,24 @@ int vfs_open(const char *path, uint32_t flags)
         uint32_t write_bit = is_owner ? 0200 : 0002;
 
         if (wants_read && !(node->mode & read_bit)) {
+            serial_print("[VFS] open: read permission denied, mode=");
+            serial_printhex(node->mode);
+            serial_print(" owner_uid=");
+            serial_printhex(node->owner_uid);
+            serial_print(" caller_uid=");
+            serial_printhex(caller_uid);
+            serial_print("\n");
             if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
             return -1;
         }
         if (wants_write && !(node->mode & write_bit)) {
+            serial_print("[VFS] open: write permission denied, mode=");
+            serial_printhex(node->mode);
+            serial_print(" owner_uid=");
+            serial_printhex(node->owner_uid);
+            serial_print(" caller_uid=");
+            serial_printhex(caller_uid);
+            serial_print("\n");
             if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
             return -1;
         }
