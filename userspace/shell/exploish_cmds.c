@@ -125,6 +125,39 @@ void cmd_ext_rm(const char *path) {
     if (r != 0) { puts("rm: failed: "); _println(ap); }
 }
 
+/*
+ * crashtest <1|2|3> -- TEST ONLY. Arms a deterministic crash inside
+ * the next ExFS journal commit (see SYS_DEBUG_EXFS_CRASH), then
+ * immediately creates a file so the very next filesystem metadata
+ * operation is the one that hits it. The VM halts (triple-faults)
+ * right there -- QEMU should reset. On reboot, check the boot log for
+ * "[ExFS] Journal: replaying..." (point 2 should show it; points 1
+ * and 3 should NOT), then `ls /crashtest_probe` to confirm the
+ * filesystem is in a sane state either way (file absent for point 1,
+ * present for points 2 and 3 -- never a corrupted/partial entry).
+ */
+void cmd_ext_crashtest(const char *args)
+{
+    const char *p = _skip(args);
+    if (!*p || (*p != '1' && *p != '2' && *p != '3') ||
+        (p[1] != '\0' && p[1] != ' ')) {
+        _println("Usage: crashtest <1|2|3>");
+        _println("  1 = crash before journal commit point (expect: no replay, file absent)");
+        _println("  2 = crash after commit, before real apply (expect: replay runs, file present)");
+        _println("  3 = crash after real apply, before journal clear (expect: no replay needed, file present)");
+        return;
+    }
+    int point = *p - '0';
+    _println("Arming crash test -- the VM will halt in a moment.");
+    _println("After it resets, check the boot log and run:");
+    _println("  ls /crashtest_probe");
+    debug_exfs_crash(point);
+    /* This create() is what triggers the armed journal commit -- and
+     * with the crash points inside it, this call never returns. */
+    int fd = fs_create("/crashtest_probe", 0);
+    if (fd >= 0) close(fd); /* only reached if point was out of range */
+}
+
 void cmd_ext_mount(const char *args)
 {
     const char *p = _skip(args);
@@ -432,6 +465,37 @@ void cmd_ext_mv(const char *args)
 
     char asrc[256], adst[256];
     _abs(src, asrc, 256); _abs(dst, adst, 256);
+
+    /* "mv <src> <dir>/" convenience: a destination ending in '/' means
+     * "into this directory, keeping the source's own name" -- same as
+     * real mv(1). Checked on the *raw, pre-_abs()* dst: _abs() is a
+     * general path normalizer that always strips a trailing slash
+     * while resolving the path (same as any "/dir2/" -> "/dir2"
+     * normalization), so by the time `adst` exists the trailing slash
+     * this check needs is already gone -- checking `adst` here (an
+     * earlier version of this did exactly that) means the check can
+     * never fire. The rename() syscall itself still requires the
+     * exact destination path (real rename(2) works the same way;
+     * this basename-append is a shell-level convenience, not a
+     * kernel feature), so it's resolved here before calling it.
+     */
+    int dst_raw_len = 0;
+    while (dst[dst_raw_len]) dst_raw_len++;
+    if (dst_raw_len > 0 && dst[dst_raw_len - 1] == '/') {
+        int adst_len = 0;
+        while (adst[adst_len]) adst_len++;
+        /* find src's basename (text after its last '/') */
+        int last_slash = -1;
+        for (int j = 0; asrc[j]; j++) if (asrc[j] == '/') last_slash = j;
+        const char *base = (last_slash >= 0) ? asrc + last_slash + 1 : asrc;
+        /* adst is "/dir2" (root) or ".../dir2" (nested) -- append a
+         * '/' separator unless adst is bare "/" (root itself, where
+         * appending would double the slash). */
+        int k = adst_len;
+        if (!(adst_len == 1 && adst[0] == '/')) adst[k++] = '/';
+        while (*base && k < 255) adst[k++] = *base++;
+        adst[k] = 0;
+    }
 
     /* Used to be implemented as cp-then-unlink (a full read+write copy
      * followed by removing the source). Now that ExFS supports a real

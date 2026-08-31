@@ -432,6 +432,13 @@ static inline int __sys_rename(const char *old_path, const char *new_path)
         (uint64_t)(uintptr_t)old_path,
         (uint64_t)(uintptr_t)new_path);
 }
+#define SYS_DEBUG_EXFS_CRASH 91
+/* TEST ONLY -- arms a deterministic crash inside the next ExFS
+ * journal commit. See SYS_DEBUG_EXFS_CRASH in kernel/syscall/table.h. */
+static inline int debug_exfs_crash(int point)
+{
+    return (int)syscall1(SYS_DEBUG_EXFS_CRASH, (uint64_t)point);
+}
 static inline int64_t http_download(const char *url, const char *dest_path, uint8_t *hash_out)
 {
     return syscall3(SYS_HTTP_DOWNLOAD,

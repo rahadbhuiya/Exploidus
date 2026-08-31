@@ -1635,6 +1635,8 @@ static void dispatch(const char *line)
         cmd_ext_mv(skip_spaces(l + 3));
     } else if (str_starts(l, "cmp ")) {
         cmd_ext_cmp(skip_spaces(l + 4));
+    } else if (str_starts(l, "crashtest")) {
+        cmd_ext_crashtest(skip_spaces(l + 9));
     } else if (str_starts(l, "tail")) {
         cmd_ext_tail(skip_spaces(l + 4));
     } else if (str_starts(l, "find")) {

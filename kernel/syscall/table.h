@@ -102,8 +102,16 @@
 #define SYS_RENAME         90   /* rename/move a file or empty-or-not
                                   * directory: rename(old_path, new_path).
                                   * See vfs_rename()/exfs_op_rename(). */
+#define SYS_DEBUG_EXFS_CRASH 91 /* TEST-ONLY: arm a deterministic crash
+                                  * inside the next ExFS journal commit,
+                                  * to test crash recovery without
+                                  * relying on timing a real one by
+                                  * hand. See exfs_debug_arm_crash() in
+                                  * kernel/fs/exfs/exfs.h/.c. arg0 (rdi)
+                                  * = 0..3. Not meant for anything but
+                                  * a deliberate recovery test. */
 
-#define SYS_COUNT          91
+#define SYS_COUNT          92
 
 
 /*

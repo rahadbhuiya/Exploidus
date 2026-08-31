@@ -190,6 +190,14 @@ typedef struct {
 /* Initialize ExFS on a block device starting at lba_base */
 vfs_node_t *exfs_mount(struct block_device *dev, uint32_t lba_base);
 
+/* Crash-injection test hook — see the g_exfs_crash_point comment in
+ * exfs.c. point: 0 = disabled (normal operation), 1/2/3 = halt at one
+ * of the three points inside the next exfs_journal_commit() that
+ * matter for the journal's crash-consistency argument. Exposed for
+ * SYS_DEBUG_EXFS_CRASH (kernel/syscall/table.c) — not meant to be
+ * called from anywhere except a deliberate crash-recovery test. */
+void exfs_debug_arm_crash(int point);
+
 /* Format a block device with a fresh ExFS volume */
 bool exfs_format(struct block_device *dev, uint32_t lba_base,
                   uint64_t total_blocks);

@@ -16,7 +16,8 @@ Exploidus treats it as a foundation.
 - Custom TCP/IP network stack (ARP, IPv4, TCP, UDP, socket layer)
 - BLAKE3 capability token security system
 - 55 syscalls implemented
-- VFS + ExFS filesystem with lseek, stat, fstat, dup, dup2
+- VFS + ExFS filesystem with lseek, stat, fstat, dup, dup2, rename,
+  and a crash-consistent metadata journal
 - ASLR — hardware RNG (RDRAND) based, all userspace binaries randomised on every boot
 
 ### Security
@@ -42,6 +43,9 @@ Exploidus treats it as a foundation.
 - [x] yolish intent syscall — @intent annotation wired to kernel scheduler
 - [x] lseek, stat, fstat, dup, dup2 syscalls
 - [x] argv/envp passing (System V ABI)
+- [x] ExFS: crash-consistent journal (verified with deterministic
+      crash-injection testing), indirect/double-indirect block
+      addressing, atomic rename()
 - [ ] exec with argv passing (full execve)
 - [ ] yolish — add more builtins (file I/O, networking)
 - [ ] Optional GUI — enable/disable on demand

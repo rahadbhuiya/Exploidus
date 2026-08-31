@@ -1260,6 +1260,15 @@ static __attribute__((unused)) int64_t sys_rename(syscall_frame_t *f)
     return vfs_rename(old_path, new_path);
 }
 
+/* sys_debug_exfs_crash(point) — TEST ONLY, see SYS_DEBUG_EXFS_CRASH */
+static __attribute__((unused)) int64_t sys_debug_exfs_crash(syscall_frame_t *f)
+{
+    int point = (int)(int64_t)f->rdi;
+    if (point < 0 || point > 3) return -1;
+    exfs_debug_arm_crash(point);
+    return 0;
+}
+
 static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
 {
     if (!uptr_ok(f->rdi,1)) return -1;
@@ -1552,6 +1561,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_BLAKE3]       = sys_blake3,
     [SYS_UNLINK]       = sys_unlink,
     [SYS_RENAME]       = sys_rename,
+    [SYS_DEBUG_EXFS_CRASH] = sys_debug_exfs_crash,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
     /* GUI Phase 1 */
