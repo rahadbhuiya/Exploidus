@@ -23,6 +23,20 @@
  * silently broken). */
 #define EXFS_INDIRECT_PTRS   (EXFS_BLOCK_SIZE / sizeof(uint64_t))
 
+/* Upper bound on logical block index a directory (or file) can reach
+ * through direct + single-indirect + double-indirect addressing —
+ * see EXFS_INDIRECT_PTRS above. Directories used to be hard-capped at
+ * EXFS_DIRECT_BLOCKS (12) blocks (~180 entries); every directory-
+ * block-scanning function now walks up to this bound via
+ * exfs_resolve_block(), the same helper writes already use, so
+ * directories grow exactly like files do. In practice a scan always
+ * terminates at the first not-yet-allocated block (a directory's
+ * blocks are allocated contiguously, never sparse), so this bound is
+ * a safety cap against a runaway loop, not something scans actually
+ * reach. */
+#define EXFS_MAX_DIR_BLOCKS  (EXFS_DIRECT_BLOCKS + EXFS_INDIRECT_PTRS \
+                             + EXFS_INDIRECT_PTRS * EXFS_INDIRECT_PTRS)
+
 /* Write-ahead metadata journal (crash consistency for directory
  * entries, inodes, and indirect/double-indirect pointer blocks).
  * Single-slot, single-transaction-at-a-time -- matches the fact that

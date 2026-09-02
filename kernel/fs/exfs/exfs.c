@@ -843,10 +843,12 @@ static vfs_node_t *exfs_op_lookup(vfs_node_t *dir, const char *name)
     /* Read directory blocks and scan for the entry */
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!in->direct[b]) break;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(nd->vol, in, b, false, &unused_dirty);
+        if (!blk) break;
 
-        if (!exfs_read_block(nd->vol, in->direct[b], block_buf)) return NULL;
+        if (!exfs_read_block(nd->vol, blk, block_buf)) return NULL;
 
         uint64_t offset = 0;
         while (offset + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
@@ -907,9 +909,11 @@ static int64_t exfs_op_readdir(vfs_node_t *dir, uint64_t offset,
     ud_t             *out = (ud_t *)buf;
     uint64_t count = 0, skip = offset;
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS && count < max; b++) {
-        if (!in->direct[b]) break;
-        if (!exfs_read_block(nd->vol, in->direct[b], block_buf)) break;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS && count < max; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(nd->vol, in, b, false, &unused_dirty);
+        if (!blk) break;
+        if (!exfs_read_block(nd->vol, blk, block_buf)) break;
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE && count < max) {
             exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off);
@@ -953,9 +957,11 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     {
         exfs_inode_t *din = &nd->inode;
         static uint8_t dup_check_buf[EXFS_BLOCK_SIZE];
-        for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-            if (!din->direct[b]) break;
-            if (!exfs_read_block(vol, din->direct[b], dup_check_buf)) break;
+        for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+            bool unused_dirty = false;
+            uint64_t blk = exfs_resolve_block(vol, din, b, false, &unused_dirty);
+            if (!blk) break;
+            if (!exfs_read_block(vol, blk, dup_check_buf)) break;
             uint64_t off = 0;
             while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
                 exfs_dirent_t *de = (exfs_dirent_t *)(dup_check_buf + off);
@@ -1007,22 +1013,28 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     uint64_t dir_block = 0;
     memset(block_buf, 0, EXFS_BLOCK_SIZE);
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!din->direct[b]) {
-            dir_block = exfs_alloc_block(vol);
-            if (!dir_block) { exfs_journal_commit(vol); return NULL; }
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, din, b, false, &dirty);
+        if (!blk) {
+            /* First hole: extend the directory by one block here
+             * (walks through indirect/double-indirect allocation the
+             * same way a file's write() does, once b >=
+             * EXFS_DIRECT_BLOCKS). */
+            blk = exfs_resolve_block(vol, din, b, true, &dirty);
+            if (!blk) { exfs_journal_commit(vol); return NULL; }
+            if (dirty) exfs_write_inode(vol, nd->inode_num, din);
             memset(block_buf, 0, EXFS_BLOCK_SIZE);
-            din->direct[b] = dir_block;
-            exfs_write_inode(vol, nd->inode_num, din);
+            dir_block = blk;
             break;
         }
-        if (!exfs_txn_read_block(vol, din->direct[b], block_buf)) {
+        if (!exfs_txn_read_block(vol, blk, block_buf)) {
             exfs_journal_commit(vol); return NULL;
         }
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
             exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off);
-            if (!de->inode_num) { dir_block = din->direct[b]; break; }
+            if (!de->inode_num) { dir_block = blk; break; }
             off += sizeof(exfs_dirent_t);
         }
         if (dir_block) break;
@@ -1095,9 +1107,11 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
 
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!din->direct[b]) break;
-        if (!exfs_read_block(vol, din->direct[b], block_buf)) return -1;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, din, b, false, &unused_dirty);
+        if (!blk) break;
+        if (!exfs_read_block(vol, blk, block_buf)) return -1;
 
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
@@ -1162,7 +1176,7 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
                 exfs_write_inode(vol, child_ino, &blank);
 
                 memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_meta_write_block(vol, din->direct[b], block_buf);
+                exfs_meta_write_block(vol, blk, block_buf);
 
                 exfs_journal_commit(vol);
                 return 0;
@@ -1176,38 +1190,22 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
 }
 
 /* Returns true if a directory inode has zero live entries in any of
- * its allocated blocks (direct or indirect) — used by rmdir to
- * refuse removing a non-empty directory. */
+ * its allocated blocks (direct, indirect, or double-indirect) — used
+ * by rmdir to refuse removing a non-empty directory. */
 static bool exfs_dir_is_empty(exfs_volume_t *vol, exfs_inode_t *in)
 {
     static uint8_t buf[EXFS_BLOCK_SIZE];
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!in->direct[b]) continue;
-        if (!exfs_read_block(vol, in->direct[b], buf)) return false; /* be safe: treat unreadable as non-empty */
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, in, b, false, &unused_dirty);
+        if (!blk) break;
+        if (!exfs_read_block(vol, blk, buf)) return false; /* be safe: treat unreadable as non-empty */
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
             exfs_dirent_t *de = (exfs_dirent_t *)(buf + off);
             if (de->inode_num) return false;
             off += sizeof(exfs_dirent_t);
-        }
-    }
-
-    if (in->indirect) {
-        static uint8_t ind_buf[EXFS_BLOCK_SIZE];
-        if (exfs_read_block(vol, in->indirect, ind_buf)) {
-            uint64_t *ptrs = (uint64_t *)ind_buf;
-            uint64_t max_ptrs = EXFS_BLOCK_SIZE / sizeof(uint64_t);
-            for (uint64_t pi = 0; pi < max_ptrs; pi++) {
-                if (!ptrs[pi]) continue;
-                if (!exfs_read_block(vol, ptrs[pi], buf)) return false;
-                uint64_t off = 0;
-                while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
-                    exfs_dirent_t *de = (exfs_dirent_t *)(buf + off);
-                    if (de->inode_num) return false;
-                    off += sizeof(exfs_dirent_t);
-                }
-            }
         }
     }
 
@@ -1233,9 +1231,11 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
 
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!din->direct[b]) break;
-        if (!exfs_read_block(vol, din->direct[b], block_buf)) return -1;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, din, b, false, &unused_dirty);
+        if (!blk) break;
+        if (!exfs_read_block(vol, blk, block_buf)) return -1;
 
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
@@ -1256,14 +1256,40 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
                 for (int db = 0; db < EXFS_DIRECT_BLOCKS; db++) {
                     if (cin.direct[db]) exfs_free_block(vol, cin.direct[db]);
                 }
-                if (cin.indirect) exfs_free_block(vol, cin.indirect);
-                /* Directories only ever use direct blocks today (see
-                 * exfs_op_create/lookup/readdir, which all iterate
-                 * EXFS_DIRECT_BLOCKS only) so cin.double_indirect is
-                 * never populated for a directory inode — nothing to
-                 * free there. Freeing cin.indirect above is itself
-                 * dead code for the same reason, kept only in case a
-                 * future change grows directories past 12 blocks. */
+                if (cin.indirect) {
+                    static uint8_t ind_buf[EXFS_BLOCK_SIZE];
+                    if (exfs_read_block(vol, cin.indirect, ind_buf)) {
+                        uint64_t *ptrs = (uint64_t *)ind_buf;
+                        for (uint64_t pi = 0; pi < EXFS_INDIRECT_PTRS; pi++) {
+                            if (ptrs[pi]) exfs_free_block(vol, ptrs[pi]);
+                        }
+                    }
+                    exfs_free_block(vol, cin.indirect);
+                }
+                /* double_indirect: directories can now grow past 12
+                 * blocks the same way files do (see EXFS_MAX_DIR_BLOCKS
+                 * above), so a directory inode genuinely can have this
+                 * populated -- free every leaf pointer block, then the
+                 * level-1 table itself, same as exfs_op_unlink does
+                 * for files. */
+                if (cin.double_indirect) {
+                    static uint8_t l1_buf[EXFS_BLOCK_SIZE];
+                    if (exfs_read_block(vol, cin.double_indirect, l1_buf)) {
+                        uint64_t *l1ptrs = (uint64_t *)l1_buf;
+                        for (uint64_t i1 = 0; i1 < EXFS_INDIRECT_PTRS; i1++) {
+                            if (!l1ptrs[i1]) continue;
+                            static uint8_t l2_buf[EXFS_BLOCK_SIZE];
+                            if (exfs_read_block(vol, l1ptrs[i1], l2_buf)) {
+                                uint64_t *l2ptrs = (uint64_t *)l2_buf;
+                                for (uint64_t i2 = 0; i2 < EXFS_INDIRECT_PTRS; i2++) {
+                                    if (l2ptrs[i2]) exfs_free_block(vol, l2ptrs[i2]);
+                                }
+                            }
+                            exfs_free_block(vol, l1ptrs[i1]);
+                        }
+                    }
+                    exfs_free_block(vol, cin.double_indirect);
+                }
 
                 exfs_journal_begin(vol);
 
@@ -1272,7 +1298,7 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
                 exfs_write_inode(vol, child_ino, &blank);
 
                 memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_meta_write_block(vol, din->direct[b], block_buf);
+                exfs_meta_write_block(vol, blk, block_buf);
 
                 exfs_journal_commit(vol);
                 return 0;
@@ -1318,24 +1344,31 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
     /* Locate the source entry */
     exfs_inode_t *odin = &ond->inode;
     static uint8_t old_buf[EXFS_BLOCK_SIZE];
-    int      src_blk_idx = -1;
+    uint64_t src_phys_block = 0; /* physical block number, not a
+                                   * direct[] array index -- once
+                                   * directories can span indirect/
+                                   * double-indirect blocks (see
+                                   * EXFS_MAX_DIR_BLOCKS) there's no
+                                   * single array to index into. */
     uint64_t src_off      = 0;
     exfs_dirent_t src_de;
     bool found = false;
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS && !found; b++) {
-        if (!odin->direct[b]) break;
-        if (!exfs_read_block(vol, odin->direct[b], old_buf)) return -1;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS && !found; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, odin, b, false, &unused_dirty);
+        if (!blk) break;
+        if (!exfs_read_block(vol, blk, old_buf)) return -1;
         uint64_t off = 0;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
             exfs_dirent_t *de = (exfs_dirent_t *)(old_buf + off);
             if (de->inode_num && de->name_len == (uint16_t)old_len &&
                 memcmp(de->name, old_name, old_len) == 0)
             {
-                src_blk_idx = b;
-                src_off     = off;
-                src_de      = *de;
-                found       = true;
+                src_phys_block = blk;
+                src_off        = off;
+                src_de         = *de;
+                found          = true;
                 break;
             }
             off += sizeof(exfs_dirent_t);
@@ -1371,17 +1404,19 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
     exfs_inode_t *ndin = &nnd->inode;
     uint64_t dst_block = 0, dst_off = 0;
     bool      need_new_block = false;
-    int       new_block_slot = -1;
+    uint64_t  new_block_logical = 0;
     static uint8_t dst_buf[EXFS_BLOCK_SIZE];
 
-    for (int b = 0; b < EXFS_DIRECT_BLOCKS; b++) {
-        if (!ndin->direct[b]) { need_new_block = true; new_block_slot = b; break; }
-        if (!exfs_read_block(vol, ndin->direct[b], dst_buf)) return -1;
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, ndin, b, false, &unused_dirty);
+        if (!blk) { need_new_block = true; new_block_logical = b; break; }
+        if (!exfs_read_block(vol, blk, dst_buf)) return -1;
         uint64_t off = 0;
         bool slot_found = false;
         while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
             exfs_dirent_t *de = (exfs_dirent_t *)(dst_buf + off);
-            if (!de->inode_num) { dst_block = ndin->direct[b]; dst_off = off; slot_found = true; break; }
+            if (!de->inode_num) { dst_block = blk; dst_off = off; slot_found = true; break; }
             off += sizeof(exfs_dirent_t);
         }
         if (slot_found) break;
@@ -1406,14 +1441,14 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
     exfs_journal_begin(vol);
 
     if (need_new_block) {
-        uint64_t nb = exfs_alloc_block(vol);
+        bool dirty = false;
+        uint64_t nb = exfs_resolve_block(vol, ndin, new_block_logical, true, &dirty);
         if (!nb) { exfs_journal_commit(vol); return -1; }
+        if (dirty) exfs_write_inode(vol, nnd->inode_num, ndin);
         memset(dst_buf, 0, EXFS_BLOCK_SIZE);
-        ndin->direct[new_block_slot] = nb;
-        exfs_write_inode(vol, nnd->inode_num, ndin);
         dst_block = nb;
         dst_off   = 0;
-    } else if (dst_block != odin->direct[src_blk_idx]) {
+    } else if (dst_block != src_phys_block) {
         /* Different block from the source -- re-read fresh now that
          * we're inside the transaction, in case anything upstream
          * (the destination-overwrite unlink above) touched it. */
@@ -1426,7 +1461,7 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
      * reuse it as-is so the source-removal edit below and the
      * insertion edit both land in this one copy. */
 
-    if (dst_block == odin->direct[src_blk_idx]) {
+    if (dst_block == src_phys_block) {
         /* Same block: clear the source slot and write the new entry
          * in this single buffer, then persist it once. */
         memset(dst_buf + src_off, 0, sizeof(exfs_dirent_t));
@@ -1434,11 +1469,11 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
         /* Different block: clear the source slot in its own buffer
          * and stage that separately. */
         static uint8_t src_buf[EXFS_BLOCK_SIZE];
-        if (!exfs_read_block(vol, odin->direct[src_blk_idx], src_buf)) {
+        if (!exfs_read_block(vol, src_phys_block, src_buf)) {
             exfs_journal_commit(vol); return -1;
         }
         memset(src_buf + src_off, 0, sizeof(exfs_dirent_t));
-        exfs_meta_write_block(vol, odin->direct[src_blk_idx], src_buf);
+        exfs_meta_write_block(vol, src_phys_block, src_buf);
     }
 
     exfs_dirent_t *de = (exfs_dirent_t *)(dst_buf + dst_off);

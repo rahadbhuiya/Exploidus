@@ -158,6 +158,81 @@ void cmd_ext_crashtest(const char *args)
     if (fd >= 0) close(fd); /* only reached if point was out of range */
 }
 
+/*
+ * mkmanyfiles <dir> <count> -- TEST ONLY. Creates <count> empty files
+ * named f0, f1, ... f<count-1> inside <dir>, entirely in-kernel/in-
+ * process (no external interpreter, no scripting) -- built to test
+ * ExFS directory growth past EXFS_MAX_DIR_BLOCKS' old 12-direct-block
+ * cap (~180 entries) without depending on Lua (which has an unrelated
+ * crash on this kernel unconnected to any of this -- same fault
+ * address regardless of script content, so it's something in Lua's
+ * own ELF-load/startup path, not a filesystem issue). Prints progress
+ * every 25 files so a hang is visible rather than a silent wait, and
+ * stops with a clear message on the first failure instead of
+ * plowing through further errors.
+ */
+void cmd_ext_mkmanyfiles(const char *args)
+{
+    const char *p = _skip(args);
+    char dir[240];
+    int i = 0;
+    while (*p && *p != ' ' && i < 239) dir[i++] = *p++;
+    dir[i] = 0;
+    p = _skip(p);
+    if (!dir[0] || !*p) {
+        _println("Usage: mkmanyfiles <dir> <count>");
+        return;
+    }
+    int count = 0;
+    while (*p >= '0' && *p <= '9') { count = count * 10 + (*p - '0'); p++; }
+    if (count <= 0) { _println("mkmanyfiles: count must be a positive number"); return; }
+
+    char adir[256]; _abs(dir, adir, 256);
+    int adir_len = 0;
+    while (adir[adir_len]) adir_len++;
+
+    for (int n = 0; n < count; n++) {
+        char path[300];
+        int k = 0;
+        while (adir[k] && k < 250) { path[k] = adir[k]; k++; }
+        if (k == 0 || path[k-1] != '/') path[k++] = '/';
+        path[k++] = 'f';
+        /* itoa(n) */
+        char numbuf[12]; int ni = 0;
+        int nn = n;
+        if (nn == 0) numbuf[ni++] = '0';
+        while (nn > 0 && ni < 11) { numbuf[ni++] = (char)('0' + nn % 10); nn /= 10; }
+        while (ni > 0 && k < 299) path[k++] = numbuf[--ni];
+        path[k] = 0;
+
+        int fd = fs_create(path, 0);
+        if (fd < 0) {
+            puts("mkmanyfiles: failed at file #"); 
+            /* simple positive-int print since there's no itoa-print
+             * helper visible in this file */
+            {
+                char nb[12]; int j = 0; int v = n;
+                if (v == 0) nb[j++] = '0';
+                while (v > 0 && j < 11) { nb[j++] = (char)('0' + v % 10); v /= 10; }
+                while (j > 0) { char c[2] = { nb[--j], 0 }; puts(c); }
+            }
+            puts(" ("); puts(path); _println(")");
+            return;
+        }
+        close(fd);
+
+        if ((n + 1) % 25 == 0) {
+            char nb[12]; int j = 0; int v = n + 1;
+            if (v == 0) nb[j++] = '0';
+            while (v > 0 && j < 11) { nb[j++] = (char)('0' + v % 10); v /= 10; }
+            puts("  ");
+            while (j > 0) { char c[2] = { nb[--j], 0 }; puts(c); }
+            _println(" files created so far...");
+        }
+    }
+    _println("mkmanyfiles: done");
+}
+
 void cmd_ext_mount(const char *args)
 {
     const char *p = _skip(args);

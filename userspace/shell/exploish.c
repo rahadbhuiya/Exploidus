@@ -615,13 +615,26 @@ static void cmd_ls(const char *path)
     int fd = open(path, 0);
     if (fd < 0) { print("ls: cannot open: "); println(path); return; }
     dirent_t entries[64];
-    int64_t n = readdir(fd, entries, 64);
-    close(fd);
-    if (n <= 0) { println("(empty)"); return; }
-    for (int64_t i = 0; i < n; i++) {
-        if (entries[i].type == 1) print("[DIR] ");
-        const char *_n = entries[i].name; if (*_n && (unsigned char)*_n < 32) _n++; println(_n);
+    int64_t total = 0;
+    for (;;) {
+        /* The fd's own read offset advances after each readdir() call
+         * (see vfs_readdir in kernel/fs/vfs/vfs.c), so repeated calls
+         * on the same fd page through the whole directory -- this
+         * used to be a single call, silently showing only the first
+         * 64 entries and no more (harmless while directories were
+         * capped at ~180 entries across 12 direct blocks, but with
+         * EXFS_MAX_DIR_BLOCKS directories can now hold far more). */
+        int64_t n = readdir(fd, entries, 64);
+        if (n <= 0) break;
+        for (int64_t i = 0; i < n; i++) {
+            if (entries[i].type == 1) print("[DIR] ");
+            const char *_n = entries[i].name; if (*_n && (unsigned char)*_n < 32) _n++; println(_n);
+        }
+        total += n;
+        if (n < 64) break; /* short read == last page */
     }
+    close(fd);
+    if (total == 0) println("(empty)");
 }
 
 static void cmd_touch(const char *path)
@@ -1637,6 +1650,8 @@ static void dispatch(const char *line)
         cmd_ext_cmp(skip_spaces(l + 4));
     } else if (str_starts(l, "crashtest")) {
         cmd_ext_crashtest(skip_spaces(l + 9));
+    } else if (str_starts(l, "mkmanyfiles")) {
+        cmd_ext_mkmanyfiles(skip_spaces(l + 11));
     } else if (str_starts(l, "tail")) {
         cmd_ext_tail(skip_spaces(l + 4));
     } else if (str_starts(l, "find")) {

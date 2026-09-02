@@ -136,7 +136,20 @@ tmp_inode = make_inode(0o777, 0, [tmp_dir_block])
 write_inode(5, tmp_inode)
 write_block(tmp_dir_block, bytearray(BLOCK_SIZE))  # empty dir
 
-# Root directory — add bin/, var/, tmp/
+# bigdir inode (inode 6) — pre-created, empty. Exists purely so
+# embedded test scripts (see EMBEDDED_SCRIPTS below) can write files
+# into it directly without needing mkdir at runtime. mkdir itself
+# works fine from the shell; this exists only because os.execute()
+# (which the Lua port routes to our libc's system(), an honest stub
+# returning -1 — see userspace/libc/stdio.c) is not a safe way to
+# invoke mkdir from a *script*, and there's no other Lua binding for
+# creating a directory.
+bigdir_block = alloc_block()
+bigdir_inode = make_inode(0o755, 0, [bigdir_block])
+write_inode(6, bigdir_inode)
+write_block(bigdir_block, bytearray(BLOCK_SIZE))  # empty dir
+
+# Root directory — add bin/, var/, tmp/, bigdir/
 root_dir_data = bytearray(BLOCK_SIZE)
 # bin entry
 de_bin = struct.pack("<QHBB256s", 1, 3, 1, 0, b'bin'+b'\x00'*253)
@@ -147,6 +160,10 @@ root_dir_data[len(de_bin):len(de_bin)+len(de_var)] = de_var
 # tmp entry
 de_tmp = struct.pack("<QHBB256s", 5, 3, 1, 0, b'tmp'+b'\x00'*253)
 root_dir_data[len(de_bin)+len(de_var):len(de_bin)+len(de_var)+len(de_tmp)] = de_tmp
+# bigdir entry
+de_bigdir = struct.pack("<QHBB256s", 6, 6, 1, 0, b'bigdir'+b'\x00'*250)
+_off = len(de_bin)+len(de_var)+len(de_tmp)
+root_dir_data[_off:_off+len(de_bigdir)] = de_bigdir
 write_block(root_dir_block, root_dir_data)
 
 # var directory — add log/ and rahu/
@@ -158,7 +175,7 @@ var_dir_data[len(de_log):len(de_log)+len(de_rahu)] = de_rahu
 write_block(var_dir_block, var_dir_data)
 
 # Write ELF files into /bin/
-next_ino = 6
+next_ino = 7
 bin_dir_data = bytearray(BLOCK_SIZE)
 bin_dir_offset = 0
 
@@ -196,6 +213,67 @@ for elf_path in elf_paths:
     next_ino += 1
 
 write_block(bin_dir_block, bin_dir_data)
+
+# Optional: bake an embedded test script (e.g. a directory-growth
+# stress test for exercising EXFS_MAX_DIR_BLOCKS -- see
+# CHANGELOG-exfs-completion.md) directly into / at build time. There's
+# no way to get a new text file onto the disk image from within a
+# running Exploidus shell yet (no in-shell text editor), so this is
+# the practical way to seed one: define EMBEDDED_SCRIPTS below and
+# rerun this tool to rebuild the image with them included.
+#
+# Example:
+#   EMBEDDED_SCRIPTS = {
+#       "bigdir_test.lua": '''
+#           -- /bigdir is pre-created by this tool (see bigdir_inode
+#           -- above) -- no mkdir/os.execute() needed from the script.
+#           for i = 0, 250 do
+#               local fh = io.open("/bigdir/f" .. i, "w")
+#               fh:write("x")
+#               fh:close()
+#           end
+#           print("done")
+#       ''',
+#   }
+EMBEDDED_SCRIPTS = {}
+
+if EMBEDDED_SCRIPTS:
+    dirent_size = struct.calcsize("<QHBB256s")
+    root_dir_offset = dirent_size * 4  # bin, var, tmp, bigdir already packed above
+
+    for script_name, script_text in EMBEDDED_SCRIPTS.items():
+        script_bytes = script_text.encode()
+        blocks = []
+        for i in range(0, len(script_bytes), BLOCK_SIZE):
+            blk = alloc_block()
+            chunk = script_bytes[i:i+BLOCK_SIZE]
+            write_block(blk, chunk + b'\x00' * (BLOCK_SIZE - len(chunk)))
+            blocks.append(blk)
+        if len(blocks) > 12:
+            # This offline tool only writes direct blocks (unlike the
+            # runtime C driver, which now supports indirect/double-
+            # indirect -- see exfs_resolve_block() in exfs.c). Fine for
+            # a small test script; a >48 KiB embedded file would need
+            # the same indirect-block-writing logic
+            # write_file_to_disk() has, not yet ported here.
+            raise Exception(f"{script_name}: embedded script > 48 KiB, "
+                             f"this tool doesn't write indirect blocks yet")
+
+        script_inode = make_inode(0o644, len(script_bytes), blocks)
+        write_inode(next_ino, script_inode)
+
+        name_b = script_name.encode()
+        de = struct.pack("<QHBB256s",
+            next_ino, len(name_b), 0, 0,
+            name_b + b'\x00'*(256-len(name_b)))
+        root_dir_data[root_dir_offset:root_dir_offset+dirent_size] = de
+        root_dir_offset += dirent_size
+
+        print(f"  added /{script_name} ({len(script_bytes)} bytes)")
+        next_ino += 1
+
+    # Rewrite root_dir_block once with bin/var/tmp plus the new entries.
+    write_block(root_dir_block, root_dir_data)
 
 # Block bitmap
 bitmap = bytearray(BLOCK_SIZE)
