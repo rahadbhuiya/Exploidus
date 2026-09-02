@@ -30,3 +30,4 @@ void cmd_ext_clear(void);
 void cmd_ext_tee(const char *path);
 void cmd_ext_cmp(const char *args);
 void cmd_ext_crashtest(const char *args);
+void cmd_ext_mkmanyfiles(const char *args);

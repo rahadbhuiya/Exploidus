@@ -393,7 +393,7 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+build/disk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
