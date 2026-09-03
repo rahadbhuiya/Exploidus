@@ -54,9 +54,9 @@ one-line reason:
   this volume" — it still mounts and works exactly as before, just
   without crash-atomicity.
 
-**Known limitation:** no `fsck` exists yet to repair the "leaked block"
-case above, or to recover from any corruption the journal doesn't
-cover.
+**Known limitation at the time:** no `fsck` existed yet to repair the
+"leaked block" case above. `tools/fsck.py`, added in a later pass (see
+below), covers exactly this.
 
 ## 3. `block_hash` field existed but was never read or written
 
@@ -189,13 +189,58 @@ expected outcome exactly, including the `"[ExFS] Journal: replaying
 committed transaction after an unclean shutdown"` boot message
 appearing only for cases 2 and 3.
 
+## Directory growth past the 12-block cap
+
+Directories used to be hard-capped at 12 direct blocks (~180 entries)
+even after files gained indirect/double-indirect addressing. Every
+directory-block-scanning function (`lookup`, `readdir`, `create`,
+`unlink`, `rmdir`, the empty-check, `rename`) now walks through
+`EXFS_MAX_DIR_BLOCKS` via `exfs_resolve_block()` — the same helper
+already crash-tested for file writes — so directories grow exactly
+like files do. Also fixed in the process: `rmdir` deleting a child
+directory only ever freed its `direct[]` and `indirect` blocks, with
+a comment claiming directories never populate `double_indirect` —
+no longer true, so it now frees that subtree too, the same way
+`unlink` already did for files. Verified with a native `mkmanyfiles`
+shell test command: 250 files in one directory (well past the old
+cap) all created and individually resolvable via `cat`.
+
+## `tools/fsck.py` — offline consistency checker and repairer
+
+A standalone host-side tool (same pattern as `tools/mkexfs.py`: reads/
+writes the raw disk image directly, no kernel involved) that:
+
+- Cross-checks every in-use inode's resolved blocks (direct +
+  single-indirect + double-indirect) against the block bitmap, in
+  both directions: a block marked used but referenced by nothing is
+  **leaked** (safe to reclaim); a block referenced by an inode but
+  *not* marked used is **corruption** (something else could overwrite
+  it); a block referenced by two different inodes is a **cross-link**.
+- Walks the directory tree from root, flagging **dangling dirents**
+  (point at an inode that isn't in use) and **duplicate names** within
+  one directory (the kernel now guards against creating these, but an
+  older volume could already have one).
+- Flags **orphaned inodes** — in use, but unreachable from root.
+- Warns (doesn't error) if the journal shows a pending replay, since
+  that's expected right after a crash, not damage.
+
+`--fix` only ever clears leaked-block bitmap bits — the one repair
+that's unambiguously safe (it can only return space to the free pool,
+never remove or reattach anything reachable). Everything else is
+reported for a human to look at, not auto-repaired; there's no
+`lost+found` to safely reattach an orphan or dangling reference to.
+
+Validated against five synthetic corruption cases built by hand-
+patching a freshly formatted image (leaked block, dangling dirent,
+orphaned inode, cross-linked block, referenced-but-unmarked block) —
+each was correctly detected, `--fix` correctly cleared the leaked-
+block case and left a clean re-run, and exit codes matched (0 clean,
+1 errors present) for use in scripts/CI.
+
 ## Explicitly out of scope for this pass
 
 Kept as honest, documented gaps rather than silently patched over:
 
-- `fsck` / offline consistency checker
-- Directory growth past 12 direct blocks (~180 entries) — directories
-  don't use indirect blocks even though files now can
 - `triple_indirect`
 - Symlinks / hard links
 - Group/other permission bits (still owner-only rwx)
