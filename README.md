@@ -190,6 +190,9 @@ Terminal 2:
     userspace/libc/        syscall wrappers, crt0
     userspace/shell/       exploish shell
     userspace/compositor/  Windowing compositor (`alien` GUI mode)
+    tools/mkexfs.py        Offline ExFS image formatter (builds build/disk.img)
+    tools/fsck.py          Offline ExFS consistency checker/repairer
+                           (python3 tools/fsck.py build/disk.img [--fix])
     linker.ld              Kernel linker script
     Makefile               Build system
     setup.sh               Cross-compiler installer
@@ -436,6 +439,18 @@ is the summary.
   slash convenience (keeps the source's own name). `rm` was a stub
   that printed "not yet implemented" without ever calling `unlink()`
   — now does.
+- **Directory growth past the 12-block cap**: directories now walk
+  through indirect/double-indirect blocks the same way files do —
+  verified with 250 files in one directory (well past the old
+  ~180-entry limit), all individually resolvable.
+- **`tools/fsck.py`**: an offline consistency checker/repairer (same
+  host-side-tool pattern as `tools/mkexfs.py`) — cross-checks every
+  inode's blocks against the bitmap (leaked / corrupted / cross-
+  linked blocks), walks the directory tree for dangling dirents and
+  orphaned inodes. `--fix` only clears leaked-block bitmap bits, the
+  one unambiguously safe repair; everything else is reported for a
+  human to look at. Validated against five hand-built corruption
+  cases (see `CHANGELOG-exfs-completion.md`).
 
 ## Networking
 
