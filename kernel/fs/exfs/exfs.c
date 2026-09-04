@@ -880,8 +880,9 @@ static vfs_node_t *exfs_op_lookup(vfs_node_t *dir, const char *name)
                 if (!child) { kfree(cnd); return NULL; }
 
                 memcpy(child->name, name, strlen(name) + 1);
-                child->type    = (de->file_type == 1)
-                               ? VFS_DIRECTORY : VFS_FILE;
+                child->type    = (de->file_type == 1) ? VFS_DIRECTORY
+                               : (de->file_type == 2) ? VFS_SYMLINK
+                               : VFS_FILE;
                 child->size    = child_inode.size;
                 child->inode   = de->inode_num;
                 child->ops     = dir->ops;
@@ -1079,6 +1080,138 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     return child;
 }
 
+/*
+ * exfs_op_symlink — create a symlink dirent (file_type == 2) whose
+ * stored content is the raw target path string. Mirrors
+ * exfs_op_create()'s structure (duplicate-name guard, free-inode
+ * search, one journaled transaction covering the new inode + its one
+ * data block + the parent's dirent insertion) with one addition: the
+ * target string is written into the new inode's first data block
+ * directly, in the same transaction, so a crash can't produce a
+ * symlink inode with no content or a content block with no inode
+ * pointing at it.
+ *
+ * Target length is capped at EXFS_NAME_MAX (255) bytes -- matches the
+ * fixed-size buffer vfs_lookup_impl() reads a link's target into when
+ * following it (see VFS_SYMLINK_MAX_DEPTH in vfs.c) -- comfortably
+ * fits in the one data block this always allocates, so there's no
+ * need to go through the general (indirect-block-capable) write path
+ * for this.
+ */
+static int exfs_op_symlink(vfs_node_t *dir, const char *name, const char *target)
+{
+    uint64_t name_len = strlen(name);
+    if (!name_len || name_len > EXFS_NAME_MAX) return -1;
+    uint64_t target_len = strlen(target);
+    if (!target_len || target_len > EXFS_NAME_MAX) return -1;
+
+    exfs_node_data_t *nd  = (exfs_node_data_t *)dir->fs_data;
+    exfs_volume_t    *vol = nd->vol;
+    uint64_t ipb = EXFS_BLOCK_SIZE / EXFS_INODE_SIZE;
+    static uint8_t block_buf[EXFS_BLOCK_SIZE];
+
+    /* Duplicate-name guard -- see the identical block in
+     * exfs_op_create() for why this matters. */
+    {
+        exfs_inode_t *din = &nd->inode;
+        static uint8_t dup_check_buf[EXFS_BLOCK_SIZE];
+        for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+            bool unused_dirty = false;
+            uint64_t blk = exfs_resolve_block(vol, din, b, false, &unused_dirty);
+            if (!blk) break;
+            if (!exfs_read_block(vol, blk, dup_check_buf)) break;
+            uint64_t off = 0;
+            while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+                exfs_dirent_t *de = (exfs_dirent_t *)(dup_check_buf + off);
+                if (de->inode_num && de->name_len == (uint16_t)name_len &&
+                    memcmp(de->name, name, name_len) == 0)
+                    return -1; /* EEXIST */
+                off += sizeof(exfs_dirent_t);
+            }
+        }
+    }
+
+    uint64_t free_ino = 0;
+    for (uint64_t b = 0; b < (vol->sb.total_inodes / ipb) && !free_ino; b++) {
+        if (!exfs_read_block(vol, vol->sb.inode_table_block + b, block_buf))
+            return -1;
+        for (uint64_t i = 0; i < ipb; i++) {
+            uint64_t ino = b * ipb + i;
+            if (ino == 0) continue;
+            exfs_inode_t *in = (exfs_inode_t *)(block_buf + i * EXFS_INODE_SIZE);
+            if (!in->mode && !in->size) { free_ino = ino; break; }
+        }
+    }
+    if (!free_ino) return -1;
+
+    exfs_journal_begin(vol);
+
+    uint64_t data_blk = exfs_alloc_block(vol);
+    if (!data_blk) { exfs_journal_commit(vol); return -1; }
+    memset(block_buf, 0, EXFS_BLOCK_SIZE);
+    memcpy(block_buf, target, target_len);
+    exfs_meta_write_block(vol, data_blk, block_buf);
+
+    exfs_inode_t new_inode;
+    memset(&new_inode, 0, sizeof(new_inode));
+    new_inode.mode        = 0777; /* symlinks are traditionally
+                                    * always "rwxrwxrwx"; permission
+                                    * checks apply to the target once
+                                    * resolved, not the link itself */
+    new_inode.size         = target_len;
+    new_inode.direct[0]    = data_blk;
+    new_inode.creator_pid  = 1;
+    new_inode.owner_uid    = g_current_proc ? g_current_proc->uid : UID_ROOT;
+    exfs_write_inode(vol, free_ino, &new_inode);
+
+    exfs_inode_t *din = &nd->inode;
+    uint64_t dir_block = 0;
+    memset(block_buf, 0, EXFS_BLOCK_SIZE);
+
+    for (uint64_t b = 0; b < EXFS_MAX_DIR_BLOCKS; b++) {
+        bool dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, din, b, false, &dirty);
+        if (!blk) {
+            blk = exfs_resolve_block(vol, din, b, true, &dirty);
+            if (!blk) { exfs_journal_commit(vol); return -1; }
+            if (dirty) exfs_write_inode(vol, nd->inode_num, din);
+            memset(block_buf, 0, EXFS_BLOCK_SIZE);
+            dir_block = blk;
+            break;
+        }
+        if (!exfs_txn_read_block(vol, blk, block_buf)) {
+            exfs_journal_commit(vol); return -1;
+        }
+        uint64_t off = 0;
+        while (off + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+            exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off);
+            if (!de->inode_num) { dir_block = blk; break; }
+            off += sizeof(exfs_dirent_t);
+        }
+        if (dir_block) break;
+    }
+    if (!dir_block) { exfs_journal_commit(vol); return -1; }
+
+    uint64_t off2 = 0;
+    bool inserted = false;
+    while (off2 + sizeof(exfs_dirent_t) <= EXFS_BLOCK_SIZE) {
+        exfs_dirent_t *de = (exfs_dirent_t *)(block_buf + off2);
+        if (!de->inode_num) {
+            memset(de, 0, sizeof(exfs_dirent_t));
+            de->inode_num = free_ino;
+            de->file_type = 2; /* symlink */
+            de->name_len  = (uint16_t)name_len;
+            memcpy(de->name, name, name_len);
+            exfs_meta_write_block(vol, dir_block, block_buf);
+            inserted = true;
+            break;
+        }
+        off2 += sizeof(exfs_dirent_t);
+    }
+    exfs_journal_commit(vol);
+    return inserted ? 0 : -1;
+}
+
 
 
 /*
@@ -1128,6 +1261,37 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
                 exfs_inode_t cin;
                 if (!exfs_read_inode(vol, child_ino, &cin)) return -1;
 
+                /* Order matters for crash safety: the dirent removal
+                 * + inode zeroing happen FIRST, atomically (one
+                 * journal transaction), and the child's data blocks
+                 * are only freed AFTER that transaction durably
+                 * commits. Freeing blocks before removing the dirent
+                 * (the previous order) meant a crash in between left
+                 * the directory still listing the file, pointing at
+                 * an inode whose blocks had already been handed back
+                 * to the allocator — a *different* file created in
+                 * that window could then be silently corrupted by
+                 * whatever still resolved the dangling entry. With
+                 * this order, a crash before the commit leaves the
+                 * file fully intact (nothing was freed yet); a crash
+                 * after the commit but before freeing finishes leaves
+                 * at worst a leaked block (bitmap says used, nothing
+                 * references it) — the same acceptable, fsck.py-
+                 * repairable risk this journal's design doc already
+                 * documents for the "no data-block journaling" case,
+                 * not new corruption. */
+                exfs_journal_begin(vol);
+
+                exfs_inode_t blank;
+                memset(&blank, 0, sizeof(blank));
+                exfs_write_inode(vol, child_ino, &blank);
+
+                memset(de, 0, sizeof(exfs_dirent_t));
+                exfs_meta_write_block(vol, blk, block_buf);
+
+                exfs_journal_commit(vol);
+                if (g_exfs_crash_point == 4) exfs_debug_crash_now();
+
                 for (int db = 0; db < EXFS_DIRECT_BLOCKS; db++) {
                     if (cin.direct[db]) exfs_free_block(vol, cin.direct[db]);
                 }
@@ -1166,19 +1330,6 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
                     exfs_free_block(vol, cin.double_indirect);
                 }
 
-                /* Inode zeroing + dirent removal is one logical step:
-                 * journal it so a crash can't leave a live dirent
-                 * pointing at a zeroed (freed) inode, or vice versa. */
-                exfs_journal_begin(vol);
-
-                exfs_inode_t blank;
-                memset(&blank, 0, sizeof(blank));
-                exfs_write_inode(vol, child_ino, &blank);
-
-                memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_meta_write_block(vol, blk, block_buf);
-
-                exfs_journal_commit(vol);
                 return 0;
             }
 
@@ -1253,6 +1404,24 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
 
                 if (!exfs_dir_is_empty(vol, &cin)) return -2; /* not empty */
 
+                /* Same crash-safety reordering as exfs_op_unlink:
+                 * remove the dirent + zero the inode in one journaled
+                 * transaction FIRST, and only free the (now provably
+                 * unreachable) blocks after that commits. See the
+                 * comment in exfs_op_unlink for the failure mode this
+                 * avoids. */
+                exfs_journal_begin(vol);
+
+                exfs_inode_t blank;
+                memset(&blank, 0, sizeof(blank));
+                exfs_write_inode(vol, child_ino, &blank);
+
+                memset(de, 0, sizeof(exfs_dirent_t));
+                exfs_meta_write_block(vol, blk, block_buf);
+
+                exfs_journal_commit(vol);
+                if (g_exfs_crash_point == 4) exfs_debug_crash_now();
+
                 for (int db = 0; db < EXFS_DIRECT_BLOCKS; db++) {
                     if (cin.direct[db]) exfs_free_block(vol, cin.direct[db]);
                 }
@@ -1291,16 +1460,6 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
                     exfs_free_block(vol, cin.double_indirect);
                 }
 
-                exfs_journal_begin(vol);
-
-                exfs_inode_t blank;
-                memset(&blank, 0, sizeof(blank));
-                exfs_write_inode(vol, child_ino, &blank);
-
-                memset(de, 0, sizeof(exfs_dirent_t));
-                exfs_meta_write_block(vol, blk, block_buf);
-
-                exfs_journal_commit(vol);
                 return 0;
             }
 
@@ -1501,6 +1660,7 @@ static const vfs_ops_t g_exfs_ops = {
     .rmdir   = exfs_op_rmdir,
     .chmod   = exfs_op_chmod,
     .rename  = exfs_op_rename,
+    .symlink = exfs_op_symlink,
 };
 
 

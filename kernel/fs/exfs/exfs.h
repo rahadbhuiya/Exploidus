@@ -53,6 +53,15 @@
  * worst case is a leaked block, not corruption. */
 #define EXFS_JOURNAL_MAGIC      0x45584a4c /* "EXJL" */
 #define EXFS_JOURNAL_MAX_BLOCKS 16
+/* Crash point 4: not inside exfs_journal_commit() itself (see above)
+ * -- fires in exfs_op_unlink()/exfs_op_rmdir(), right after the
+ * dirent-removal + inode-zeroing transaction has fully committed but
+ * before the (now provably unreferenced) blocks are freed. Verifies
+ * the crash-safety reordering described in exfs_op_unlink(): on
+ * reboot the file must be gone (dirent+inode already committed
+ * deleted) with its blocks merely leaked (bitmap still says used,
+ * nothing references them) -- never a dangling live reference into
+ * blocks that could get reallocated to something else. */
 
 /* Provenance operation codes */
 #define PROV_OP_CREATE  0x01

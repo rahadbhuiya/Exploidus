@@ -64,10 +64,19 @@ int vfs_mount(const char *mountpoint, vfs_node_t *root)
 }
 
 /*  SAFE LOOKUP  */
-vfs_node_t *vfs_lookup(const char *path)
+/* Symlinks are followed transitively by vfs_lookup() (the common
+ * case: open/read/write/etc. through a link should just work). Bound
+ * the chain against a cycle (a -> b -> a) or an absurdly long chain --
+ * matches the spirit of a real ELOOP limit, just a smaller number
+ * since nothing on this kernel needs deep symlink chains. */
+#define VFS_SYMLINK_MAX_DEPTH 8
+
+static vfs_node_t *vfs_lookup_impl(const char *path, bool follow_last, int depth)
 {
     if (!path || path[0] != '/')
         return NULL;
+    if (depth > VFS_SYMLINK_MAX_DEPTH)
+        return NULL; /* too many symlink hops -- ELOOP-equivalent */
 
     vfs_node_t *best_root = NULL;
     int best_len = -1;
@@ -143,6 +152,49 @@ vfs_node_t *vfs_lookup(const char *path)
             kfree(node);
         }
 
+        if (next && next->type == VFS_SYMLINK) {
+            bool is_last_component = (*slash == '\0');
+            if (!is_last_component || follow_last) {
+                /* Intermediate symlinks are always followed (the
+                 * walk can't continue through a directory component
+                 * otherwise); the final component follows only when
+                 * the caller asked for that (vfs_lookup() does,
+                 * vfs_lookup_link() doesn't). */
+                if (!next->ops || !next->ops->read) {
+                    if (next->parent != NULL) { kfree(next->fs_data); kfree(next); }
+                    return NULL;
+                }
+                char target[VFS_NAME_MAX + 1];
+                int64_t n = next->ops->read(next, 0, target, VFS_NAME_MAX);
+                if (next->parent != NULL) { kfree(next->fs_data); kfree(next); }
+                if (n <= 0) return NULL; /* unreadable/empty link content */
+                target[n] = '\0';
+
+                if (target[0] != '/') {
+                    /* Relative symlink targets aren't resolved (a
+                     * scope limitation, not a crash) -- treating a
+                     * relative target as relative to the link's own
+                     * directory would need that directory's path
+                     * threaded through here, which nothing in this
+                     * walk currently tracks. Absolute targets (the
+                     * common case for this shell's usage) work. */
+                    return NULL;
+                }
+
+                /* Combined path = target + whatever of the original
+                 * path came after this component (starting at
+                 * `slash`, which is "" or "/rest/of/path"). */
+                char combined[300];
+                int ci = 0;
+                while (target[ci] && ci < 250) { combined[ci] = target[ci]; ci++; }
+                const char *rest = slash;
+                while (*rest && ci < 299) { combined[ci++] = *rest++; }
+                combined[ci] = '\0';
+
+                return vfs_lookup_impl(combined, follow_last, depth + 1);
+            }
+        }
+
         node = next;
 
         cur = slash;
@@ -151,6 +203,16 @@ vfs_node_t *vfs_lookup(const char *path)
     }
 
     return node;
+}
+
+vfs_node_t *vfs_lookup(const char *path)
+{
+    return vfs_lookup_impl(path, true, 0);
+}
+
+vfs_node_t *vfs_lookup_link(const char *path)
+{
+    return vfs_lookup_impl(path, false, 0);
 }
 
 /*  SAFE OPEN  */
@@ -601,6 +663,45 @@ int vfs_rename(const char *old_path, const char *new_path)
     if (new_dir != old_dir && new_dir->parent != NULL) { kfree(new_dir->fs_data); kfree(new_dir); }
 
     return result;
+}
+
+int vfs_symlink(const char *target, const char *linkpath)
+{
+    if (!target || !*target) return -1;
+    if (strlen(target) > VFS_NAME_MAX) return -1; /* stored as this
+        * link's file content, same size limit lookup's target read
+        * buffer uses -- see VFS_SYMLINK_MAX_DEPTH's follow logic. */
+
+    char parent[256];
+    const char *name;
+    if (!split_path(linkpath, parent, &name)) return -1;
+    if (name[0] == '.' && (name[1] == '\0' ||
+        (name[1] == '.' && name[2] == '\0'))) return -1;
+
+    vfs_node_t *dir = vfs_lookup(parent);
+    if (!dir || dir->type != VFS_DIRECTORY) return -1;
+
+    int result = -1;
+    if (dir->ops && dir->ops->symlink)
+        result = dir->ops->symlink(dir, name, target);
+
+    if (dir->parent != NULL) { kfree(dir->fs_data); kfree(dir); }
+    return result;
+}
+
+int64_t vfs_readlink(const char *path, char *buf, uint64_t bufsize)
+{
+    vfs_node_t *node = vfs_lookup_link(path);
+    if (!node) return -1;
+    if (node->type != VFS_SYMLINK) {
+        if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+        return -1;
+    }
+    int64_t n = -1;
+    if (node->ops && node->ops->read)
+        n = node->ops->read(node, 0, buf, bufsize);
+    if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+    return n;
 }
 
 int vfs_chdir(const char *path)

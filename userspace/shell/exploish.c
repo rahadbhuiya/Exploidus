@@ -406,6 +406,8 @@ static void cmd_help(void)
     println("  rmdir <dir>            Remove an empty directory");
     println("  cp <src> <dst>         Copy a file");
     println("  mv <src> <dst>         Move/rename a file (atomic)");
+    println("  ln <target> <link>     Create a symlink");
+    println("  readlink <path>        Print a symlink's target");
     println("  cmp <f1> <f2>          Compare two files byte-for-byte");
     println("  find <path>            List files recursively");
     println("  chmod <mode> <file>    Change permission bits");
@@ -628,6 +630,7 @@ static void cmd_ls(const char *path)
         if (n <= 0) break;
         for (int64_t i = 0; i < n; i++) {
             if (entries[i].type == 1) print("[DIR] ");
+            else if (entries[i].type == 2) print("[LNK] ");
             const char *_n = entries[i].name; if (*_n && (unsigned char)*_n < 32) _n++; println(_n);
         }
         total += n;
@@ -1652,6 +1655,10 @@ static void dispatch(const char *line)
         cmd_ext_crashtest(skip_spaces(l + 9));
     } else if (str_starts(l, "mkmanyfiles")) {
         cmd_ext_mkmanyfiles(skip_spaces(l + 11));
+    } else if (str_starts(l, "ln ")) {
+        cmd_ext_ln(skip_spaces(l + 3));
+    } else if (str_starts(l, "readlink ")) {
+        cmd_ext_readlink(skip_spaces(l + 9));
     } else if (str_starts(l, "tail")) {
         cmd_ext_tail(skip_spaces(l + 4));
     } else if (str_starts(l, "find")) {

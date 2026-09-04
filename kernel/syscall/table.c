@@ -1264,9 +1264,29 @@ static __attribute__((unused)) int64_t sys_rename(syscall_frame_t *f)
 static __attribute__((unused)) int64_t sys_debug_exfs_crash(syscall_frame_t *f)
 {
     int point = (int)(int64_t)f->rdi;
-    if (point < 0 || point > 3) return -1;
+    if (point < 0 || point > 4) return -1;
     exfs_debug_arm_crash(point);
     return 0;
+}
+
+/* sys_symlink(target, linkpath) */
+static __attribute__((unused)) int64_t sys_symlink(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    if (!uptr_ok(f->rsi, 1)) return -1;
+    const char *target = (const char *)(uintptr_t)f->rdi;
+    const char *linkpath = (const char *)(uintptr_t)f->rsi;
+    return vfs_symlink(target, linkpath);
+}
+
+/* sys_readlink(path, buf, bufsize) */
+static __attribute__((unused)) int64_t sys_readlink(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    if (!uptr_ok(f->rsi, f->rdx)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    char *buf = (char *)(uintptr_t)f->rsi;
+    return vfs_readlink(path, buf, f->rdx);
 }
 
 static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
@@ -1562,6 +1582,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_UNLINK]       = sys_unlink,
     [SYS_RENAME]       = sys_rename,
     [SYS_DEBUG_EXFS_CRASH] = sys_debug_exfs_crash,
+    [SYS_SYMLINK]      = sys_symlink,
+    [SYS_READLINK]     = sys_readlink,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
     /* GUI Phase 1 */

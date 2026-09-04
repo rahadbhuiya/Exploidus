@@ -9,6 +9,7 @@ typedef enum {
     VFS_FILE      = 0,
     VFS_DIRECTORY = 1,
     VFS_DEVICE    = 2,
+    VFS_SYMLINK   = 3,
 } vfs_node_type_t;
 
 typedef struct vfs_node vfs_node_t;
@@ -30,6 +31,12 @@ typedef struct {
      * same EXDEV-style restriction real rename(2) has). NULL = unsupported. */
     int      (*rename)(vfs_node_t *old_dir, const char *old_name,
                         vfs_node_t *new_dir, const char *new_name);
+    /* Create a symlink dirent named `name` in `dir`, whose stored
+     * content is the raw target path string `target` (not
+     * interpreted or validated at creation time -- a dangling or
+     * relative target is not an error here, same as real symlink(2)).
+     * NULL = unsupported. */
+    int      (*symlink)(vfs_node_t *dir, const char *name, const char *target);
 } vfs_ops_t;
 
 struct vfs_node {
@@ -70,6 +77,16 @@ int         vfs_create(const char *path, uint8_t type);
 int         vfs_unlink(const char *path);
 int         vfs_rmdir(const char *path);
 int         vfs_rename(const char *old_path, const char *new_path);
+/* vfs_lookup() follows symlinks transparently, including the final
+ * path component (so opening/reading/writing through a symlink just
+ * works) -- bounded by an internal depth limit against cycles.
+ * vfs_lookup_link() resolves intermediate components the same way
+ * but returns the symlink node itself if the FINAL component is a
+ * symlink, instead of following it -- for readlink()/lstat-style
+ * callers that want the link, not its target. */
+vfs_node_t *vfs_lookup_link(const char *path);
+int         vfs_symlink(const char *target, const char *linkpath);
+int64_t     vfs_readlink(const char *path, char *buf, uint64_t bufsize);
 int         vfs_chmod(const char *path, uint32_t mode);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);
