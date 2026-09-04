@@ -108,10 +108,16 @@
                                   * relying on timing a real one by
                                   * hand. See exfs_debug_arm_crash() in
                                   * kernel/fs/exfs/exfs.h/.c. arg0 (rdi)
-                                  * = 0..3. Not meant for anything but
+                                  * = 0..4. Not meant for anything but
                                   * a deliberate recovery test. */
+#define SYS_SYMLINK        92   /* symlink(target, linkpath) */
+#define SYS_READLINK       93   /* readlink(path, buf, bufsize) ->
+                                  * bytes written, or -1. NOT
+                                  * null-terminated (matches real
+                                  * readlink(2)); caller sizes buf and
+                                  * checks the return length. */
 
-#define SYS_COUNT          92
+#define SYS_COUNT          94
 
 
 /*

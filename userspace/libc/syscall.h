@@ -439,6 +439,21 @@ static inline int debug_exfs_crash(int point)
 {
     return (int)syscall1(SYS_DEBUG_EXFS_CRASH, (uint64_t)point);
 }
+#define SYS_SYMLINK        92
+static inline int symlink(const char *target, const char *linkpath)
+{
+    return (int)syscall2(SYS_SYMLINK,
+        (uint64_t)(uintptr_t)target,
+        (uint64_t)(uintptr_t)linkpath);
+}
+#define SYS_READLINK       93
+static inline int64_t readlink(const char *path, char *buf, uint64_t bufsize)
+{
+    return syscall3(SYS_READLINK,
+        (uint64_t)(uintptr_t)path,
+        (uint64_t)(uintptr_t)buf,
+        bufsize);
+}
 static inline int64_t http_download(const char *url, const char *dest_path, uint8_t *hash_out)
 {
     return syscall3(SYS_HTTP_DOWNLOAD,

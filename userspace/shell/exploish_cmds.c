@@ -126,29 +126,67 @@ void cmd_ext_rm(const char *path) {
 }
 
 /*
- * crashtest <1|2|3> -- TEST ONLY. Arms a deterministic crash inside
+ * crashtest <1|2|3|4> -- TEST ONLY. Arms a deterministic crash inside
  * the next ExFS journal commit (see SYS_DEBUG_EXFS_CRASH), then
- * immediately creates a file so the very next filesystem metadata
- * operation is the one that hits it. The VM halts (triple-faults)
- * right there -- QEMU should reset. On reboot, check the boot log for
- * "[ExFS] Journal: replaying..." (point 2 should show it; points 1
- * and 3 should NOT), then `ls /crashtest_probe` to confirm the
- * filesystem is in a sane state either way (file absent for point 1,
+ * triggers the filesystem operation that hits it. The VM halts
+ * (triple-faults) right there -- QEMU should reset. On reboot, check
+ * the boot log for "[ExFS] Journal: replaying..." (point 2 should
+ * show it; points 1 and 3 should NOT), then `ls /crashtest_probe` to
+ * confirm the filesystem is in a sane state either way.
+ *
+ * Points 1-3 test create()'s journal commit (file absent for point 1,
  * present for points 2 and 3 -- never a corrupted/partial entry).
+ *
+ * Point 4 is different: it tests exfs_op_unlink()'s block-freeing
+ * reordering (see the comment in exfs_op_unlink() in exfs.c) --
+ * crashes right after the dirent-removal+inode-zeroing transaction
+ * commits, before the file's now-unreferenced blocks are freed.
+ * Expect: /crashtest_probe is gone (the delete itself was durable),
+ * but `python3 tools/fsck.py build/disk.img` should report a leaked
+ * block -- that's the correct, acceptable outcome (a leak, fixable
+ * with `--fix`), not corruption.
  */
 void cmd_ext_crashtest(const char *args)
 {
     const char *p = _skip(args);
-    if (!*p || (*p != '1' && *p != '2' && *p != '3') ||
+    if (!*p || (*p < '1' || *p > '4') ||
         (p[1] != '\0' && p[1] != ' ')) {
-        _println("Usage: crashtest <1|2|3>");
+        _println("Usage: crashtest <1|2|3|4>");
         _println("  1 = crash before journal commit point (expect: no replay, file absent)");
         _println("  2 = crash after commit, before real apply (expect: replay runs, file present)");
         _println("  3 = crash after real apply, before journal clear (expect: no replay needed, file present)");
+        _println("  4 = crash after unlink's commit, before its blocks are freed");
+        _println("      (expect: file absent; fsck.py should report a leaked block, not corruption)");
         return;
     }
     int point = *p - '0';
     _println("Arming crash test -- the VM will halt in a moment.");
+
+    if (point == 4) {
+        /* Point 4 needs a file that actually has at least one
+         * allocated data block, so unlink() has something to free
+         * (and therefore something to potentially leak if the crash
+         * lands where this test aims it). fs_create() alone makes an
+         * empty file with no blocks at all -- deleting that can't
+         * demonstrate anything about the block-freeing reorder, since
+         * there'd be nothing to free either way. Write a byte to
+         * force one direct-block allocation first (unarmed). If the
+         * file already exists from an earlier run, both calls below
+         * just fail harmlessly and the pre-existing one (which does
+         * have a block, from its own earlier write) is used instead. */
+        int fd = fs_create("/crashtest_probe", 0);
+        if (fd >= 0) {
+            write(fd, "x", 1);
+            close(fd);
+        }
+        _println("After it resets, run:  python3 tools/fsck.py build/disk.img");
+        _println("(expect exactly one leaked block, no errors), and:");
+        _println("  ls /crashtest_probe   (expect: gone)");
+        debug_exfs_crash(point);
+        unlink("/crashtest_probe"); /* never returns once armed */
+        return;
+    }
+
     _println("After it resets, check the boot log and run:");
     _println("  ls /crashtest_probe");
     debug_exfs_crash(point);
@@ -231,6 +269,51 @@ void cmd_ext_mkmanyfiles(const char *args)
         }
     }
     _println("mkmanyfiles: done");
+}
+
+/*
+ * ln <target> <linkpath> -- create a symlink named <linkpath> whose
+ * content is the literal string <target> (not validated or resolved
+ * at creation time -- a dangling or, currently, relative target is
+ * not an error here; relative targets just won't be followable, see
+ * the comment in vfs_lookup_impl() in vfs.c).
+ */
+void cmd_ext_ln(const char *args)
+{
+    const char *p = _skip(args);
+    char target[256], linkpath[256];
+    int i = 0;
+    while (*p && *p != ' ' && i < 255) target[i++] = *p++;
+    target[i] = 0;
+    p = _skip(p);
+    i = 0;
+    while (*p && i < 255) linkpath[i++] = *p++;
+    linkpath[i] = 0;
+    if (!target[0] || !linkpath[0]) {
+        _println("Usage: ln <target> <linkpath>  (creates a symlink)");
+        return;
+    }
+    char alink[256]; _abs(linkpath, alink, 256);
+    /* target is stored as-is, NOT made absolute -- symlink(2) never
+     * rewrites its target argument either; an absolute target (e.g.
+     * "/bin/lua") is what vfs_lookup_impl() can currently follow,
+     * a relative one is stored fine but won't resolve when followed. */
+    if (symlink(target, alink) != 0) {
+        puts("ln: failed: "); puts(target); puts(" -> "); _println(alink);
+    }
+}
+
+/* readlink <path> -- print a symlink's stored target verbatim. */
+void cmd_ext_readlink(const char *path)
+{
+    const char *p = _skip(path);
+    if (!*p) { _println("Usage: readlink <path>"); return; }
+    char ap[256]; _abs(p, ap, 256);
+    char buf[256];
+    int64_t n = readlink(ap, buf, sizeof(buf) - 1);
+    if (n < 0) { puts("readlink: not a symlink or not found: "); _println(ap); return; }
+    buf[n] = 0;
+    _println(buf);
 }
 
 void cmd_ext_mount(const char *args)
