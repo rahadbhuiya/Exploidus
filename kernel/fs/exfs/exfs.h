@@ -142,7 +142,13 @@ typedef struct __attribute__((packed)) {
      * safe default: "owned by root", not "owned by nobody, bypass
      * permission checks". */
     uint32_t owner_uid;
-    uint8_t  reserved[12];
+    /* Owning group ID -- see process_t.gid in kernel/proc/process.h.
+     * Same carve-out reasoning as owner_uid just above: carved from
+     * what was reserved[12], so a pre-existing file just reads this
+     * as 0 (GID_ROOT) -- "owned by the root group", a safe default,
+     * not "bypass group checks". */
+    uint32_t group_gid;
+    uint8_t  reserved[8];
 } exfs_inode_t;
 
 /*

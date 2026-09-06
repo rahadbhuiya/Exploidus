@@ -874,3 +874,35 @@ static inline uint32_t getuid(void)
 {
     return (uint32_t)syscall0(SYS_GETUID);
 }
+
+#define SYS_SETGID 94
+#define SYS_GETGID 95
+#define SYS_CHGRP  96
+
+#define GID_ROOT         0
+#define GID_DEFAULT_USER 1000
+
+/*
+ * setgid — voluntary group assignment, mirroring setuid()'s rule:
+ * only callable while still at UID_ROOT (so the correct drop order
+ * is setgid() then setuid() -- see sys_setgid()'s comment in
+ * kernel/syscall/table.c for why). Not a real login/group-membership
+ * system, no /etc/group, no supplementary groups.
+ */
+static inline int setgid(uint32_t new_gid)
+{
+    return (int)syscall1(SYS_SETGID, (uint64_t)new_gid);
+}
+
+static inline uint32_t getgid(void)
+{
+    return (uint32_t)syscall0(SYS_GETGID);
+}
+
+/* chgrp — change a file's group. Same authorization model as
+ * chmod (no owner/root check -- a pre-existing chmod limitation,
+ * not something added here). */
+static inline int chgrp(const char *path, uint32_t gid)
+{
+    return (int)syscall2(SYS_CHGRP, (uint64_t)(uintptr_t)path, (uint64_t)gid);
+}

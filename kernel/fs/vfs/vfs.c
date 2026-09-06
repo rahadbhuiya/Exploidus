@@ -232,34 +232,34 @@ int vfs_open(const char *path, uint32_t flags)
     }
 
     /*
-     * Permission enforcement. Previously checked owner bits (0400/
-     * 0200) unconditionally against every caller regardless of who
-     * they were, because there was no process identity to compare
-     * against -- every process was effectively treated as the file's
-     * owner. Now that process_t has a real uid (see
-     * kernel/proc/process.h), this can distinguish "the owner" from
-     * "everyone else": UID_ROOT always bypasses (root convention),
-     * a uid match against the file's owner_uid checks the owner bits,
-     * and anyone else is checked against the "other" bits. There is
-     * still no group concept (no gid anywhere), so this is a
-     * two-tier model (owner / other), not the full Unix three-tier
-     * (owner / group / other) -- the group bits in `mode` exist on
-     * disk but are never consulted, which is an honest simplification
-     * rather than a bug: without a gid concept there is nothing
-     * meaningful to check them against yet.
+     * Permission enforcement: three-tier (owner / group / other),
+     * now that process_t has both a real uid and gid (see
+     * kernel/proc/process.h) to compare against. UID_ROOT always
+     * bypasses (root convention). Otherwise: a uid match against the
+     * file's owner_uid checks the owner bits; failing that, a gid
+     * match against the file's group_gid checks the group bits;
+     * failing that, the "other" bits apply. This used to be a
+     * two-tier model (owner / other) with a comment noting there was
+     * "no group concept (no gid anywhere)" -- process_t.gid and
+     * exfs_inode_t.group_gid close that gap. Group membership here
+     * is still minimal: one gid per process (no supplementary
+     * groups), set via sys_setgid() (see its comment for the honest
+     * limitations -- not a real login/group-membership system).
      */
     {
         uint32_t caller_uid = g_current_proc ? g_current_proc->uid : UID_ROOT;
+        uint32_t caller_gid = g_current_proc ? g_current_proc->gid : GID_ROOT;
         bool is_owner = (caller_uid == UID_ROOT) ||
                         (caller_uid == node->owner_uid);
+        bool is_group = !is_owner && (caller_gid == node->group_gid);
 
         uint32_t access = flags & 0x3; /* O_RDONLY=0, O_WRONLY=1, O_RDWR=2 */
         bool wants_read  = (access == 0 /*O_RDONLY*/ || access == 2 /*O_RDWR*/);
         bool wants_write = (access == 1 /*O_WRONLY*/ || access == 2 /*O_RDWR*/) ||
                             (flags & 0x400 /*O_APPEND*/);
 
-        uint32_t read_bit  = is_owner ? 0400 : 0004;
-        uint32_t write_bit = is_owner ? 0200 : 0002;
+        uint32_t read_bit  = is_owner ? 0400 : is_group ? 0040 : 0004;
+        uint32_t write_bit = is_owner ? 0200 : is_group ? 0020 : 0002;
 
         if (wants_read && !(node->mode & read_bit)) {
             serial_print("[VFS] open: read permission denied, mode=");
@@ -519,6 +519,21 @@ int vfs_chmod(const char *path, uint32_t mode)
     if (node->ops && node->ops->chmod) {
         result = node->ops->chmod(node, mode);
         if (result == 0) node->mode = mode;
+    }
+
+    if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+    return result;
+}
+
+int vfs_chgrp(const char *path, uint32_t gid)
+{
+    vfs_node_t *node = vfs_lookup(path);
+    if (!node) return -1;
+
+    int result = -1;
+    if (node->ops && node->ops->chgrp) {
+        result = node->ops->chgrp(node, gid);
+        if (result == 0) node->group_gid = gid;
     }
 
     if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }

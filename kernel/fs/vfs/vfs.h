@@ -37,6 +37,11 @@ typedef struct {
      * relative target is not an error here, same as real symlink(2)).
      * NULL = unsupported. */
     int      (*symlink)(vfs_node_t *dir, const char *name, const char *target);
+    /* Persist a new group_gid to disk; NULL = unsupported. Same
+     * authorization model as chmod above -- no owner/root check here
+     * either, matching chmod's existing (pre-existing, not something
+     * this added) lack of one. */
+    int      (*chgrp)(vfs_node_t *node, uint32_t gid);
 } vfs_ops_t;
 
 struct vfs_node {
@@ -62,6 +67,10 @@ struct vfs_node {
      * checks" rule, that's the same "fully permissive by default"
      * behavior as the mode field above, for the same reason. */
     uint32_t        owner_uid;
+
+    /* Owning group ID (see process_t.gid / exfs_inode_t.group_gid).
+     * Default GID_ROOT, same reasoning as owner_uid above. */
+    uint32_t        group_gid;
 };
 
 void        vfs_init(void);
@@ -87,6 +96,7 @@ int         vfs_rename(const char *old_path, const char *new_path);
 vfs_node_t *vfs_lookup_link(const char *path);
 int         vfs_symlink(const char *target, const char *linkpath);
 int64_t     vfs_readlink(const char *path, char *buf, uint64_t bufsize);
+int         vfs_chgrp(const char *path, uint32_t gid);
 int         vfs_chmod(const char *path, uint32_t mode);
 int         vfs_chdir(const char *path);
 int         vfs_getcwd(char *buf, uint64_t size);

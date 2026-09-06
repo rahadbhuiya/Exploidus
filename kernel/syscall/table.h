@@ -116,8 +116,21 @@
                                   * null-terminated (matches real
                                   * readlink(2)); caller sizes buf and
                                   * checks the return length. */
+#define SYS_SETGID         94   /* voluntarily set gid -- see
+                                  * sys_setgid()'s comment for the
+                                  * exact rule (mirrors SYS_SETUID:
+                                  * only while still at UID_ROOT, so
+                                  * the correct drop order is
+                                  * setgid() then setuid()). */
+#define SYS_GETGID         95   /* current process's gid */
+#define SYS_CHGRP          96   /* chgrp(path, gid) -- change a
+                                  * file's group_gid. Same
+                                  * authorization model as
+                                  * SYS_CHMOD: no owner/root check
+                                  * (pre-existing chmod limitation,
+                                  * not something added here). */
 
-#define SYS_COUNT          94
+#define SYS_COUNT          97
 
 
 /*

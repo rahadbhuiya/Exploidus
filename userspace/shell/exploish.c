@@ -411,6 +411,7 @@ static void cmd_help(void)
     println("  cmp <f1> <f2>          Compare two files byte-for-byte");
     println("  find <path>            List files recursively");
     println("  chmod <mode> <file>    Change permission bits");
+    println("  chgrp <gid> <file>     Change a file's group");
     println("  wc <file>              Count lines/words/bytes");
     println("  grep <pat> <file>      Search file for a pattern");
     println("  head/tail <file>       Show first/last lines");
@@ -1626,9 +1627,13 @@ static void dispatch(const char *line)
         cmd_ext_mkfs(skip_spaces(l + 5));
     } else if (str_eq(l, "whoami") || str_eq(l, "id")) {
         uint32_t u = getuid();
+        uint32_t g = getgid();
         print("uid=");
         print_int((int64_t)u);
-        println(u == UID_ROOT ? " (root)" : " (star)");
+        print(u == UID_ROOT ? "(root) " : "(star) ");
+        print("gid=");
+        print_int((int64_t)g);
+        println(g == GID_ROOT ? "(root)" : "");
     } else if (str_eq(l, "free")) {
         cmd_ext_free();
     } else if (str_eq(l, "uptime")) {
@@ -1659,6 +1664,10 @@ static void dispatch(const char *line)
         cmd_ext_ln(skip_spaces(l + 3));
     } else if (str_starts(l, "readlink ")) {
         cmd_ext_readlink(skip_spaces(l + 9));
+    } else if (str_starts(l, "setgid")) {
+        cmd_ext_setgid(skip_spaces(l + 6));
+    } else if (str_starts(l, "chgrp ")) {
+        cmd_ext_chgrp(skip_spaces(l + 6));
     } else if (str_starts(l, "tail")) {
         cmd_ext_tail(skip_spaces(l + 4));
     } else if (str_starts(l, "find")) {

@@ -953,6 +953,46 @@ static __attribute__((unused)) int64_t sys_getuid(syscall_frame_t *f)
     return g_current_proc ? (int64_t)g_current_proc->uid : (int64_t)UID_ROOT;
 }
 
+/*
+ * sys_setgid(new_gid) -- voluntary group assignment, mirroring
+ * sys_setuid()'s rule exactly: only callable while the caller is
+ * still at UID_ROOT (checked via uid, not gid -- so the correct
+ * privilege-drop order is setgid() then setuid(), same order real
+ * privilege-dropping code uses). Once a process has dropped away
+ * from UID_ROOT via setuid(), it can no longer call this either,
+ * which is what stops a dropped-privilege process from picking an
+ * arbitrary group to gain group-permission access it shouldn't have.
+ * Unlike setuid(), this allows setting to *any* gid including
+ * GID_ROOT (there's no meaningful "already at group root" one-way
+ * restriction the way there is for uid -- gid is a group membership
+ * tag, not an identity/privilege level on its own; UID_ROOT is what
+ * actually grants root's full bypass, not any particular gid). Same
+ * honesty caveat as setuid(): not a real login/group-membership
+ * system, no /etc/group, no supplementary groups.
+ */
+static __attribute__((unused)) int64_t sys_setgid(syscall_frame_t *f)
+{
+    if (!g_current_proc) return -1;
+    if (g_current_proc->uid != UID_ROOT) return -1; /* must still be root */
+    g_current_proc->gid = (uint32_t)f->rdi;
+    return 0;
+}
+
+static __attribute__((unused)) int64_t sys_getgid(syscall_frame_t *f)
+{
+    (void)f;
+    return g_current_proc ? (int64_t)g_current_proc->gid : (int64_t)GID_ROOT;
+}
+
+/* sys_chgrp(path, gid) */
+static __attribute__((unused)) int64_t sys_chgrp(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    uint32_t    gid  = (uint32_t)f->rsi;
+    return vfs_chgrp(path, gid);
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1584,6 +1624,9 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_DEBUG_EXFS_CRASH] = sys_debug_exfs_crash,
     [SYS_SYMLINK]      = sys_symlink,
     [SYS_READLINK]     = sys_readlink,
+    [SYS_SETGID]       = sys_setgid,
+    [SYS_GETGID]       = sys_getgid,
+    [SYS_CHGRP]        = sys_chgrp,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
     /* GUI Phase 1 */

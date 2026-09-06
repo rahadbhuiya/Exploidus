@@ -717,6 +717,15 @@ static int exfs_op_chmod(vfs_node_t *node, uint32_t mode)
     return 0;
 }
 
+static int exfs_op_chgrp(vfs_node_t *node, uint32_t gid)
+{
+    exfs_node_data_t *nd = (exfs_node_data_t *)node->fs_data;
+    if (!nd) return -1;
+    nd->inode.group_gid = gid;
+    exfs_write_inode(nd->vol, nd->inode_num, &nd->inode);
+    return 0;
+}
+
 static int64_t exfs_op_read(vfs_node_t *node, uint64_t offset,
                              void *buf, uint64_t len)
 {
@@ -890,6 +899,7 @@ static vfs_node_t *exfs_op_lookup(vfs_node_t *dir, const char *name)
                 child->parent  = dir;
                 child->mode    = child_inode.mode;
                 child->owner_uid = child_inode.owner_uid;
+                child->group_gid = child_inode.group_gid;
                 return child;
             }
 
@@ -1007,6 +1017,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
      * whatever syscall handler is servicing the calling process),
      * same pattern vfs.c already uses for fd owner_pid. */
     new_inode.owner_uid = g_current_proc ? g_current_proc->uid : UID_ROOT;
+    new_inode.group_gid = g_current_proc ? g_current_proc->gid : GID_ROOT;
     exfs_write_inode(vol, free_ino, &new_inode);
 
     /* Add dirent to parent directory */
@@ -1077,6 +1088,7 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     child->parent  = dir;
     child->mode    = new_inode.mode;
     child->owner_uid = new_inode.owner_uid;
+    child->group_gid = new_inode.group_gid;
     return child;
 }
 
@@ -1162,6 +1174,7 @@ static int exfs_op_symlink(vfs_node_t *dir, const char *name, const char *target
     new_inode.direct[0]    = data_blk;
     new_inode.creator_pid  = 1;
     new_inode.owner_uid    = g_current_proc ? g_current_proc->uid : UID_ROOT;
+    new_inode.group_gid    = g_current_proc ? g_current_proc->gid : GID_ROOT;
     exfs_write_inode(vol, free_ino, &new_inode);
 
     exfs_inode_t *din = &nd->inode;
@@ -1661,6 +1674,7 @@ static const vfs_ops_t g_exfs_ops = {
     .chmod   = exfs_op_chmod,
     .rename  = exfs_op_rename,
     .symlink = exfs_op_symlink,
+    .chgrp   = exfs_op_chgrp,
 };
 
 

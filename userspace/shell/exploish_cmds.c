@@ -316,6 +316,40 @@ void cmd_ext_readlink(const char *path)
     _println(buf);
 }
 
+/*
+ * setgid <n> -- see sys_setgid()'s comment (kernel/syscall/table.c)
+ * for the exact rule: only works while still root, so this must be
+ * run before anything drops privilege with setuid (this shell itself
+ * calls setuid(UID_DEFAULT_USER) once, right before showing the
+ * first prompt -- so setgid only works from a script/command run
+ * before that point, or from a freshly spawned process that hasn't
+ * dropped yet).
+ */
+void cmd_ext_setgid(const char *args)
+{
+    const char *p = _skip(args);
+    if (!*p) { _println("Usage: setgid <n>"); return; }
+    int n = 0;
+    while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+    if (setgid((uint32_t)n) != 0)
+        _println("setgid: failed (must still be root -- see 'help')");
+}
+
+/* chgrp <gid> <path> */
+void cmd_ext_chgrp(const char *args)
+{
+    const char *p = _skip(args);
+    if (!*p) { _println("Usage: chgrp <gid> <path>"); return; }
+    int gid = 0;
+    while (*p >= '0' && *p <= '9') { gid = gid * 10 + (*p - '0'); p++; }
+    p = _skip(p);
+    if (!*p) { _println("Usage: chgrp <gid> <path>"); return; }
+    char ap[256]; _abs(p, ap, 256);
+    if (chgrp(ap, (uint32_t)gid) != 0) {
+        puts("chgrp: failed: "); _println(ap);
+    }
+}
+
 void cmd_ext_mount(const char *args)
 {
     const char *p = _skip(args);
