@@ -71,6 +71,7 @@ process_t *proc_create(proc_intent_t intent, uint32_t parent_pid)
      */
     process_t *parent = parent_pid ? proc_get(parent_pid) : NULL;
     p->uid = parent ? parent->uid : UID_ROOT;
+    p->gid = parent ? parent->gid : GID_ROOT;
 
     /*  KERNEL STACK  */
     p->kernel_stack = (uint8_t *)kmalloc(KERNEL_STACK_SIZE);

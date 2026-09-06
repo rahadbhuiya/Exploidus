@@ -33,3 +33,5 @@ void cmd_ext_crashtest(const char *args);
 void cmd_ext_mkmanyfiles(const char *args);
 void cmd_ext_ln(const char *args);
 void cmd_ext_readlink(const char *path);
+void cmd_ext_setgid(const char *args);
+void cmd_ext_chgrp(const char *args);

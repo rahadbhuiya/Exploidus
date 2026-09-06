@@ -138,10 +138,18 @@ typedef struct process {
      * against). Appended last, same reasoning as ipc/fs_base/
      * fpu_state/etc above: safe, no offset reuse. */
     uint32_t           uid;
+    /* Group ID -- see sys_setgid()'s comment in kernel/syscall/table.c
+     * for what this is and isn't (not a real login/group-membership
+     * system). Inherited from parent exactly like uid; defaults to
+     * GID_ROOT for the first process (no parent). Appended last, same
+     * reasoning as uid above. */
+    uint32_t           gid;
 } process_t;
 
 #define UID_ROOT         0
 #define UID_DEFAULT_USER 1000
+#define GID_ROOT         0
+#define GID_DEFAULT_USER 1000
 
 void       proc_init(void);
 process_t *proc_create(proc_intent_t intent, uint32_t parent_pid);
