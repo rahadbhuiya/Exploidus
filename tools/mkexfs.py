@@ -5,13 +5,13 @@ EXFS_MAGIC  = 0x45584653
 MAX_INODES  = 4096
 INODE_SIZE  = 256
 
-def make_inode(mode, size, direct_blocks, indirect=0):
+def make_inode(mode, size, direct_blocks, indirect=0, double_indirect=0):
     d = list(direct_blocks) + [0]*(12-len(direct_blocks))
     return struct.pack("<QQQ"+"II"+"Q"*12+"QQQ"+"QI"+"8s84s",
         size, 0, 0, 0, mode,
         *d,
-        indirect,  # indirect block pointer
-        0, 0, 0, 0,
+        indirect, double_indirect, 0,  # indirect, double_indirect, triple_indirect
+        0, 0,
         b'\x00'*8, b'\x00'*84)
 
 def make_dirent(inode_num, name, ftype):
@@ -88,23 +88,75 @@ def write_file_to_disk(ino, filepath):
         blk = alloc_block()
         write_block(blk, data[i:i+BLOCK_SIZE])
         blocks.append(blk)
-    
-    direct = blocks[:12]
-    indirect_blocks = blocks[12:]
-    
-    # indirect block
-    indirect_block_num = 0
-    if indirect_blocks:
-        indirect_block_num = alloc_block()
-        # write block numbers into indirect block
-        indirect_data = bytearray(BLOCK_SIZE)
-        for idx, blk in enumerate(indirect_blocks):
-            indirect_data[idx*8:(idx+1)*8] = blk.to_bytes(8, 'little')
-        write_block(indirect_block_num, indirect_data)
-    
-    inode = make_inode(0o755, len(data), direct, indirect_block_num)
+
+    direct, indirect_block_num, double_indirect_block_num = \
+        _place_blocks(blocks)
+
+    inode = make_inode(0o755, len(data), direct,
+                        indirect_block_num, double_indirect_block_num)
     write_inode(ino, inode)
     return len(data), len(blocks)
+
+# Pointers per indirect block -- must match EXFS_INDIRECT_PTRS in
+# kernel/fs/exfs/exfs.h (EXFS_BLOCK_SIZE / sizeof(uint64_t)).
+INDIRECT_PTRS = BLOCK_SIZE // 8   # 512
+
+def _write_ptr_block(block_nums):
+    """Allocate one block and fill it with up to INDIRECT_PTRS 8-byte
+    little-endian block numbers (zero-padded). Returns that block's
+    number."""
+    blk_num = alloc_block()
+    buf = bytearray(BLOCK_SIZE)
+    for idx, b in enumerate(block_nums):
+        buf[idx*8:(idx+1)*8] = b.to_bytes(8, 'little')
+    write_block(blk_num, buf)
+    return blk_num
+
+def _place_blocks(blocks):
+    """Split an already-allocated, in-order list of data block numbers
+    into (direct[], indirect_block_num, double_indirect_block_num),
+    building whatever pointer blocks are needed -- mirrors
+    exfs_resolve_block()'s addressing exactly (direct 12, then single
+    indirect up to INDIRECT_PTRS more, then double indirect up to
+    INDIRECT_PTRS*INDIRECT_PTRS more). Raises if the file is bigger
+    than double-indirect can address (matches the runtime driver's own
+    ceiling -- see the EXFS_INDIRECT_PTRS comment in exfs.h;
+    triple_indirect is unimplemented there too).
+    """
+    max_addressable = 12 + INDIRECT_PTRS + INDIRECT_PTRS * INDIRECT_PTRS
+    if len(blocks) > max_addressable:
+        raise Exception(
+            f"file needs {len(blocks)} blocks, more than this "
+            f"filesystem can address ({max_addressable} via direct + "
+            f"single + double indirect -- ~{max_addressable*BLOCK_SIZE//(1024*1024)} MiB)")
+
+    direct = blocks[:12]
+    rest = blocks[12:]
+
+    indirect_block_num = 0
+    double_indirect_block_num = 0
+
+    if not rest:
+        return direct, indirect_block_num, double_indirect_block_num
+
+    single_ptrs = rest[:INDIRECT_PTRS]
+    indirect_block_num = _write_ptr_block(single_ptrs)
+    rest = rest[INDIRECT_PTRS:]
+
+    if not rest:
+        return direct, indirect_block_num, double_indirect_block_num
+
+    # Double indirect: chunk the remainder into groups of
+    # INDIRECT_PTRS, write each group as its own pointer block (a
+    # "level 2" block), then write a "level 1" block whose entries
+    # point at each level-2 block in order.
+    level1_ptrs = []
+    for i in range(0, len(rest), INDIRECT_PTRS):
+        group = rest[i:i+INDIRECT_PTRS]
+        level1_ptrs.append(_write_ptr_block(group))
+    double_indirect_block_num = _write_ptr_block(level1_ptrs)
+
+    return direct, indirect_block_num, double_indirect_block_num
 
 # Root inode (inode 0) - directory
 root_dir_block = alloc_block()
@@ -249,17 +301,13 @@ if EMBEDDED_SCRIPTS:
             chunk = script_bytes[i:i+BLOCK_SIZE]
             write_block(blk, chunk + b'\x00' * (BLOCK_SIZE - len(chunk)))
             blocks.append(blk)
-        if len(blocks) > 12:
-            # This offline tool only writes direct blocks (unlike the
-            # runtime C driver, which now supports indirect/double-
-            # indirect -- see exfs_resolve_block() in exfs.c). Fine for
-            # a small test script; a >48 KiB embedded file would need
-            # the same indirect-block-writing logic
-            # write_file_to_disk() has, not yet ported here.
-            raise Exception(f"{script_name}: embedded script > 48 KiB, "
-                             f"this tool doesn't write indirect blocks yet")
 
-        script_inode = make_inode(0o644, len(script_bytes), blocks)
+        # _place_blocks() raises if this exceeds what direct + single
+        # + double indirect can address (~1 GiB) -- same ceiling the
+        # runtime C driver has (see exfs_resolve_block() in exfs.c).
+        direct, indirect_blk, double_indirect_blk = _place_blocks(blocks)
+        script_inode = make_inode(0o644, len(script_bytes), direct,
+                                   indirect_blk, double_indirect_blk)
         write_inode(next_ino, script_inode)
 
         name_b = script_name.encode()
