@@ -635,6 +635,61 @@ static uint64_t exfs_resolve_block(exfs_volume_t *vol, exfs_inode_t *in,
 }
 
 
+/*  Whole-file integrity hash                                           */
+
+
+/*
+ * exfs_compute_whole_file_hash — BLAKE3 over the file's entire current
+ * content (offset 0 .. in->size), streamed through blake3_update() one
+ * block at a time so this never needs a buffer larger than
+ * EXFS_BLOCK_SIZE regardless of file size. Replaces an earlier version
+ * of this field that only covered the bytes touched by the most recent
+ * write() call -- that missed corruption in any earlier-written part
+ * of the file; this catches corruption anywhere in it.
+ *
+ * Cost: O(file size) per call, and exfs_op_write() calls this once
+ * per write() -- so N sequential small writes to the same file cost
+ * O(N^2) total, not O(N). Deliberate, not an oversight: this
+ * filesystem already leans toward correctness/detectability over
+ * raw throughput (the provenance ring buffer, the journal), and
+ * nothing on this kernel currently does the kind of write-heavy
+ * workload (databases, log-structured writes) where that would bite.
+ * If that changes, incremental hashing would need either an
+ * append-only fast path (BLAKE3's streaming API already supports
+ * that -- just don't restart from 0) or accepting that only the
+ * last-written range is covered, as before.
+ */
+static void exfs_compute_whole_file_hash(exfs_volume_t *vol,
+                                          const exfs_inode_t *in,
+                                          uint8_t out_hash[8])
+{
+    blake3_ctx_t ctx;
+    blake3_init(&ctx);
+
+    static uint8_t buf[EXFS_BLOCK_SIZE];
+    uint64_t remaining = in->size;
+    uint64_t file_block = 0;
+
+    while (remaining > 0) {
+        bool unused_dirty = false;
+        uint64_t blk = exfs_resolve_block(vol, (exfs_inode_t *)in,
+                                            file_block, false, &unused_dirty);
+        if (!blk) break; /* hole -- shouldn't happen for a properly
+                           * sized file, but don't hang on one */
+        if (!exfs_read_block(vol, blk, buf)) break;
+
+        uint64_t chunk = remaining < EXFS_BLOCK_SIZE ? remaining : EXFS_BLOCK_SIZE;
+        blake3_update(&ctx, buf, chunk);
+        remaining -= chunk;
+        file_block++;
+    }
+
+    uint8_t digest[32];
+    blake3_final(&ctx, digest);
+    memcpy(out_hash, digest, 8);
+}
+
+
 /*  Provenance record append                                            */
 
 
@@ -697,6 +752,35 @@ static int exfs_op_open(vfs_node_t *node, uint32_t flags)
     exfs_node_data_t *nd = (exfs_node_data_t *)node->fs_data;
     /* Re-read inode on open to get fresh metadata */
     exfs_read_inode(nd->vol, nd->inode_num, &nd->inode);
+
+    /* Integrity check: if this file has ever actually been written to
+     * (a populated, non-zero stored block_hash -- see
+     * exfs_compute_whole_file_hash()), recompute its whole-file hash
+     * now and compare. A mismatch means the on-disk content changed
+     * since the hash was last set without going through a normal
+     * write() -- log it loudly; this adds active detection on top of
+     * the provenance trail that already records legitimate writes.
+     * Skipped when the stored hash is all-zero: that's this field's
+     * untouched-since-create default (exfs_op_create/exfs_op_symlink
+     * memset the new inode to zero), not a genuine "empty file"
+     * hash -- BLAKE3 of zero bytes is a specific non-zero digest, so
+     * comparing against an unset zero hash would always spuriously
+     * mismatch. */
+    {
+        static const uint8_t zero8[8] = {0};
+        if (memcmp(nd->inode.block_hash, zero8, 8) != 0) {
+            uint8_t fresh[8];
+            exfs_compute_whole_file_hash(nd->vol, &nd->inode, fresh);
+            if (memcmp(fresh, nd->inode.block_hash, 8) != 0) {
+                serial_print("[ExFS] INTEGRITY WARNING: on-disk content for "
+                             "inode ");
+                serial_printhex(nd->inode_num);
+                serial_print(" does not match its stored hash -- possible "
+                             "silent corruption\n");
+            }
+        }
+    }
+
     exfs_append_prov(nd->vol, nd->inode_num, &nd->inode,
                      PROV_OP_READ, 0, 0, 0, 0);
     return 0;
@@ -815,23 +899,19 @@ static int64_t exfs_op_write(vfs_node_t *node, uint64_t offset,
     if (written > 0) {
         in->modified_at = audit_total();
         inode_dirty = true;
-
-        /* Integrity: record a BLAKE3 digest of exactly the bytes this
-         * call wrote (the field is named/sized for "hash of last
-         * write", not a whole-file checksum — see exfs_inode_t in
-         * exfs.h). This lets a future fsck/audit pass detect silent
-         * on-disk corruption of the most recent write to a file by
-         * re-hashing that byte range and comparing. It does NOT catch
-         * corruption of bytes written by an *earlier* write() call —
-         * a real per-block or whole-file checksum would need on-disk
-         * format changes beyond this field's existing 8 bytes, which
-         * is out of scope here. */
-        uint8_t digest[32];
-        blake3_hash(src, written, digest);
-        memcpy(in->block_hash, digest, sizeof(in->block_hash));
     }
 
     if (inode_dirty) {
+        /* Whole-file integrity hash, recomputed after size/content
+         * settle -- see exfs_compute_whole_file_hash()'s comment for
+         * what this covers and its cost. Only worth doing when the
+         * inode is actually dirty (i.e. this write changed anything);
+         * a zero-length write() that touched nothing leaves the
+         * existing hash (and file) untouched. */
+        uint8_t digest[8];
+        exfs_compute_whole_file_hash(vol, in, digest);
+        memcpy(in->block_hash, digest, sizeof(in->block_hash));
+
         exfs_journal_begin(vol);
         exfs_write_inode(vol, nd->inode_num, in);
         exfs_journal_commit(vol);
@@ -1175,6 +1255,15 @@ static int exfs_op_symlink(vfs_node_t *dir, const char *name, const char *target
     new_inode.creator_pid  = 1;
     new_inode.owner_uid    = g_current_proc ? g_current_proc->uid : UID_ROOT;
     new_inode.group_gid    = g_current_proc ? g_current_proc->gid : GID_ROOT;
+    /* Whole-file integrity hash covers this too (see
+     * exfs_compute_whole_file_hash()'s comment on exfs_op_write) --
+     * computed directly from `target`, already in memory, rather than
+     * reading the just-written data block back for a one-block file. */
+    {
+        uint8_t digest[32];
+        blake3_hash((const uint8_t *)target, target_len, digest);
+        memcpy(new_inode.block_hash, digest, sizeof(new_inode.block_hash));
+    }
     exfs_write_inode(vol, free_ino, &new_inode);
 
     exfs_inode_t *din = &nd->inode;
