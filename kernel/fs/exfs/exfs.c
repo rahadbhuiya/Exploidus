@@ -746,6 +746,41 @@ typedef struct {
     exfs_inode_t   inode;
 } exfs_node_data_t;
 
+/*
+ * exfs_debug_corrupt_file — TEST ONLY. Flips every bit of the first
+ * byte of a file's first data block, writing it back through
+ * exfs_write_block() directly -- bypassing exfs_op_write() (and
+ * therefore block_hash) entirely. This simulates genuine silent
+ * on-disk corruption (bit rot, a bad sector, a bug somewhere else
+ * entirely) for testing exfs_op_open()'s integrity-hash verification,
+ * as opposed to corruption introduced through this filesystem's own
+ * write path, which would legitimately update the hash and shouldn't
+ * be flagged. Returns 0 on success, -1 if the node isn't a regular
+ * ExFS file with at least one byte of content.
+ */
+int exfs_debug_corrupt_file(vfs_node_t *node)
+{
+    if (!node || !node->fs_data) return -1;
+    exfs_node_data_t *nd = (exfs_node_data_t *)node->fs_data;
+    if (nd->inode.size == 0) return -1;
+
+    bool unused_dirty = false;
+    uint64_t blk = exfs_resolve_block(nd->vol, &nd->inode, 0, false,
+                                        &unused_dirty);
+    if (!blk) return -1;
+
+    static uint8_t buf[EXFS_BLOCK_SIZE];
+    if (!exfs_read_block(nd->vol, blk, buf)) return -1;
+    buf[0] ^= 0xFF;
+    bool ok = exfs_write_block(nd->vol, blk, buf);
+
+    serial_print("[ExFS] CORRUPT TEST: flipped first byte of inode ");
+    serial_printhex(nd->inode_num);
+    serial_print(ok ? " (write ok)\n" : " (write FAILED)\n");
+    return ok ? 0 : -1;
+}
+
+
 static int exfs_op_open(vfs_node_t *node, uint32_t flags)
 {
     (void)flags;

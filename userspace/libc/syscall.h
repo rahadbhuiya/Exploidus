@@ -906,3 +906,12 @@ static inline int chgrp(const char *path, uint32_t gid)
 {
     return (int)syscall2(SYS_CHGRP, (uint64_t)(uintptr_t)path, (uint64_t)gid);
 }
+
+#define SYS_DEBUG_EXFS_CORRUPT 97
+/* TEST ONLY -- flips a byte in a file's first data block, bypassing
+ * the normal write path. See SYS_DEBUG_EXFS_CORRUPT in
+ * kernel/syscall/table.h. */
+static inline int debug_exfs_corrupt(const char *path)
+{
+    return (int)syscall1(SYS_DEBUG_EXFS_CORRUPT, (uint64_t)(uintptr_t)path);
+}
