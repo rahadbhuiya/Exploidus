@@ -129,8 +129,17 @@
                                   * SYS_CHMOD: no owner/root check
                                   * (pre-existing chmod limitation,
                                   * not something added here). */
+#define SYS_DEBUG_EXFS_CORRUPT 97 /* TEST-ONLY: flips a byte in a
+                                    * file's first data block,
+                                    * bypassing the normal write path
+                                    * (so block_hash is left stale) --
+                                    * for testing the integrity-hash
+                                    * verification added in
+                                    * exfs_op_open(). See
+                                    * exfs_debug_corrupt_file() in
+                                    * kernel/fs/exfs/exfs.c. */
 
-#define SYS_COUNT          97
+#define SYS_COUNT          98
 
 
 /*

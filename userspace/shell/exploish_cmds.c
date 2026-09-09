@@ -350,6 +350,49 @@ void cmd_ext_chgrp(const char *args)
     }
 }
 
+/*
+ * corrupttest -- TEST ONLY. Creates a file, writes real content to it
+ * (so it gets a real, non-zero whole-file BLAKE3 hash -- see
+ * exfs_op_write() in exfs.c), corrupts its first data block directly
+ * on disk (bypassing the normal write path entirely, so the stored
+ * hash is left stale -- simulates genuine silent corruption, not a
+ * legitimate write), then opens it again. Prints what happened;
+ * the actual pass/fail signal is the
+ * "[ExFS] INTEGRITY WARNING: ... possible silent corruption" line
+ * this should print to the boot/serial log during that final open --
+ * check for it there, this command doesn't have a way to read the
+ * kernel's own serial output back.
+ */
+void cmd_ext_corrupttest(const char *args)
+{
+    (void)args;
+    const char *path = "/corrupttest_probe";
+
+    int fd = fs_create(path, 0);
+    if (fd < 0) {
+        _println("corrupttest: create failed (leftover from a previous "
+                 "run? try 'rm /corrupttest_probe' first)");
+        return;
+    }
+    write(fd, "corruption test payload, twenty-plus bytes so it's not trivially short", 40);
+    close(fd);
+    _println("corrupttest: file created and written (hash now set)");
+
+    if (debug_exfs_corrupt(path) != 0) {
+        _println("corrupttest: corruption injection failed");
+        return;
+    }
+    _println("corrupttest: corrupted on disk (bypassing normal write)");
+
+    _println("corrupttest: re-opening -- check the serial/boot log now for:");
+    _println("  [ExFS] INTEGRITY WARNING: ... possible silent corruption");
+    int fd2 = open(path, O_RDONLY);
+    if (fd2 >= 0) close(fd2);
+
+    unlink(path);
+    _println("corrupttest: done, probe file removed");
+}
+
 void cmd_ext_mount(const char *args)
 {
     const char *p = _skip(args);

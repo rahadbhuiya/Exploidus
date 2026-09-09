@@ -1668,6 +1668,8 @@ static void dispatch(const char *line)
         cmd_ext_setgid(skip_spaces(l + 6));
     } else if (str_starts(l, "chgrp ")) {
         cmd_ext_chgrp(skip_spaces(l + 6));
+    } else if (str_starts(l, "corrupttest")) {
+        cmd_ext_corrupttest(skip_spaces(l + 11));
     } else if (str_starts(l, "tail")) {
         cmd_ext_tail(skip_spaces(l + 4));
     } else if (str_starts(l, "find")) {

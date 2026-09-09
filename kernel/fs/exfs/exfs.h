@@ -227,6 +227,10 @@ vfs_node_t *exfs_mount(struct block_device *dev, uint32_t lba_base);
  * called from anywhere except a deliberate crash-recovery test. */
 void exfs_debug_arm_crash(int point);
 
+/* TEST ONLY -- see the function's own comment in exfs.c. Exposed for
+ * SYS_DEBUG_EXFS_CORRUPT (kernel/syscall/table.c). */
+int exfs_debug_corrupt_file(vfs_node_t *node);
+
 /* Format a block device with a fresh ExFS volume */
 bool exfs_format(struct block_device *dev, uint32_t lba_base,
                   uint64_t total_blocks);

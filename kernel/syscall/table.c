@@ -993,6 +993,18 @@ static __attribute__((unused)) int64_t sys_chgrp(syscall_frame_t *f)
     return vfs_chgrp(path, gid);
 }
 
+/* sys_debug_exfs_corrupt(path) — TEST ONLY, see SYS_DEBUG_EXFS_CORRUPT */
+static __attribute__((unused)) int64_t sys_debug_exfs_corrupt(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *path = (const char *)(uintptr_t)f->rdi;
+    vfs_node_t *node = vfs_lookup(path);
+    if (!node) return -1;
+    int result = exfs_debug_corrupt_file(node);
+    if (node->parent != NULL) { kfree(node->fs_data); kfree(node); }
+    return result;
+}
+
 
 /*  Filesystem/process misc  */
 
@@ -1627,6 +1639,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_SETGID]       = sys_setgid,
     [SYS_GETGID]       = sys_getgid,
     [SYS_CHGRP]        = sys_chgrp,
+    [SYS_DEBUG_EXFS_CORRUPT] = sys_debug_exfs_corrupt,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
     /* GUI Phase 1 */
