@@ -104,15 +104,28 @@ typedef struct __attribute__((packed)) {
     uint64_t journal_block;
     uint64_t journal_size;
 
-    uint8_t  reserved[3984];         /* pad to EXFS_BLOCK_SIZE exactly:
-                                       * 4+4+8*9+16+8+8+3984 = 4096. (Was
+    /* Number of blocks the block bitmap occupies, starting at
+     * block_bitmap_block. bitmap_size == 0 means "volume formatted
+     * before multi-block bitmaps existed" -- treated as 1 (the old
+     * fixed size, which is exactly right for any such volume: it was
+     * never possible to format more than BITS_PER_BLK == 32768
+     * blocks with only one bitmap block, so a legacy volume's real
+     * block count already fits in that one block). Above that block
+     * count, a single bitmap block can't represent every block, so
+     * more are needed -- see exfs_format()'s bitmap_size computation.
+     * Carved from reserved[3984] the same way journal_block/
+     * journal_size were. */
+    uint64_t bitmap_size;
+
+    uint8_t  reserved[3976];         /* pad to EXFS_BLOCK_SIZE exactly:
+                                       * 4+4+8*9+16+8+8+8+3976 = 4096. (Was
                                        * 4008, making the struct 4104 bytes —
                                        * 8 bytes larger than EXFS_BLOCK_SIZE,
                                        * which made exfs_mount's memcpy read
                                        * 8 bytes past its 4096-byte stack
                                        * buffer on every boot. journal_block/
-                                       * journal_size above took 16 of those
-                                       * spare bytes.) */
+                                       * journal_size/bitmap_size above took
+                                       * 24 of those spare bytes.) */
 } exfs_superblock_t;
 
 /*
