@@ -28,11 +28,23 @@ elf_paths  = sys.argv[2:]   # all remaining args are ELF files
 JOURNAL_MAX_BLOCKS = 16
 JOURNAL_SIZE = 1 + JOURNAL_MAX_BLOCKS
 
+# Bits per bitmap block -- must match BITS_PER_BLK in exfs.c
+# (EXFS_BLOCK_SIZE * 8).
+BITS_PER_BLK = BLOCK_SIZE * 8
+
 disk_size    = os.path.getsize(disk_path)
 total_blocks = disk_size // BLOCK_SIZE
 inode_blocks = (MAX_INODES * INODE_SIZE + BLOCK_SIZE - 1) // BLOCK_SIZE
-inode_table_block = 2
 bitmap_block      = 1
+# How many blocks the bitmap itself needs -- one bit per block on the
+# volume. A volume up to BITS_PER_BLK (32768) blocks still fits in a
+# single bitmap block (the original hardcoded layout); past that,
+# more are reserved so every block has a bit to represent it. This
+# mirrors exfs_format()'s bitmap_size computation in exfs.c exactly --
+# see bitmap_size's comment in exfs.h for why a single fixed block was
+# a real correctness bug above that size, not just a scale limit.
+bitmap_size       = max(1, (total_blocks + BITS_PER_BLK - 1) // BITS_PER_BLK)
+inode_table_block = bitmap_block + bitmap_size
 data_start_block  = inode_table_block + inode_blocks
 provenance_block  = total_blocks - 16
 provenance_size   = 16
@@ -46,16 +58,16 @@ img = bytearray(disk_size)
 # magic, version, 9 x uint64 (total/free_blocks, total/free_inodes,
 # inode_table_block, block_bitmap_block, data_start_block,
 # provenance_block, provenance_size), fs_uuid[16], journal_block,
-# journal_size, reserved[3984] (padded to EXFS_BLOCK_SIZE).
-sb = struct.pack("<II"+"Q"*9+"16s"+"QQ"+"3984s",
+# journal_size, bitmap_size, reserved[3976] (padded to EXFS_BLOCK_SIZE).
+sb = struct.pack("<II"+"Q"*9+"16s"+"QQQ"+"3976s",
     EXFS_MAGIC, 1,
     total_blocks, free_blocks,
     MAX_INODES, MAX_INODES - 1,
     inode_table_block, bitmap_block, data_start_block,
     provenance_block, provenance_size,
     b'\x45\x58\x46\x53'+b'\x00'*12,
-    journal_block, journal_size,
-    b'\x00'*3984)
+    journal_block, journal_size, bitmap_size,
+    b'\x00'*3976)
 img[0:BLOCK_SIZE] = sb[:BLOCK_SIZE]
 
 # Block allocator
@@ -323,12 +335,21 @@ if EMBEDDED_SCRIPTS:
     # Rewrite root_dir_block once with bin/var/tmp plus the new entries.
     write_block(root_dir_block, root_dir_data)
 
-# Block bitmap
-bitmap = bytearray(BLOCK_SIZE)
-for b in used_blocks:
-    if b < BLOCK_SIZE * 8:
-        bitmap[b // 8] |= (1 << (b % 8))
-img[BLOCK_SIZE:BLOCK_SIZE*2] = bitmap
+# Block bitmap -- write bitmap_size blocks, one bit per volume block
+# (see bitmap_size's computation above). Was previously hardcoded to
+# exactly one block with any bit beyond BITS_PER_BLK silently
+# dropped -- correctness bug above that block count (every such block
+# would read back as "free" and could be handed out while genuinely
+# in use), not just a scale limit.
+for bb in range(bitmap_size):
+    bitmap = bytearray(BLOCK_SIZE)
+    base = bb * BITS_PER_BLK
+    lim = min(base + BITS_PER_BLK, total_blocks)
+    for b in used_blocks:
+        if base <= b < lim:
+            local = b - base
+            bitmap[local // 8] |= (1 << (local % 8))
+    img[(bitmap_block + bb) * BLOCK_SIZE:(bitmap_block + bb + 1) * BLOCK_SIZE] = bitmap
 
 with open(disk_path, "wb") as f:
     f.write(img)

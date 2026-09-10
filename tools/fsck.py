@@ -64,8 +64,9 @@ INDIRECT_PTRS = BLOCK_SIZE // 8   # 512
 JOURNAL_MAGIC = 0x45584a4c
 
 # --- Struct formats -- MUST match kernel/fs/exfs/exfs.h exactly ---
-# Superblock: magic,version,9xQ,fs_uuid[16],journal_block,journal_size,reserved[3984]
-SB_FMT = "<II" + "Q"*9 + "16s" + "QQ" + "3984s"
+# Superblock: magic,version,9xQ,fs_uuid[16],journal_block,journal_size,
+# bitmap_size,reserved[3976]
+SB_FMT = "<II" + "Q"*9 + "16s" + "QQQ" + "3976s"
 SB_SIZE = struct.calcsize(SB_FMT)
 assert SB_SIZE == BLOCK_SIZE, f"superblock format is {SB_SIZE} bytes, expected {BLOCK_SIZE}"
 
@@ -95,7 +96,7 @@ class Superblock:
          self.total_inodes, self.free_inodes, self.inode_table_block,
          self.block_bitmap_block, self.data_start_block,
          self.provenance_block, self.provenance_size, self.fs_uuid,
-         self.journal_block, self.journal_size,
+         self.journal_block, self.journal_size, self.bitmap_size,
          _reserved) = struct.unpack(SB_FMT, raw)
 
 
@@ -176,8 +177,12 @@ def main():
                 "don't intend to boot again first, note that this tool "
                 "does NOT replay the journal for you.")
 
-    # --- 3. Block bitmap ---
-    bitmap = bytearray(read_block(sb.block_bitmap_block))
+    # --- 3. Block bitmap (may span multiple blocks -- see bitmap_size
+    # in exfs.h; older images without it default to 1 block) ---
+    bmap_size = sb.bitmap_size if sb.bitmap_size else 1
+    bitmap = bytearray()
+    for i in range(bmap_size):
+        bitmap += bytearray(read_block(sb.block_bitmap_block + i))
     def bit_get(b):
         return (bitmap[b // 8] >> (b % 8)) & 1
     def bit_clear(b):

@@ -182,13 +182,20 @@ static inline void bitmap_clear(exfs_volume_t *vol, uint64_t blk)
 }
 
 /*
- * flush_bitmap — write the in-memory bitmap back to disk.
- * Only the first bitmap block is used for now (covers 32 768 blocks).
+ * flush_bitmap — write the in-memory bitmap back to disk, across
+ * however many blocks it spans (vol->sb.bitmap_size, defaulting to 1
+ * for a legacy volume formatted before multi-block bitmaps existed
+ * -- see bitmap_size's comment in exfs.h).
  */
 static bool flush_bitmap(exfs_volume_t *vol)
 {
-    return exfs_write_block(vol, vol->sb.block_bitmap_block,
-                            vol->block_bitmap);
+    uint64_t nblocks = vol->sb.bitmap_size ? vol->sb.bitmap_size : 1;
+    bool ok = true;
+    for (uint64_t i = 0; i < nblocks; i++) {
+        ok &= exfs_write_block(vol, vol->sb.block_bitmap_block + i,
+                               vol->block_bitmap + i * EXFS_BLOCK_SIZE);
+    }
+    return ok;
 }
 
 /*
@@ -1845,17 +1852,27 @@ vfs_node_t *exfs_mount(block_device_t *dev, uint32_t lba_base)
         return NULL;
     }
 
-    /* Allocate and load the in-memory block bitmap */
-    uint64_t bitmap_bytes = (vol->sb.total_blocks + 7) / 8;
-    if (bitmap_bytes < EXFS_BLOCK_SIZE) bitmap_bytes = EXFS_BLOCK_SIZE;
+    /* Allocate and load the in-memory block bitmap. Sized in whole
+     * EXFS_BLOCK_SIZE blocks (not just the minimal ceil(total_blocks/8)
+     * bytes a bit count would need) because flush_bitmap()/the load
+     * below do whole-block I/O across vol->sb.bitmap_size blocks --
+     * an allocation smaller than bitmap_size*EXFS_BLOCK_SIZE would
+     * let that read/write past the end of this buffer. */
+    uint64_t bitmap_size = vol->sb.bitmap_size ? vol->sb.bitmap_size : 1;
+    uint64_t bitmap_bytes = bitmap_size * EXFS_BLOCK_SIZE;
     vol->block_bitmap = kzalloc(bitmap_bytes);
     if (!vol->block_bitmap) {
         serial_print("[ExFS] mount: bitmap alloc failed\n");
         kfree(vol);
         return NULL;
     }
-    /* Load the on-disk bitmap block into memory */
-    if (!exfs_read_block(vol, vol->sb.block_bitmap_block, vol->block_bitmap)) {
+    /* Load the on-disk bitmap (bitmap_size blocks) into memory */
+    bool bitmap_ok = true;
+    for (uint64_t i = 0; i < bitmap_size; i++) {
+        bitmap_ok &= exfs_read_block(vol, vol->sb.block_bitmap_block + i,
+                                     vol->block_bitmap + i * EXFS_BLOCK_SIZE);
+    }
+    if (!bitmap_ok) {
         serial_print("[ExFS] mount: bitmap read failed\n");
         kfree(vol->block_bitmap);
         kfree(vol);
@@ -1922,8 +1939,20 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
 
     uint64_t inode_blocks = (EXFS_MAX_INODES * EXFS_INODE_SIZE
                            + EXFS_BLOCK_SIZE - 1) / EXFS_BLOCK_SIZE;
-    uint64_t inode_table_block = 2;
     uint64_t block_bitmap_block = 1;
+    /* How many blocks the bitmap itself needs: one bit per block on
+     * the volume, BITS_PER_BLK (32768) bits per block. A volume of
+     * up to 32768 blocks (128 MiB at 4 KiB blocks) still fits in the
+     * original single block; past that, more are reserved here so
+     * every block on the volume has a bit to represent it -- this is
+     * exactly the gap bitmap_size (see exfs.h) exists to close: it
+     * used to be hardcoded to 1 block, silently leaving blocks
+     * beyond 32768 with no bitmap bit at all (always reading as
+     * "free" — real corruption risk on any volume bigger than that,
+     * not just a scale inconvenience). */
+    uint64_t bitmap_size = (total_blocks + BITS_PER_BLK - 1) / BITS_PER_BLK;
+    if (bitmap_size < 1) bitmap_size = 1;
+    uint64_t inode_table_block = block_bitmap_block + bitmap_size;
     uint64_t provenance_size = 16;
     /* Journal region: 1 header block + EXFS_JOURNAL_MAX_BLOCKS data
      * slots (see EXFS_JOURNAL_MAGIC in exfs.h). Placed right before
@@ -1957,6 +1986,7 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
     sb->free_inodes        = EXFS_MAX_INODES - 1;
     sb->inode_table_block  = inode_table_block;
     sb->block_bitmap_block = block_bitmap_block;
+    sb->bitmap_size        = bitmap_size;
     sb->data_start_block   = data_start_block;
     sb->provenance_block   = provenance_block;
     sb->provenance_size    = provenance_size;
@@ -1978,22 +2008,29 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
             return false;
     }
 
-    /* Block bitmap (block 2) — mark metadata blocks as used */
-    static uint8_t bitmap_buf[EXFS_BLOCK_SIZE];
-    memset(bitmap_buf, 0, EXFS_BLOCK_SIZE);
-    /* Blocks 0 .. data_start_block-1 are reserved for metadata */
-    for (uint64_t b = 0; b < sb->data_start_block && b < BITS_PER_BLK; b++) {
-        bitmap_buf[b / 8] |= (uint8_t)(1u << (b % 8));
+    /* Block bitmap — mark metadata blocks as used, one output block
+     * at a time (bitmap_size blocks total, computed above). Building
+     * it this way rather than into one big buffer keeps this
+     * bounded regardless of volume size. */
+    for (uint64_t bb = 0; bb < bitmap_size; bb++) {
+        static uint8_t bitmap_buf[EXFS_BLOCK_SIZE];
+        memset(bitmap_buf, 0, EXFS_BLOCK_SIZE);
+        uint64_t base = bb * BITS_PER_BLK;
+        uint64_t lim  = base + BITS_PER_BLK;
+        if (lim > sb->total_blocks) lim = sb->total_blocks;
+
+        for (uint64_t b = base; b < lim; b++) {
+            bool used = (b < sb->data_start_block) ||
+                        (b >= sb->provenance_block && b < sb->total_blocks) ||
+                        (b >= sb->journal_block && b < sb->journal_block + sb->journal_size);
+            if (used) {
+                uint64_t local = b - base;
+                bitmap_buf[local / 8] |= (uint8_t)(1u << (local % 8));
+            }
+        }
+        if (!exfs_write_block(&vol, block_bitmap_block + bb, bitmap_buf))
+            return false;
     }
-    for (uint64_t b = sb->provenance_block;
-         b < sb->total_blocks && b < BITS_PER_BLK; b++) {
-        bitmap_buf[b / 8] |= (uint8_t)(1u << (b % 8));
-    }
-    for (uint64_t b = sb->journal_block;
-         b < sb->journal_block + sb->journal_size && b < BITS_PER_BLK; b++) {
-        bitmap_buf[b / 8] |= (uint8_t)(1u << (b % 8));
-    }
-    if (!exfs_write_block(&vol, block_bitmap_block, bitmap_buf)) return false;
 
     /* Zero the journal region (header block's magic == 0 means "no
      * committed transaction to replay" — see exfs_journal_replay). */
