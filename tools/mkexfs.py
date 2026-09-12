@@ -175,10 +175,10 @@ root_dir_block = alloc_block()
 root_inode = make_inode(0o755, 0, [root_dir_block])
 write_inode(0, root_inode)
 
-# bin inode (inode 1) - /bin directory
-bin_dir_block = alloc_block()
-bin_inode = make_inode(0o755, 0, [bin_dir_block])
-write_inode(1, bin_inode)
+# bin inode (inode 1) - /bin directory. The actual inode write
+# happens further down, after all ELF files are placed (see
+# bin_dir_block_nums) -- its block list depends on how many
+# directory blocks /bin ends up needing.
 
 # var/log directory inodes
 var_dir_block = alloc_block()
@@ -238,10 +238,34 @@ de_rahu = struct.pack("<QHBB256s", 4, 4, 1, 0, b'rahu'+b'\x00'*252)
 var_dir_data[len(de_log):len(de_log)+len(de_rahu)] = de_rahu
 write_block(var_dir_block, var_dir_data)
 
-# Write ELF files into /bin/
+# Write ELF files into /bin/. bin_dir_blocks holds one bytearray
+# per directory block, each capped at floor(BLOCK_SIZE/dirent_size)
+# = 15 whole dirents (268-byte dirents don't divide 4096 evenly) --
+# starting a new block rather than letting a partial dirent spill
+# past the block boundary. A single fixed block silently lost any
+# 16th+ entry here before this: write_block() truncates to exactly
+# BLOCK_SIZE, and the kernel's own dirent scan only ever considers
+# offsets where a FULL dirent fits (off + sizeof(dirent) <=
+# BLOCK_SIZE), so a 16th entry crammed in past that boundary was
+# neither loadable nor visible to any lookup/readdir -- its data and
+# inode were still written correctly, just permanently unreachable
+# (a real, confirmed-in-testing orphaned-inode bug, not hypothetical:
+# adding a 16th binary here was what first exposed it).
 next_ino = 7
-bin_dir_data = bytearray(BLOCK_SIZE)
-bin_dir_offset = 0
+DIRENT_SIZE = 268
+DIRENTS_PER_BLOCK = BLOCK_SIZE // DIRENT_SIZE  # 15
+
+bin_dir_blocks = [bytearray(BLOCK_SIZE)]
+bin_dir_count_in_block = 0
+
+def _bin_dir_add(de):
+    global bin_dir_count_in_block
+    if bin_dir_count_in_block >= DIRENTS_PER_BLOCK:
+        bin_dir_blocks.append(bytearray(BLOCK_SIZE))
+        bin_dir_count_in_block = 0
+    off = bin_dir_count_in_block * DIRENT_SIZE
+    bin_dir_blocks[-1][off:off+DIRENT_SIZE] = de
+    bin_dir_count_in_block += 1
 
 # Map of ELF filename → disk name
 NAME_MAP = {
@@ -270,13 +294,28 @@ for elf_path in elf_paths:
     de = struct.pack("<QHBB256s",
         next_ino, len(name_b), 0, 0,
         name_b + b'\x00'*(256-len(name_b)))
-    bin_dir_data[bin_dir_offset:bin_dir_offset+len(de)] = de
-    bin_dir_offset += len(de)
+    _bin_dir_add(de)
 
     print(f"  added /bin/{disk_name} ({size} bytes, {nblocks} blocks)")
     next_ino += 1
 
-write_block(bin_dir_block, bin_dir_data)
+bin_dir_block_nums = []
+for blk_data in bin_dir_blocks:
+    blk_num = alloc_block()
+    write_block(blk_num, blk_data)
+    bin_dir_block_nums.append(blk_num)
+
+if len(bin_dir_block_nums) > 12:
+    raise Exception(f"/bin needs {len(bin_dir_block_nums)} directory "
+                     f"blocks (more than {len(elf_paths)} entries fit "
+                     f"in 12 direct blocks at {DIRENTS_PER_BLOCK} "
+                     f"entries/block) -- this offline tool only "
+                     f"writes direct blocks for directories, unlike "
+                     f"the runtime driver (see EXFS_MAX_DIR_BLOCKS in "
+                     f"exfs.h)")
+
+bin_inode = make_inode(0o755, 0, bin_dir_block_nums)
+write_inode(1, bin_inode)
 
 # Optional: bake an embedded test script (e.g. a directory-growth
 # stress test for exercising EXFS_MAX_DIR_BLOCKS -- see

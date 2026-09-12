@@ -427,6 +427,35 @@ qemu-disk: build/exploidus.iso build/disk.img
 build/usbstick.img:
 	dd if=/dev/zero of=build/usbstick.img bs=1M count=8
 
+# One-off verification target for the multi-block bitmap fix (see
+# bitmap_size in kernel/fs/exfs/exfs.h): builds a separate 200 MiB
+# disk image -- well past the 128 MiB (32768-block) size where a
+# single bitmap block stops being enough -- using the same ELFs the
+# normal build/disk.img gets, boots against IT instead, and leaves
+# it in place afterward for `python3 tools/fsck.py build/bigdisk.img`
+# to check offline. Deliberately NOT wired into build/disk.img or the
+# `all`/`qemu-disk` targets: this is much bigger and slower to boot
+# than the normal 64 MiB dev image, so keeping it separate means
+# everyday `make`/`make qemu-disk` stays fast. Re-run
+# `make bigdisk-test` any time to rebuild it from the current ELFs.
+build/bigdisk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+	@dd if=/dev/zero of=build/bigdisk.img bs=1M count=200 2>/dev/null
+	@python3 tools/mkexfs.py build/bigdisk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+	@echo "[DISK] build/bigdisk.img ready (200 MiB, past the 32768-block bitmap threshold)"
+
+bigdisk-test: build/exploidus.iso build/bigdisk.img
+	qemu-system-x86_64 \
+	    -cdrom build/exploidus.iso \
+	    -netdev user,id=n0,hostfwd=tcp::8080-:80 \
+	    -device e1000,netdev=n0 \
+	    -drive file=build/bigdisk.img,format=raw,if=ide,index=0 \
+	    -m 256M \
+	    -device piix3-usb-uhci -device usb-tablet \
+	    -serial stdio \
+	    -accel kvm -accel tcg,thread=multi \
+	    -cpu qemu64,+rdrand \
+	    -object filter-dump,id=f1,netdev=n0,file=/tmp/qemu-net.pcap
+
 qemu-usb-storage-test: build/exploidus.iso build/disk.img build/usbstick.img
 	qemu-system-x86_64 \
 	    -cdrom build/exploidus.iso \
