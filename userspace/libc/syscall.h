@@ -351,6 +351,44 @@ static inline int64_t spawn_intent(const char *path, uint64_t intent)
     return syscall2(SYS_SPAWN, (uint64_t)(uintptr_t)path, intent);
 }
 
+/*
+ * execve() -- real POSIX exec: replaces the calling process's own
+ * image with the program at *path*, passing argv/envp through. Same
+ * PID, old memory freed. Unlike spawn()/spawn_args() above (which
+ * start a new, separate process), a successful execve() never
+ * returns to the caller at all -- the caller's own code is gone,
+ * replaced by the new program. Only returns (with -1/-2) on failure,
+ * in which case the calling process's image is unchanged.
+ *
+ * argv/envp are NULL-terminated arrays of NUL-terminated strings;
+ * either may be passed as NULL (equivalent to an empty/absent list --
+ * the kernel falls back to argv = [path] when argv is NULL).
+ */
+#define SYS_EXECVE 98
+static inline int64_t execve(const char *path, const char *const argv[],
+                              const char *const envp[])
+{
+    return syscall3(SYS_EXECVE, (uint64_t)(uintptr_t)path,
+                     (uint64_t)(uintptr_t)argv, (uint64_t)(uintptr_t)envp);
+}
+
+/*
+ * meminfo() -- real physical-memory + kernel-heap numbers, backing
+ * the shell's `free` command. Mirrors meminfo_t from
+ * kernel/mm/pmm.h by hand, same convention as vfs_stat_t above --
+ * kernel and userspace build separately, no shared header.
+ */
+#define SYS_MEMINFO 99
+typedef struct {
+    uint64_t total_kb;
+    uint64_t free_kb;
+    uint64_t used_kb;
+} meminfo_t;
+static inline int meminfo(meminfo_t *mi)
+{
+    return (int)syscall1(SYS_MEMINFO, (uint64_t)(uintptr_t)mi);
+}
+
 /*  lseek / stat / dup  */
 #define SEEK_SET 0
 #define SEEK_CUR 1

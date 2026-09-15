@@ -145,3 +145,8 @@ uint64_t pmm_free_pages(mem_zone_t zone)
     if (zone >= ZONE_COUNT) return 0;
     return g_zone_free[zone];
 }
+
+uint64_t pmm_total_pages(void)
+{
+    return g_frame_count;
+}

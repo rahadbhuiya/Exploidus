@@ -138,8 +138,32 @@
                                     * exfs_op_open(). See
                                     * exfs_debug_corrupt_file() in
                                     * kernel/fs/exfs/exfs.c. */
+#define SYS_EXECVE         98   /* real execve(path, argv, envp): loads
+                                  * the new image from *path* (unlike
+                                  * SYS_EXEC, which takes an
+                                  * already-in-memory ELF buffer) and
+                                  * replaces the CALLING process's own
+                                  * address space in place -- same PID,
+                                  * old image freed, not leaked. Unlike
+                                  * SYS_EXECV (60), which spawns a new
+                                  * child process instead of replacing
+                                  * the caller. rdi=path, rsi=argv
+                                  * (NULL-terminated array, or 0),
+                                  * rdx=envp (NULL-terminated array, or
+                                  * 0). Does not return on success. See
+                                  * sys_execve_impl() in
+                                  * kernel/proc/fork_exec.c. */
+#define SYS_MEMINFO        99   /* fill a meminfo_t (kernel/mm/pmm.h)
+                                  * at rdi with real physical-memory +
+                                  * kernel-heap stats -- backs the
+                                  * shell's `free` command, which used
+                                  * to print a hardcoded placeholder.
+                                  * rdi = meminfo_t* (user pointer).
+                                  * Returns 0 on success, -1 on a bad
+                                  * pointer. See sys_meminfo() in
+                                  * kernel/syscall/table.c. */
 
-#define SYS_COUNT          98
+#define SYS_COUNT          100
 
 
 /*

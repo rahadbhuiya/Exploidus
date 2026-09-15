@@ -46,7 +46,10 @@ Exploidus treats it as a foundation.
 - [x] ExFS: crash-consistent journal (verified with deterministic
       crash-injection testing), indirect/double-indirect block
       addressing, atomic rename()
-- [ ] exec with argv passing (full execve)
+- [x] exec with argv passing (full execve) — SYS_EXECVE(path, argv,
+      envp): replaces the calling process's own image in place (same
+      PID, old address space freed), unlike SYS_EXECV/spawn which
+      start a new child process
 - [ ] yolish — add more builtins (file I/O, networking)
 - [ ] Optional GUI — enable/disable on demand
 - [ ] Smooth horizontal scaling via HuddleCluster
