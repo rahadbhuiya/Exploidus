@@ -16,6 +16,7 @@
 #include "../cnsl/cnsl.h"
 #include "../fs/vfs/vfs.h"
 #include "../mm/kmalloc.h"
+#include "../mm/pmm.h"
 #include "../elf/elf.h"
 #include "../ipc/ipc.h"
 #include "../drivers/fb_console.h"
@@ -1083,6 +1084,109 @@ static int64_t sys_execv(syscall_frame_t *f)
     return (int64_t)child->pid;
 }
 
+/*
+ * sys_execve -- real execve(path, argv, envp): replaces the CALLING
+ * process in place (see sys_execve_impl() in kernel/proc/fork_exec.c),
+ * unlike sys_execv() above, which spawns a separate child process.
+ *
+ * All user memory (path string, argv array + its strings, envp array
+ * + its strings) is copied into fixed kernel-owned buffers here,
+ * *before* handing off to sys_execve_impl() -- that function switches
+ * CR3 away from the calling process's own page tables partway
+ * through (see its comment), so any user pointer still needs to be
+ * read under the caller's own PML4, exactly like sys_execv() already
+ * does for argv.
+ */
+static __attribute__((unused)) int64_t sys_execve(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, 1)) return -1;
+    const char *upath = (const char *)(uintptr_t)f->rdi;
+    static char kpath[512];
+    int plen = 0;
+    while (plen < 511 && upath[plen]) { kpath[plen] = upath[plen]; plen++; }
+    kpath[plen] = 0;
+    if (plen == 0) return -1;
+
+    static char        argv_store[4096];
+    static const char *kargv[32];
+    int argc = 0, aboff = 0;
+    if (f->rsi && uptr_ok(f->rsi, 8)) {
+        uint64_t *uargv = (uint64_t *)(uintptr_t)f->rsi;
+        while (argc < 31 && uargv[argc]) {
+            const char *uarg = (const char *)(uintptr_t)uargv[argc];
+            if (!uptr_ok((uint64_t)(uintptr_t)uarg, 1)) break;
+            kargv[argc] = argv_store + aboff;
+            int l = 0;
+            while (aboff < 4094 && uarg[l]) argv_store[aboff++] = uarg[l++];
+            argv_store[aboff++] = 0;
+            argc++;
+        }
+    }
+    kargv[argc] = (const char *)0;
+    /* Fall back to argv = [path] when the caller passed none, same
+     * convention as sys_execv() and elf_load()'s own default. */
+    if (argc == 0) { kargv[0] = kpath; kargv[1] = (const char *)0; }
+
+    static char        envp_store[4096];
+    static const char *kenvp[32];
+    int envc = 0, eboff = 0;
+    if (f->rdx && uptr_ok(f->rdx, 8)) {
+        uint64_t *uenvp = (uint64_t *)(uintptr_t)f->rdx;
+        while (envc < 31 && uenvp[envc]) {
+            const char *uenv = (const char *)(uintptr_t)uenvp[envc];
+            if (!uptr_ok((uint64_t)(uintptr_t)uenv, 1)) break;
+            kenvp[envc] = envp_store + eboff;
+            int l = 0;
+            while (eboff < 4094 && uenv[l]) envp_store[eboff++] = uenv[l++];
+            envp_store[eboff++] = 0;
+            envc++;
+        }
+    }
+    kenvp[envc] = (const char *)0;
+
+    return sys_execve_impl(kpath, kargv, envc ? kenvp : (const char **)0);
+}
+
+/*
+ * sys_meminfo -- fills a meminfo_t (kernel/mm/pmm.h) at rdi with real
+ * physical-memory numbers. Backs the shell's `free` command, which
+ * used to print a hardcoded "262144 / -- / --" placeholder
+ * (cmd_ext_free() in userspace/shell/exploish_cmds.c) with no real
+ * syscall behind it at all.
+ *
+ * Kernel-heap (kmalloc) usage is deliberately NOT included here:
+ * kmalloc_total_used() (kernel/mm/kmalloc.c) only exists when built
+ * with DEBUG_HEAP defined, which this tree isn't by default -- see
+ * kernel/mm/kmalloc.h. Wiring it in would mean turning DEBUG_HEAP on
+ * kernel-wide as a side effect of this fix, which is its own separate
+ * decision.
+ */
+static __attribute__((unused)) int64_t sys_meminfo(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, sizeof(meminfo_t))) return -1;
+
+    uint64_t total_pages = pmm_total_pages();
+    uint64_t free_pages  = pmm_free_pages(ZONE_GREEN)
+                          + pmm_free_pages(ZONE_YELLOW)
+                          + pmm_free_pages(ZONE_RED);
+    /* Guard against free > total (shouldn't happen, but this feeds a
+     * subtraction below and used_kb wrapping to a huge number would
+     * be a worse, more confusing failure mode than just clamping). */
+    if (free_pages > total_pages) free_pages = total_pages;
+
+    meminfo_t out;
+    out.total_kb = (total_pages * PAGE_SIZE) / 1024;
+    out.free_kb  = (free_pages  * PAGE_SIZE) / 1024;
+    out.used_kb  = out.total_kb - out.free_kb;
+
+    /* Build the whole struct locally, then copy out in one shot --
+     * same reasoning as sys_execve()'s user-copy-then-switch pattern
+     * elsewhere in this file: never write partially-computed state
+     * straight into user memory. */
+    *(meminfo_t *)(uintptr_t)f->rdi = out;
+    return 0;
+}
+
 static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
 {
     if (!uptr_ok(f->rdi, 1)) { serial_print("[SPAWN] uptr fail\n"); return -1; }
@@ -1642,6 +1746,8 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_DEBUG_EXFS_CORRUPT] = sys_debug_exfs_corrupt,
     [SYS_HTTP_DOWNLOAD]= sys_http_download,
     [SYS_EXECV]        = sys_execv,
+    [SYS_EXECVE]       = sys_execve,
+    [SYS_MEMINFO]      = sys_meminfo,
     /* GUI Phase 1 */
     [SYS_IPC_SEND]     = sys_ipc_send,
     [SYS_IPC_RECV]     = sys_ipc_recv,

@@ -99,6 +99,8 @@ CHMODTEST_C_SRCS := userspace/bin/chmodtest.c
 GIDTEST_C_SRCS := userspace/bin/gidtest.c
 ASLRTEST_C_SRCS := userspace/bin/aslrtest.c
 UDPTEST_C_SRCS := userspace/bin/udptest.c
+EXECTARGET_C_SRCS := userspace/bin/exectarget.c
+EXECTEST_C_SRCS := userspace/bin/exectest.c
 LUA_C_SRCS     := userspace/lua/lua-5.5.0/onelua.c
 AUDITD_C_SRCS  := userspace/bin/auditd.c
 INIT_C_SRCS    := userspace/bin/init.c
@@ -137,6 +139,8 @@ CT_OBJS  := $(patsubst %.c,   build/%.o, $(CHMODTEST_C_SRCS))
 GT_OBJS  := $(patsubst %.c,   build/%.o, $(GIDTEST_C_SRCS))
 AT_OBJS  := $(patsubst %.c,   build/%.o, $(ASLRTEST_C_SRCS))
 UT_OBJS  := $(patsubst %.c,   build/%.o, $(UDPTEST_C_SRCS))
+EXTG_OBJS := $(patsubst %.c,  build/%.o, $(EXECTARGET_C_SRCS))
+EXT_OBJS  := $(patsubst %.c,  build/%.o, $(EXECTEST_C_SRCS))
 LUA_OBJS := $(patsubst %.c,   build/%.o, $(LUA_C_SRCS))
 AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
 IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
@@ -159,7 +163,7 @@ ALL_KOBJS := $(KC_OBJS) $(KA_OBJS)
 # PRIMARY TARGETS
 
 
-all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+all: build/exploidus.elf build/userspace/shell/exploish.elf build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/yolish/ys.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf build/userspace/bin/exectarget.elf build/userspace/bin/exectest.elf
 
 build/userspace/bin/httptest.elf: $(BIN_OBJS) $(HTT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
@@ -220,6 +224,18 @@ build/userspace/bin/udptest.elf: $(BIN_OBJS) $(UT_OBJS) userspace/bin/pie.ld
 	@mkdir -p $(dir $@)
 	@echo "[LD]  udptest -> $@"
 	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(UT_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/exectarget.elf: $(BIN_OBJS) $(EXTG_OBJS) userspace/bin/pie.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  exectarget -> $@"
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(EXTG_OBJS)
+	x86_64-elf-strip --strip-debug $@
+
+build/userspace/bin/exectest.elf: $(BIN_OBJS) $(EXT_OBJS) userspace/bin/pie.ld
+	@mkdir -p $(dir $@)
+	@echo "[LD]  exectest -> $@"
+	$(LD) -T userspace/bin/pie.ld $(PIE_LDFLAGS) -o $@ $(BIN_OBJS) $(EXT_OBJS)
 	x86_64-elf-strip --strip-debug $@
 
 build/userspace/lua/lua.elf: $(BIN_OBJS) $(LUA_OBJS) userspace/bin/pie.ld
@@ -401,11 +417,11 @@ clean:
 # DISK IMAGE
 
 
-build/disk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+build/disk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf build/userspace/bin/exectarget.elf build/userspace/bin/exectest.elf
 	@mkdir -p $(dir $@)
 	@echo "[DISK] Creating 64M ExFS disk image..."
 	@qemu-img create -f raw build/disk.img 64M
-	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+	@python3 tools/mkexfs.py build/disk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf build/userspace/bin/exectarget.elf build/userspace/bin/exectest.elf
 	@echo "[DISK] build/disk.img ready"
 
 qemu-disk: build/exploidus.iso build/disk.img
@@ -438,9 +454,9 @@ build/usbstick.img:
 # than the normal 64 MiB dev image, so keeping it separate means
 # everyday `make`/`make qemu-disk` stays fast. Re-run
 # `make bigdisk-test` any time to rebuild it from the current ELFs.
-build/bigdisk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+build/bigdisk.img: tools/mkexfs.py build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf build/userspace/bin/exectarget.elf build/userspace/bin/exectest.elf
 	@dd if=/dev/zero of=build/bigdisk.img bs=1M count=200 2>/dev/null
-	@python3 tools/mkexfs.py build/bigdisk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf
+	@python3 tools/mkexfs.py build/bigdisk.img build/userspace/bin/hello.elf build/userspace/bin/auditd.elf build/userspace/bin/init.elf build/userspace/bin/httpd.elf build/userspace/bin/httptest.elf build/userspace/shell/exploish.elf build/userspace/bin/rahu.elf build/userspace/compositor/compositor.elf build/userspace/bin/gui_demo.elf build/userspace/bin/terminal.elf build/userspace/lua/lua.elf build/userspace/bin/sigtest.elf build/userspace/bin/chmodtest.elf build/userspace/bin/gidtest.elf build/userspace/bin/udptest.elf build/userspace/bin/aslrtest.elf build/userspace/bin/exectarget.elf build/userspace/bin/exectest.elf
 	@echo "[DISK] build/bigdisk.img ready (200 MiB, past the 32768-block bitmap threshold)"
 
 bigdisk-test: build/exploidus.iso build/bigdisk.img

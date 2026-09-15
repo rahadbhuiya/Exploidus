@@ -8,7 +8,13 @@
 #include "../audit/audit.h"
 #include "../drivers/serial.h"
 #include "../arch/x86_64/idt.h"
+#include "../fs/vfs/vfs.h"
 #include <string.h>
+
+/* Same cap as sys_execv()'s in-memory ELF buffer (kernel/syscall/table.c)
+ * -- kept identical so both exec paths accept the same maximum binary
+ * size until there's a real reason for them to differ. */
+#define EXECVE_MAX_IMAGE (640 * 1024)
 
 #define PAGE_SIZE 4096UL
 
@@ -349,6 +355,111 @@ int64_t sys_exec_impl(const uint8_t *elf_data, uint64_t elf_size)
 }
 
 
+/*  execve()   */
+
+
+int64_t sys_execve_impl(const char *path, const char **argv,
+                         const char **envp)
+{
+    if (!g_current_proc) return -1;
+    if (!path || !path[0]) return -1;
+
+    uint64_t old_cr3 = g_current_proc->cr3;
+
+    /*
+     * elf_load() (kernel/elf/elf.c) writes segment data and the new
+     * stack straight into ZONE_RED physical pages via a raw kernel
+     * pointer cast -- e.g. memset((void*)phys, ...) -- with no
+     * virtual-address translation. That only works with a full
+     * identity-mapped view of physical memory active. The calling
+     * process's own restricted PML4 (make_isolated_pml4() in elf.c)
+     * only identity-maps the low 32MB plus whatever pages it already
+     * has mapped for its own segments/stack, so a ZONE_RED page
+     * anywhere above that would fault the instant elf_load() touches
+     * it. This is the exact same class of bug sys_fork_impl() (above,
+     * this file) already had to work around for its own page-table
+     * walk -- same fix here: do the whole load under the kernel's own
+     * PML4, and switch to the new image's PML4 only at the very last
+     * moment, inside jump_to_userspace().
+     */
+    uint64_t kpml4_phys = vmm_get_kernel_pml4();
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(kpml4_phys) : "memory");
+
+    int fd = vfs_open(path, 0);
+    if (fd < 0) {
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(old_cr3) : "memory");
+        return -2;
+    }
+
+    uint8_t *buf = kmalloc(EXECVE_MAX_IMAGE);
+    if (!buf) {
+        vfs_close(fd);
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(old_cr3) : "memory");
+        return -1;
+    }
+
+    int64_t sz = vfs_read(fd, buf, EXECVE_MAX_IMAGE);
+    vfs_close(fd);
+    if (sz <= 0) {
+        kfree(buf);
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(old_cr3) : "memory");
+        return -1;
+    }
+
+    uint64_t new_pml4 = 0, entry = 0, stk_top = 0;
+    if (!elf_load(buf, (uint64_t)sz, &new_pml4, &entry, &stk_top, argv, envp)) {
+        serial_print("[EXECVE] ELF load failed\n");
+        kfree(buf);
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(old_cr3) : "memory");
+        return -1;
+    }
+    kfree(buf);
+
+    /*
+     * Point of no return: the new image is fully built and valid.
+     * Free the OLD image's address space now -- this is what makes
+     * this a real execve() rather than spawn()-with-extra-steps: the
+     * process keeps its PID, but its previous memory is actually
+     * released, not leaked. Still running on kpml4 here, so
+     * free_user_address_space()'s raw physical-pointer walk (same
+     * helper sys_fork_impl()'s OOM path uses, above) is safe.
+     */
+    free_user_address_space(old_cr3);
+
+    g_current_proc->cr3            = new_pml4;
+    g_current_proc->user_entry     = entry;
+    g_current_proc->user_stack_top = stk_top;
+
+    /*
+     * POSIX execve() semantics: a new program image starts with
+     * default signal dispositions, not the old program's handler
+     * table (whose addresses belong to memory that no longer
+     * exists), and with no signal-handler frame in flight.
+     */
+    for (int i = 0; i < 16; i++) g_current_proc->sig_handlers[i] = 0;
+    g_current_proc->sig_in_progress  = false;
+    g_current_proc->pending_signals  = 0;
+
+    audit_record(AUDIT_PROC_EXEC, g_current_proc->pid, entry, 0);
+
+    serial_print("[EXECVE] pid=");
+    serial_printhex((uint64_t)g_current_proc->pid);
+    serial_print(" new entry=");
+    serial_printhex(entry);
+    serial_print("\n");
+
+    /*
+     * Do NOT switch CR3 here -- jump_to_userspace() does it
+     * internally, right before iretq, while still executing on the
+     * kernel stack (same reasoning as sys_exec_impl() above).
+     */
+    __asm__ volatile("cli\njmp jump_to_userspace\n"
+                      : : "D"(entry), "S"(stk_top), "d"(new_pml4));
+
+    __builtin_unreachable();
+}
+
+
 /*  waitpid()   */
 
 
@@ -364,6 +475,39 @@ int64_t sys_waitpid_impl(uint32_t pid)
     child = proc_get(pid);
     if (!child) return -1;
     int code = child->exit_code;
+
+    /*
+     * BUG FIX: reaping a zombie used to just mark the slot UNUSED and
+     * drop the pid -- the child's own address space (child->cr3) was
+     * never freed, anywhere. proc_exit() (kernel/proc/process.c)
+     * releases IPC/FPU state and fds, but not the page tables or the
+     * data/stack/text pages under them. Every process that ever ran
+     * and got waitpid()'d on leaked its final image's worth of
+     * physical memory, permanently -- this had nothing to do with
+     * execve() specifically (SYS_EXECVE frees each *intermediate*
+     * image correctly, see sys_execve_impl() above), it's the exit
+     * path itself that was missing this.
+     *
+     * Same physical-identity-map reasoning as everywhere else in this
+     * file: free_user_address_space() dereferences ZONE_RED physical
+     * pages directly, which only works with the kernel's own PML4
+     * active, not the WAITING PARENT's (that's whose cr3 is actually
+     * live here -- sys_waitpid_impl() runs in the caller's context,
+     * not the child's). Switch over, free, switch back -- must
+     * restore the caller's own cr3 before returning, since normal
+     * syscall return goes back to the caller's *user-mode* code,
+     * which isn't mapped in the kernel's PML4.
+     */
+    if (child->cr3) {
+        uint64_t caller_cr3 = g_current_proc ? g_current_proc->cr3 : 0;
+        uint64_t kpml4_phys = vmm_get_kernel_pml4();
+        __asm__ volatile ("mov %0, %%cr3" :: "r"(kpml4_phys) : "memory");
+        free_user_address_space(child->cr3);
+        if (caller_cr3)
+            __asm__ volatile ("mov %0, %%cr3" :: "r"(caller_cr3) : "memory");
+        child->cr3 = 0;
+    }
+
     child->state = PROC_UNUSED;
     child->pid   = 0;
     return (int64_t)code;

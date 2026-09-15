@@ -471,8 +471,19 @@ void cmd_ext_mkfs(const char *args)
 }
 
 void cmd_ext_free(void) {
+    meminfo_t mi;
+    if (meminfo(&mi) != 0) {
+        _println("free: SYS_MEMINFO failed");
+        return;
+    }
     _println("              total        used        free");
-    _println("Mem:          262144      --          --");
+    _print("Mem:          ");
+    _print_int((int64_t)mi.total_kb);
+    _print("      ");
+    _print_int((int64_t)mi.used_kb);
+    _print("      ");
+    _print_int((int64_t)mi.free_kb);
+    _println("");
 }
 
 void cmd_ext_uptime(void) {

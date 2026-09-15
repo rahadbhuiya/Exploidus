@@ -485,6 +485,54 @@ is the summary.
   scheduler-level idle-vs-running distinction Exploidus doesn't make
   yet, not just a display bug.
 
+## Full execve (SYS_EXECVE)
+
+The original `exec()` syscall (`SYS_EXEC`) took an already-in-memory
+ELF buffer, ignored any caller-supplied argv/envp (always ran with a
+default `argv[0] = "exploidus"`), and — while auditing it for this —
+turned out to leak the old address space entirely: it swapped
+`cr3` to the new image and never freed the pages the old one was
+using. `spawn()`/`SYS_EXECV` covered argv passing, but only by
+starting a brand-new child process, which isn't real `exec()`
+semantics (the caller keeps running under its own PID).
+
+New `SYS_EXECVE(path, argv, envp)` (`sys_execve_impl()` in
+`kernel/proc/fork_exec.c`) is real POSIX-style exec:
+
+- Loads the new image from a **path** (through the VFS), not a
+  pre-loaded buffer.
+- Passes caller-supplied **argv/envp** through to `elf_load()`.
+- Replaces the **calling process's own** address space in place —
+  same PID, not a new child.
+- **Frees the old address space** before switching over, so a
+  process that calls `execve()` repeatedly no longer leaks memory
+  every time.
+- Resets signal handlers and any in-flight signal-resume state to
+  defaults, matching POSIX `execve()` — the old handler table points
+  at addresses in memory that no longer exists.
+
+**A real bug this surfaced**: `elf_load()` writes segment data and
+the new stack into freshly allocated `ZONE_RED` physical pages via a
+raw kernel pointer cast (`memset((void*)phys, ...)`) with no virtual
+translation — safe only with a full identity-mapped view of physical
+memory active. A process's own restricted PML4
+(`make_isolated_pml4()`) only identity-maps the low 32MB plus its own
+already-mapped pages, so this would fault the instant a `ZONE_RED`
+page landed above that — the exact same class of bug `fork()`'s
+page-table clone already had to work around (see the `sys_fork_impl`
+comment above). `SYS_EXECVE` runs the whole load, and the old-image
+teardown, under the kernel's own PML4, switching to the new image's
+PML4 only at the very last moment inside `jump_to_userspace()`. The
+original `SYS_EXEC` path calls `elf_load()` without this guard and
+most likely has the same latent fault under memory pressure; not
+touched in this pass since fixing it means changing `SYS_EXEC`'s
+existing (already-in-memory-buffer) calling convention, not just
+adding a new syscall.
+
+Userspace: `execve(path, argv, envp)` in `userspace/libc/syscall.h`.
+`argv`/`envp` may be `NULL`; the kernel falls back to `argv = [path]`
+when `argv` is `NULL`, matching `SYS_EXECV`'s existing convention.
+
 ## Resolved: function pointers now survive ASLR (real relocation processing + static-PIE)
 
 The loader used to give ET_EXEC binaries ASLR (random load base) by
