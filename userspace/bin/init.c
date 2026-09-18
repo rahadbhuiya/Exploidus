@@ -42,6 +42,7 @@ void main(void)
     /* System daemons — always start */
     start_daemon("auditd", "/bin/auditd");
     start_daemon("httpd",  "/bin/httpd");
+    start_daemon("sshd",   "/bin/sshd");
 
     println("");
     println("[INIT] All services started.");

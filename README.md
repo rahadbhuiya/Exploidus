@@ -485,6 +485,217 @@ is the summary.
   scheduler-level idle-vs-running distinction Exploidus doesn't make
   yet, not just a display bug.
 
+## Resolved: zombie reaping leaked every process's address space
+
+Found while using the new `free` command (below) to sanity-check
+`SYS_EXECVE` for leaks: running one `exectest` (spawn + 4 execve
+hops + exit + shell's `waitpid()`) left `used_kb` permanently ~320KB
+higher than before, every single time.
+
+Traced it to `sys_waitpid_impl()` (`kernel/proc/fork_exec.c`) — reaping
+a zombie just set its process-table slot to `PROC_UNUSED` and cleared
+`pid`. `proc_exit()` (`kernel/proc/process.c`) releases IPC state, FPU
+state, and file descriptors, but neither it nor the reap path ever
+called `free_user_address_space()` on the process's own `cr3`. This
+had nothing to do with `SYS_EXECVE` specifically — `SYS_EXECVE`
+already frees each *intermediate* image correctly (that's the whole
+point of the fix above) — it's that **no code path anywhere freed a
+process's *final* address space** once it exited. Every process that
+ever ran and got `waitpid()`'d on leaked its last image's memory,
+permanently, forever — this bug predates this session's changes
+entirely and would affect plain `spawn()`+`waitpid()` with zero
+`execve()` calls involved.
+
+Fix: `sys_waitpid_impl()` now frees `child->cr3` right before marking
+the slot `UNUSED`, under the kernel's own PML4 (same
+identity-map reasoning as `SYS_EXECVE`'s teardown — the *waiting
+parent's* PML4 is what's live at that point, not the child's, and
+`free_user_address_space()` needs the full map), switching back to
+the caller's own `cr3` before returning since the syscall return path
+goes to the caller's user-mode code.
+
+**Not fixed by this**: a process that exits with no parent ever
+calling `waitpid()` on it (an orphaned background daemon, or a parent
+that dies first) still leaks — nothing currently reaps zombies except
+an explicit `waitpid()` call. That's a separate gap (no init-style
+re-parenting / no periodic zombie sweep) from the one fixed here.
+
+## sshd — protocol version exchange (no encryption yet, on purpose)
+
+New `userspace/bin/sshd.c`, listening on port 22, auto-started by
+`init` alongside `auditd`/`httpd`. Implements RFC 4253 §4.2's
+identification-string exchange: sends `SSH-2.0-Exploidus_0.1\r\n`,
+reads the connecting client's own identification line, validates it
+starts with `SSH-` and carries a recognized protoversion (`2.0` or
+the legacy `1.99` compat marker), and logs the client's reported
+software version. This is genuine SSH protocol behavior, not a
+simulation of one — the identification exchange is specifically the
+one part of the real protocol defined to happen in plaintext, before
+any key exchange.
+
+**Deliberately stops there.** A real SSH server continues into
+`SSH_MSG_KEXINIT` / Diffie-Hellman (or Curve25519) key exchange, then
+a symmetric cipher (AES/ChaCha20), a MAC (HMAC), and host-key
+signatures (Ed25519/RSA) for the rest of the session. None of those
+primitives exist anywhere in this codebase — `kernel/crypto/` is
+BLAKE3 (a hash) only. Hand-writing cipher/KEX/signature code from
+scratch inline in protocol code, with no independent review and no
+verification against known test vectors, is exactly how a "secure
+shell" ends up not actually being secure — so `sshd` completes the
+identification exchange, logs what it learned, and closes the
+connection with an honest message instead of accepting cleartext
+input a real SSH client would never send unencrypted after this
+point.
+
+Next real step (separate, not started): port a small, well-reviewed
+reference crypto implementation (Curve25519 + ChaCha20-Poly1305 is
+the modern SSH baseline) and verify each primitive against its own
+published test vectors *before* wiring any of it into protocol code.
+
+## Resolved: idle shell prompt starved every background daemon
+
+Found chasing the SSH hang above: `curl` against `httpd` (port 8080)
+came back with nothing either — so this had nothing to do with
+`sshd`'s own logic, it was systemic. Traced to `kernel_read()`
+(`kernel/syscall/table.c`, backs `SYS_READ` on fd 0): when no key was
+waiting, both its raw-mode and cooked-mode blocking loops did a bare
+
+```
+__asm__ volatile ("sti; hlt; cli" ::: "memory");
+```
+
+and looped back to check the keyboard again — **never calling
+`sched_yield()`**. `hlt` returns control to the same instruction
+stream on the next interrupt; it does not consult the scheduler.  So
+a process blocked reading stdin (the shell, sitting idle at its
+prompt) stayed `g_current_proc` continuously, silently re-grabbing
+execution after every timer/keyboard/network IRQ returned.
+`sched_next()` never got called on its behalf, so no other `READY`
+process — `sshd`/`httpd` sitting in their own `accept()` loop, which
+*does* call `sched_yield()` — ever got a turn: with nothing to switch
+away *from* (the shell), their own yields had nowhere to hand control
+to. Net effect: a connection could sit fully `ESTABLISHED` with data
+waiting, and the daemon that owned it would simply never get
+scheduled to notice, for as long as a human was sitting idle at the
+shell prompt — which in an interactive session is effectively always.
+
+Fixed by replacing both `hlt` spins in `kernel_read()` with
+`sched_yield()` (which still halts when there's truly nothing else
+`READY` — see its own comment in `kernel/proc/scheduler.c` — so idle
+CPU usage doesn't regress). Also fixed the identical pattern in
+`sys_http_get`/`sys_http_download`'s own receive loops
+(`kernel/syscall/table.c`), which had copied the same bare-`hlt` idiom
+for the same reason and would have starved everything else for the
+duration of any `wget`-style download.
+
+## Resolved: `netbuf` pool race between IRQ-context `net_poll()` and process-context sends
+
+Found right after the scheduler-starvation fix above: `curl` against
+`httpd` crashed the kernel with a General Protection Fault in
+`tcp_send_segment()`, writing `hdr->src_port` right after
+`hdr = netbuf_push(buf, TCP_HDR_LEN)` — `hdr` was non-`NULL` (so the
+existing null-check didn't catch it) but pointed at invalid/reused
+memory.
+
+`net_poll()` (`kernel/net/netstack.c`) runs from inside the 100Hz
+timer IRQ handler itself (`sched_tick()` → `net_poll()`,
+`kernel/proc/scheduler.c`), meaning it — and anything it calls into,
+including `tcp_send_segment()` for ACKs/retransmits — can interrupt
+*any* kernel code, including another in-progress
+`tcp_send_segment()` call mid-flight in process/syscall context.
+`netbuf_alloc()`'s free-slot scan was a classic check-then-set race
+(`if (!g_pool_used[i]) { g_pool_used[i] = true; ...`) with no
+protection: if a timer tick landed between the check and the mark,
+and its own call chain needed a netbuf too, both the interrupted call
+and the nested IRQ-context call could claim the *same* "free" slot
+before either marked it used — handing one physical `netbuf_t` to two
+live callers at once. One side's `memset()` stomped the other's
+in-progress header writes, and whichever side finished first freed
+the buffer out from under the side still using it.
+
+This had no way to manifest before the scheduler-starvation fix
+above: with only one process ever really getting CPU time, there was
+effectively only ever one call path active in this pool at once. Two
+daemons genuinely running concurrently for the first time is what
+finally hit the window — crashed on `httpd`'s first response send
+(port 80), never on `sshd` (port 22, whose whole connection had
+already completed and closed by the time `httpd` was hit) —
+consistent with a timing race, not a per-port bug.
+
+**First attempt at this fix was itself wrong** and worth recording:
+a bare `cli`/`sti` pair around the scan+mark stopped the crash but
+produced a *hang* instead. Reason: `netbuf_alloc()` can be reached
+from `net_poll()` while *already inside* the timer IRQ handler, where
+IF is already 0 (the IDT interrupt gate cleared it on entry) — an
+unconditional `sti` there re-enables interrupts prematurely, mid-ISR,
+letting another IRQ nest on top of it. The actual fix uses
+`spin_lock_irqsave()`/`spin_unlock_irqrestore()`
+(`kernel/sync/sync.c`), which already existed in this codebase for
+exactly this — they save the real `RFLAGS.IF` on entry and only
+restore that same value afterward, so the same call is safe from both
+process context and IRQ context.
+
+**Known related risk, not fixed here**: `tcp_conn_alloc()`
+(`kernel/net/tcp/tcp.c`) scans `g_conns[]` with the identical
+check-then-set pattern, also reachable from both `net_poll()`
+(IRQ context) and process/syscall context — likely the same bug
+class, unaddressed.
+
+## Resolved: `httpd` overflowed a `netbuf`'s own header fields on its first real response
+
+The two `netbuf`-pool-race fixes above (both attempts) were real bugs
+worth having fixed, but **neither was the actual cause** of the
+crash they were chasing — that took a third pass with direct
+instrumentation (`serial_print`ing every `netbuf_alloc()`/
+`netbuf_push()`/`tcp_send_segment()` call) to actually catch red-
+handed: `buf->data`, read back on the *next* header-prepend call,
+decoded as literal ASCII — `a href='`, a fragment straight out of
+`httpd`'s own dashboard HTML.
+
+The real bug: a `netbuf_t`'s usable payload space, from `buf->data`
+(which starts at `_storage + NETBUF_HEADROOM`) to the end of
+`_storage`, is `NETBUF_CAP - NETBUF_HEADROOM = 1536 - 256 = 1280`
+bytes (`kernel/net/net.h`) — and nothing in `tcp_send_segment()`
+(`kernel/net/tcp/tcp.c`) ever checked a payload against that before
+`memcpy`-ing it into `buf->data`. `httpd.c`'s response-sending loop
+chunked at up to **1400 bytes** per `xsend()` call — 120 bytes past
+the buffer's real capacity — so the `memcpy` ran straight off the end
+of `_storage[]` and into `netbuf_t`'s own trailing fields (`data`,
+`len`, `next`, which sit immediately after `_storage` in the struct),
+overwriting `data` itself with raw response bytes. The very next
+`netbuf_push()` call on that same buffer (prepending the TCP header)
+then dereferenced that corrupted `data` pointer, producing the
+General Protection Fault. `sshd` never came close to triggering this
+— its entire identification line is ~23 bytes.
+
+Fixed in two places: `tcp_send_segment()` now refuses (`serial_print`s
+why and returns `false`) any payload larger than the buffer can
+actually hold, protecting every current and future caller of that
+function, not just this one. `httpd.c`'s chunk size was also lowered
+to 1200 (with margin) as defense in depth, so a refusal here shows up
+as a marginally slower response rather than depending on the kernel-
+side check alone.
+
+The two earlier `netbuf`-pool-race fixes are left in place — the
+check-then-set race in `netbuf_alloc()`'s free-slot scan against
+IRQ-context `net_poll()` is real and worth having closed with
+`spin_lock_irqsave()`/`spin_unlock_irqrestore()`, it just wasn't
+*this* crash.
+
+## `free` shell command now backed by real numbers (`SYS_MEMINFO`)
+
+Was a hardcoded placeholder (`cmd_ext_free()` in
+`userspace/shell/exploish_cmds.c` printed a fixed `262144 / -- / --`
+with no syscall behind it at all). New `SYS_MEMINFO` syscall fills a
+`meminfo_t` (`kernel/mm/pmm.h`) with real total/used/free physical
+memory, computed from `pmm_total_pages()` (new accessor for the
+previously-private `g_frame_count`) and `pmm_free_pages()` summed
+across all three zones. Kernel-heap (`kmalloc`) usage was deliberately
+left out — `kmalloc_total_used()` only exists under a `DEBUG_HEAP`
+build flag this tree doesn't set by default, and turning that on
+kernel-wide as a side effect of a `free` command fix felt like a
+separate decision.
+
 ## Full execve (SYS_EXECVE)
 
 The original `exec()` syscall (`SYS_EXEC`) took an already-in-memory

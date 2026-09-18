@@ -101,6 +101,36 @@ static bool tcp_send_segment(netif_t *iface, tcp_conn_t *conn,
 
     /* Copy payload */
     if (data && data_len) {
+        /*
+         * BUG FIX (the actual root cause of the crash the
+         * netbuf-pool-race fix above didn't actually explain):
+         * buf->data starts at _storage + NETBUF_HEADROOM, so the
+         * real payload capacity from there to the end of _storage is
+         * NETBUF_CAP - NETBUF_HEADROOM = 1536 - 256 = 1280 bytes.
+         * Nothing here ever checked data_len against that. httpd.c's
+         * send loop chunks at up to 1400 bytes per xsend() call --
+         * 120 bytes past this buffer's real capacity -- so
+         * memcpy(buf->data, data, data_len) wrote straight past the
+         * end of _storage[] and into netbuf_t's own trailing fields
+         * (data/len/next), which sit immediately after it in memory.
+         * That's exactly what corrupted buf->data into raw HTML text
+         * on the very next netbuf_push() call in the same segment (an
+         * "a href='" fragment turned up verbatim as the "pointer"
+         * value once decoded). sshd never hit this: its whole
+         * identification line is ~23 bytes, nowhere near 1280.
+         * Refuse instead of silently corrupting adjacent memory --
+         * this protects every current and future caller of
+         * tcp_send_segment(), not just httpd.c's particular chunk
+         * size (which is also being reduced separately, as
+         * defense in depth, not as the actual fix).
+         */
+        if (data_len > NETBUF_CAP - NETBUF_HEADROOM) {
+            serial_print("[TCP] send_segment: data_len exceeds netbuf "
+                         "payload capacity, refusing (would overflow "
+                         "into netbuf_t's own fields)\n");
+            netbuf_free(buf);
+            return false;
+        }
         memcpy(buf->data, data, data_len);
         buf->len = data_len;
     } else {

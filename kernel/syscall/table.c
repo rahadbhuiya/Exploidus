@@ -165,7 +165,34 @@ static int64_t kernel_read(int fd, void *buf, uint64_t len)
                 p[n++] = c;
             }
             if (n == 0) {
-                __asm__ volatile ("sti; hlt; cli" ::: "memory");
+                /*
+                 * BUG FIX: this used to be a bare "sti; hlt; cli" --
+                 * halt until the next interrupt, then loop back and
+                 * check the keyboard again, all without ever calling
+                 * sched_yield(). That means the calling process (the
+                 * shell, at an idle prompt) never actually gave up
+                 * the CPU to the scheduler: it stayed g_current_proc
+                 * the whole time, silently re-grabbing execution after
+                 * every timer/keyboard/network IRQ returned. Any other
+                 * READY process -- sshd/httpd sitting in their own
+                 * accept() loop calling sched_yield() -- never got a
+                 * turn: sched_next() was never even called on the
+                 * shell's behalf, so those processes' own
+                 * sched_yield() calls (elsewhere) were the only path
+                 * back into the scheduler, and with nothing to switch
+                 * away FROM, that path was dead too. In practice: a
+                 * background TCP daemon could sit fully alive with an
+                 * ESTABLISHED connection waiting in its accept queue
+                 * and simply never get scheduled to call accept() and
+                 * notice, for as long as a human was sitting idle at
+                 * the shell prompt -- which is effectively always.
+                 * sched_yield() still halts (see its own comment in
+                 * kernel/proc/scheduler.c) when this really is the
+                 * only ready process, so idle CPU usage doesn't
+                 * regress -- it just also actually offers the CPU to
+                 * anyone else who's ready first.
+                 */
+                sched_yield();
             }
         }
         return (int64_t)n;
@@ -220,7 +247,8 @@ static int64_t kernel_read(int fd, void *buf, uint64_t len)
         }
 
         if (!got_key) {
-            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            /* Same fix as the raw-mode branch above -- see its comment. */
+            sched_yield();
         }
     }
 
@@ -1374,8 +1402,11 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
              * this loop was busy-spinning up to 500 times back-to-back
              * with nothing to yield the CPU, which could make the
              * whole system sluggish for the duration of any HTTP
-             * request. Same wait idiom kernel_read() already uses. */
-            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+             * request. Was a bare "sti; hlt; cli" (same starvation bug
+             * as kernel_read(), see its comment) -- sched_yield() so a
+             * background daemon polling its own accept()/recv() loop
+             * actually gets a turn while this download is in flight. */
+            sched_yield();
             continue;
         }
         empty_recvs=0;
@@ -1510,10 +1541,10 @@ static __attribute__((unused)) int64_t sys_http_download(syscall_frame_t *f)
         if(n<=0){
             empty_recvs++;
             if(empty_recvs>500)break;
-            /* Same fix as sys_http_get: wait for the next interrupt
-             * instead of busy-spinning up to 500 times with nothing
-             * to yield the CPU. */
-            __asm__ volatile ("sti; hlt; cli" ::: "memory");
+            /* Same fix as sys_http_get: sched_yield() instead of a
+             * bare hlt, so this loop doesn't starve other ready
+             * processes for the duration of the download. */
+            sched_yield();
             continue;
         }
         empty_recvs=0;

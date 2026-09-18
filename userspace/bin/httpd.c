@@ -72,7 +72,7 @@ static int html_header(char *buf, int pos, const char *title) {
         "nav{margin-bottom:20px}"
         "nav a{margin-right:15px;padding:6px 12px;background:#161b22;border:1px solid #30363d;border-radius:4px}"
         "</style></head><body>"
-        "<h1>&#x1F512; Exploidus OS</h1>"
+        "<h1>Exploidus OS</h1>"
         "<nav>"
         "<a href='/'>Dashboard</a>"
         "<a href='/status'>Status</a>"
@@ -88,7 +88,7 @@ static int html_footer(char *buf, int pos) {
     pos = append(buf, pos, RESP_SIZE,
         "<div class='box' style='margin-top:30px;color:#8b949e;font-size:12px'>"
         "Exploidus v0.1.0 &mdash; Reactive Capability Kernel &mdash; "
-        "<span class='ok'>&#x25CF;</span> System Online"
+        "System Online"
         "</div></body></html>");
     return pos;
 }
@@ -137,10 +137,10 @@ static int route_dashboard(char *buf) {
     /* Quick links */
     pos = append(buf, pos, RESP_SIZE,
         "<div class='box'><h2>Quick Links</h2>"
-        "<p><a href='/proc'>&#x1F4CB; Process List</a></p>"
-        "<p><a href='/audit'>&#x1F4DC; Audit Log</a></p>"
-        "<p><a href='/cnsl'>&#x1F6E1; Security Monitor</a></p>"
-        "<p><a href='/status'>&#x1F4CA; System Stats (JSON)</a></p>"
+        "<p><a href='/proc'>Process List</a></p>"
+        "<p><a href='/audit'>Audit Log</a></p>"
+        "<p><a href='/cnsl'>Security Monitor</a></p>"
+        "<p><a href='/status'>System Stats (JSON)</a></p>"
         "</div>");
 
     pos = html_footer(buf, pos);
@@ -284,7 +284,7 @@ static int route_huddlecluster(char *buf) {
     pos = html_header(buf, pos, "HuddleCluster Load Balancer");
 
     pos = append(buf, pos, RESP_SIZE,
-        "<div class='box'><h2>&#x1F427; HuddleCluster — Penguin Load Balancer</h2>"
+        "<div class='box'><h2>HuddleCluster — Penguin Load Balancer</h2>"
         "<p>Inspired by emperor penguin huddle behavior. "
         "Active servers rotate out when overheated, resting servers rotate in when cool.</p>"
         "<table>"
@@ -358,7 +358,20 @@ static void handle_request(cap_token_t cap, int conn_fd,
     int sent = 0;
     while (sent < resp_len) {
         int chunk = resp_len - sent;
-        if (chunk > 1400) chunk = 1400;
+        /*
+         * BUG FIX: was capped at 1400, but a netbuf's real payload
+         * capacity is NETBUF_CAP - NETBUF_HEADROOM = 1536 - 256 =
+         * 1280 bytes (kernel/net/net.h) -- 1400 silently overflowed
+         * past the end of the netbuf's storage and corrupted its own
+         * data/len/next fields, crashing the kernel on the very next
+         * header prepend. tcp_send_segment() (kernel/net/tcp/tcp.c)
+         * now refuses an oversized chunk outright as the real fix
+         * (protects every caller, not just this one) -- this lower
+         * cap is just so a refusal here shows up as a slightly slower
+         * response instead of never happening at all. Kept a margin
+         * below 1280 rather than sending exactly at the limit.
+         */
+        if (chunk > 1200) chunk = 1200;
         int r = xsend(cap, conn_fd, resp_buf + sent, (uint16_t)chunk);
         if (r <= 0) break;
         sent += r;
