@@ -54,7 +54,18 @@ Exploidus treats it as a foundation.
 - [ ] Optional GUI — enable/disable on demand
 - [ ] Smooth horizontal scaling via HuddleCluster
 - [ ] Advanced cybersecurity platform at OS level
-- [ ] sshd — remote access daemon
+- [~] sshd — remote access daemon. TCP listener (port 22) + RFC 4253
+      §4.2 identification-string exchange done and real (accepts a
+      real SSH client's connection, negotiates protocol version,
+      logs its software version). Deliberately stops there: no key
+      exchange, cipher, MAC, or host-key signing exist in this
+      codebase (kernel/crypto/ is BLAKE3-only), and hand-rolling
+      those without independent review/test-vector verification
+      would produce a fake "secure" shell. Next real step: port a
+      small, well-reviewed reference crypto implementation
+      (Curve25519 + ChaCha20-Poly1305) and verify it against known
+      test vectors before wiring it into any protocol code — not
+      started.
 
 ## Architecture
 

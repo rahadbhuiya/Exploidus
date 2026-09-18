@@ -1,6 +1,7 @@
 #include "net.h"
 #include "../mm/kmalloc.h"
 #include "../drivers/serial.h"
+#include "../sync/sync.h"
 #include <string.h>
 
 
@@ -11,12 +12,45 @@
 
 static netbuf_t g_pool[NETBUF_POOL_SIZE];
 static bool g_pool_used[NETBUF_POOL_SIZE];
+static spinlock_t g_pool_lock;
 
 netbuf_t *netbuf_alloc(void)
 {
+    /*
+     * BUG FIX: net_poll() (kernel/net/netstack.c) runs on every 100Hz
+     * timer tick, from inside the timer IRQ handler itself
+     * (sched_tick() -> net_poll(), kernel/proc/scheduler.c) --
+     * meaning it can fire, and call back into TCP code that itself
+     * calls netbuf_alloc()/netbuf_free(), literally *while* some
+     * other kernel code (a process's own tcp_send_segment() call, for
+     * instance) is in the middle of using this same pool. g_pool_used[]
+     * is shared mutable state with no protection against that: two
+     * interleaved scans could both land on the same "free" slot before
+     * either marks it used, handing out one physical netbuf_t to two
+     * live callers at once -- exactly the kind of bug that stayed
+     * invisible as long as only one process ever meaningfully got CPU
+     * time at once (see the scheduler-starvation fix elsewhere in this
+     * tree) and started producing General Protection Faults the moment
+     * two daemons could truly run concurrently.
+     *
+     * First attempt at this fix used a bare cli/sti pair, which was
+     * wrong: when netbuf_alloc() is reached from net_poll() while
+     * *already inside* the timer IRQ handler, IF is already 0 (the
+     * IDT interrupt gate cleared it on entry) -- an unconditional
+     * "sti" there re-enables interrupts prematurely, mid-ISR, letting
+     * another IRQ nest on top of it, which produced a hang instead of
+     * a crash. spin_lock_irqsave()/spin_unlock_irqrestore()
+     * (kernel/sync/sync.c) exist specifically for this: they save the
+     * actual RFLAGS.IF on entry and only restore that same value
+     * afterward, so calling it from IRQ context correctly leaves
+     * interrupts off, and calling it from process context correctly
+     * leaves them on.
+     */
+    uint64_t flags = spin_lock_irqsave(&g_pool_lock);
     for (int i = 0; i < NETBUF_POOL_SIZE; i++) {
         if (!g_pool_used[i]) {
             g_pool_used[i] = true;
+            spin_unlock_irqrestore(&g_pool_lock, flags);
 
             netbuf_t *b = &g_pool[i];
             memset(b, 0, sizeof(netbuf_t));
@@ -28,6 +62,7 @@ netbuf_t *netbuf_alloc(void)
             return b;
         }
     }
+    spin_unlock_irqrestore(&g_pool_lock, flags);
 
     serial_print("[NET] pool exhausted\n");
     return NULL;
@@ -52,7 +87,10 @@ void netbuf_free(netbuf_t *buf)
     if (idx < 0 || idx >= NETBUF_POOL_SIZE)
         return;
 
+    /* Same reasoning as netbuf_alloc() -- see its comment. */
+    uint64_t flags = spin_lock_irqsave(&g_pool_lock);
     g_pool_used[idx] = false;
+    spin_unlock_irqrestore(&g_pool_lock, flags);
 }
 
 
