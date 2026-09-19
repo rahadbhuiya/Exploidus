@@ -15,32 +15,37 @@
 #define PT_IDX(a)   (((a) >> 12) & 0x1FF)
 
 /*
- * ASLR_MASK: bits [28:21] of RDRAND output, producing a 2MB-aligned
- * random offset in the range [0, ~512 MB). Since any 2MB-aligned
- * value only ever varies in bits 21+, entropy is bounded by how many
- * *high* bits the mask keeps, not by the mask's total width -- the
- * previous mask (bits 27:12) only ever contributed bits 27:21 after
- * 2MB-alignment, i.e. 7 bits of real entropy. This mask keeps bits
- * 28:21, i.e. 8 bits (256 possible load addresses instead of 128).
+ * ASLR_MASK / ASLR_MIN_BASE: 2MB-aligned random offset for the ELF
+ * base, now placed in the 4GB-512GB virtual range instead of the
+ * previous 32MB-542MB range within pd0.
  *
- * ASLR_MIN_BASE: 32 MB minimum -- safely above the kernel-reserved
- * pd0 entries (indices 0-15, covering 0-32 MB huge pages). Adding
- * ASLR_MIN_BASE guarantees the final base is always in
- * [32MB, 32MB + 510MB] = [32MB, 542MB], which stays comfortably
- * inside the user-zeroed pd0 region (indices 16-511, i.e. up to
- * 1024MB) that make_isolated_pml4() clears for user mappings --
- * leaving ~480MB of headroom above the highest possible base for
- * the ELF image itself plus any future PT_LOAD growth.
+ * kernel/boot/start.asm only ever identity-maps 0-4GB with huge pages
+ * (pd0-pd3 in its own comment: "Maps 0-4GB identity with 2MB pages");
+ * everything from PDPT index 4 upward is part of the kernel's
+ * page-table .bss and therefore guaranteed zero (not-present) at
+ * boot, and nothing anywhere in this tree ever populates it. That
+ * makes the entire 4GB-512GB range (PML4[0], PDPT indices 4-511)
+ * genuinely free virtual address space -- no huge-page leaf to
+ * collide with (unlike pd1's indices 0-510, which ARE live kernel
+ * huge-page mappings map_page() cannot subdivide), no MMIO, nothing
+ * make_isolated_pml4() needs to preserve. map_page() already
+ * allocates missing PDPT/PD/PT levels on demand for any address, so
+ * no change to make_isolated_pml4() is needed to use this space --
+ * every PDPT slot in it starts absent and gets built the first time
+ * something is mapped into it, exactly like pd0/pd1 already work.
  *
- * NOTE: 8 bits is still weak by desktop-OS standards (Linux typically
- * gives 28+ bits for mmap ASLR). True strong entropy would need
- * make_isolated_pml4() to clear more than one PD table's worth of
- * user address space -- a bigger architectural change, tracked as a
- * follow-up. This is a safe, contained improvement within the
- * existing single-PD-table user region.
+ * ASLR_MIN_BASE = 4GB: starts immediately after the boot-mapped
+ * identity range, so the ELF base can never land on a live huge page.
+ * ASLR_MASK keeps bits 37:21 of RDRAND's output (17 bits, since only
+ * bits 21+ survive 2MB-alignment) -- a random offset anywhere across
+ * ~256GB. Added to the 4GB minimum, the highest possible base is
+ * ~264GB, safely inside the 512GB PML4[0] boundary (with the stack,
+ * near 128TB in PML4 256+, in an entirely different PML4 entry) and
+ * nowhere near exhausting it. 17 bits is 512x the previous 8 bits of
+ * real entropy (131072 possible load addresses instead of 256).
  */
-#define ASLR_MASK     0x000000001FE00000ULL
-#define ASLR_MIN_BASE 0x0000000002000000ULL  /* 32 MB */
+#define ASLR_MASK     0x0000003FFFE00000ULL
+#define ASLR_MIN_BASE 0x0000000100000000ULL  /* 4 GB */
 
 /*
  * STACK_ASLR_MASK: random *sub-page* offset within the single 2MB

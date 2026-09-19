@@ -61,7 +61,7 @@ KERNEL_C_SRCS := \
     kernel/arch/x86_64/stack_protector.c \
     kernel/mm/pmm.c kernel/mm/vmm.c kernel/mm/kmalloc.c \
     kernel/cap/capability.c kernel/cap/broker.c \
-    kernel/crypto/blake3.c kernel/audit/audit.c \
+    kernel/crypto/blake3.c kernel/crypto/x25519.c kernel/audit/audit.c \
     kernel/proc/process.c kernel/proc/scheduler.c \
     kernel/proc/fork_exec.c kernel/syscall/table.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \

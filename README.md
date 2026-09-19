@@ -520,6 +520,65 @@ that dies first) still leaks — nothing currently reaps zombies except
 an explicit `waitpid()` call. That's a separate gap (no init-style
 re-parenting / no periodic zombie sweep) from the one fixed here.
 
+## X25519 key exchange primitive (verified, not yet wired into sshd)
+
+First real step on sshd's crypto gap (see the section below): ported
+`kernel/crypto/x25519.c`/`.h`, an X25519 (Curve25519) scalar
+multiplication implementation for the key-exchange half of real SSH.
+
+**This is a port, not new code.** It's a faithful, essentially
+line-for-line copy of `curve25519-donna-c64.c` (Adam Langley, derived
+from Daniel J. Bernstein's public-domain reference implementation) —
+public domain, no license restrictions, long-standing and widely
+deployed (this "donna" lineage underlies parts of BoringSSL and other
+production TLS/SSH stacks), and constant-time by construction (fixed
+number of `fmonty` calls per scalar bit, a data-independent
+`swap_conditional` instead of branching on secret key bits). That
+constant-time property is exactly what's hardest to get right by hand
+and hardest to verify by eye — which is the whole reason to port a
+reviewed implementation instead of writing new elliptic-curve math for
+this kernel from scratch. Only cosmetic changes from the original:
+typedefs adjusted to this kernel's conventions, a
+`x25519_scalarmult()`/`X25519_BASEPOINT` public API wrapping the
+original `curve25519_donna()` entry point, comments trimmed. No
+arithmetic was changed.
+
+**Verified against both official RFC 7748 §5.2 X25519 test vectors,
+byte-for-byte, before this file was written into the kernel tree** —
+compiled and run standalone with host gcc (this development
+environment has no `x86_64-elf-gcc` cross-toolchain to test an actual
+kernel build), separately from ever touching sshd's protocol code:
+
+```
+RFC7748 5.2 vector 1: PASS
+RFC7748 5.2 vector 2: PASS
+
+BOTH RFC 7748 TEST VECTORS PASSED
+```
+
+Also checked the actual Diffie-Hellman property the KEX protocol will
+depend on — two independent "Alice"/"Bob" keypairs, confirming
+`X25519(alice_priv, bob_pub) == X25519(bob_priv, alice_pub)`:
+
+```
+Alice and Bob shared secrets MATCH (DH property holds)
+alice_pub all-zero: no, bob_pub all-zero: no, shared all-zero: no
+```
+
+Syntax-checked under this tree's real `-Wall -Wextra -Werror` freestanding
+flags — clean. **Not yet integration-verified**: never compiled with
+the actual `x86_64-elf-gcc` cross-toolchain or run inside Exploidus.
+The `__int128` (GCC's TI-mode extension) usage is a standard feature
+of any x86_64 GCC target, freestanding or not, so it should behave
+identically — but that's an expectation, not a confirmed fact yet.
+
+**Not wired into `sshd` yet.** Still needed before real SSH key
+exchange works: a symmetric cipher (ChaCha20-Poly1305 is the modern
+SSH baseline), a KDF (SHA-256, per RFC 8731's `curve25519-sha256`),
+and the actual `SSH_MSG_KEXINIT`/`SSH_MSG_KEX_ECDH_INIT`/`REPLY`
+protocol state machine in `sshd.c` — each to be verified the same
+way, against its own published test vectors, before being wired in.
+
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 
 New `userspace/bin/sshd.c`, listening on port 22, auto-started by
@@ -786,6 +845,39 @@ Remaining honest limitation: 8 bits of ASLR entropy is still weak
 compared to a desktop OS (Linux gives 28+) — going further needs
 `make_isolated_pml4()` to clear more than one PD table's worth of
 user address space, a bigger architectural change not done yet.
+
+## ASLR entropy: 8 bits → 17 bits, using address space the kernel never touched
+
+The limitation above turned out to be cheaper to fix than its own
+note suggested. `kernel/boot/start.asm` only ever identity-maps
+0-4GB with huge pages (its own comment: "Maps 0-4GB identity with 2MB
+pages" — `pd0`-`pd3`); everything from PDPT index 4 upward lives in
+the kernel's page-table `.bss` and is therefore guaranteed zero
+(not-present) at boot, and nothing anywhere in this tree ever
+populates it afterward either. That makes the entire 4GB-512GB
+virtual range genuinely free — no huge-page leaf to collide with
+(unlike `pd1`'s indices 0-510, which *are* live kernel huge-page
+mappings `map_page()` cannot subdivide), no MMIO, nothing
+`make_isolated_pml4()` needs to preserve there. `map_page()` already
+allocates missing PDPT/PD/PT levels on demand for any address it's
+asked to map, so — unlike the "clear more PD tables" architectural
+change the old note anticipated — **no change to
+`make_isolated_pml4()` was needed at all**: every PDPT slot from 4 to
+511 starts absent and gets built the first time something lands in
+it, exactly like `pd0`/`pd1` already work.
+
+`ASLR_MASK`/`ASLR_MIN_BASE` (`kernel/elf/elf.c`) now place the ELF
+base anywhere across a ~256GB span starting at the 4GB mark (right
+after the boot-identity-mapped region, so it can never land on a live
+huge page), keeping bits 37:21 of RDRAND's output — 17 bits of real
+2MB-aligned entropy (131,072 possible load addresses) instead of 8
+(256). The highest possible base stays around 260GB, safely inside
+the 512GB boundary of `PML4[0]` (the stack lives near 128TB, in an
+entirely different `PML4` entry, so there's no risk of the two ranges
+ever meeting). Still short of Linux's 28+ bits, but 512x more than
+before, for a one-constant change plus removing a now-stale
+"needs bigger architectural change" note — the architectural change
+turned out to already be available, just unused.
 
 ## USB stack (UHCI)
 

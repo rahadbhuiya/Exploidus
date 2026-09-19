@@ -57,15 +57,17 @@ Exploidus treats it as a foundation.
 - [~] sshd — remote access daemon. TCP listener (port 22) + RFC 4253
       §4.2 identification-string exchange done and real (accepts a
       real SSH client's connection, negotiates protocol version,
-      logs its software version). Deliberately stops there: no key
-      exchange, cipher, MAC, or host-key signing exist in this
-      codebase (kernel/crypto/ is BLAKE3-only), and hand-rolling
-      those without independent review/test-vector verification
-      would produce a fake "secure" shell. Next real step: port a
-      small, well-reviewed reference crypto implementation
-      (Curve25519 + ChaCha20-Poly1305) and verify it against known
-      test vectors before wiring it into any protocol code — not
-      started.
+      logs its software version). X25519 (Curve25519) key exchange
+      primitive ported (kernel/crypto/x25519.c, from the public-domain
+      curve25519-donna-c64.c) and verified against both official
+      RFC 7748 test vectors plus the actual Diffie-Hellman property —
+      not yet integration-tested with the real cross-toolchain, and
+      not yet wired into sshd.c. Still needed before real SSH key
+      exchange works: ChaCha20-Poly1305 (cipher), SHA-256 (KDF, RFC
+      8731's curve25519-sha256), host-key signing, and the actual
+      SSH_MSG_KEXINIT/KEX_ECDH_INIT/REPLY state machine in sshd.c —
+      each to be verified against its own test vectors before wiring
+      in, same as x25519.c was.
 
 ## Architecture
 
