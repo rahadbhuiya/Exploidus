@@ -565,12 +565,23 @@ Alice and Bob shared secrets MATCH (DH property holds)
 alice_pub all-zero: no, bob_pub all-zero: no, shared all-zero: no
 ```
 
-Syntax-checked under this tree's real `-Wall -Wextra -Werror` freestanding
-flags — clean. **Not yet integration-verified**: never compiled with
-the actual `x86_64-elf-gcc` cross-toolchain or run inside Exploidus.
-The `__int128` (GCC's TI-mode extension) usage is a standard feature
-of any x86_64 GCC target, freestanding or not, so it should behave
-identically — but that's an expectation, not a confirmed fact yet.
+Syntax-checked under this tree's real `-Wall -Wextra -Werror`
+freestanding flags — clean. Was briefly wired into the kernel's own
+build (see placement correction below) and, in that form, compiled
+with the actual `x86_64-elf-gcc` cross-toolchain, linked into the
+kernel, and booted clean in QEMU with no crash/hang — confirming the
+`__int128` (GCC's TI-mode extension) usage behaves identically under
+the real cross-compiler, not just host gcc. That specific build
+configuration is no longer how this file is meant to be compiled (see
+below), but the toolchain-compatibility result still holds: the file
+itself compiles fine with `x86_64-elf-gcc`, freestanding or not.
+**Not yet integration-verified as a userspace (`sshd`) object**,
+which is how it's actually meant to be linked — not yet compiled that
+way even once.
+
+**Placement correction**: this was initially wired into the *kernel's*
+build (`Makefile`, alongside `kernel/crypto/blake3.c`). That's since
+been corrected — see the ChaCha20-Poly1305 section below for why.
 
 **Not wired into `sshd` yet.** Still needed before real SSH key
 exchange works: a symmetric cipher (ChaCha20-Poly1305 is the modern
@@ -578,6 +589,91 @@ SSH baseline), a KDF (SHA-256, per RFC 8731's `curve25519-sha256`),
 and the actual `SSH_MSG_KEXINIT`/`SSH_MSG_KEX_ECDH_INIT`/`REPLY`
 protocol state machine in `sshd.c` — each to be verified the same
 way, against its own published test vectors, before being wired in.
+
+## ChaCha20-Poly1305 AEAD (verified, not yet wired into sshd)
+
+Second step on sshd's crypto gap, following X25519 above: ported
+`kernel/crypto/chacha20.c`/`poly1305.c`, and wrote
+`chacha20poly1305.c` directly from RFC 8439's own pseudocode to
+combine them — the modern SSH cipher suite
+(`chacha20-poly1305@openssh.com`) and TLS 1.3's baseline AEAD.
+
+**Correction to X25519's placement, applied here too**: X25519 had
+been wired into the *kernel's* build (`Makefile`, alongside
+`kernel/crypto/blake3.c`, which the capability system genuinely does
+need kernel-side). That was a mistake — SSH cipher/KEX operations are
+`sshd`'s own business, not the kernel's, and a kernel-resident buffer
+shared across every process is exactly the kind of thing that
+produces cross-process races (see the `netbuf` pool race elsewhere in
+this project's history for a concrete example of that going wrong).
+X25519's kernel wiring has been removed; all four crypto files
+(`x25519`, `chacha20`, `poly1305`, `chacha20poly1305`) are meant to be
+compiled directly into `sshd.elf` as userspace objects once `sshd.c`
+actually calls them — private per-process memory, no kernel exposure,
+no new syscalls needed.
+
+- **`chacha20.c`** — RFC 8439 Section 2.3/2.4 layout (32-bit counter,
+  96-bit nonce — *not* D.J. Bernstein's original 64-bit/64-bit split).
+  The quarter-round/double-round core is Bernstein's original
+  public-domain construction (same round function OpenBSD/OpenSSH's
+  own `chacha.c` uses); the RFC 8439 state-layout wrapper around it is
+  written directly from the RFC's own state diagram, since that part
+  is simple byte placement with little room for subtle bugs.
+- **`poly1305.c`** — a faithful port of OpenBSD/OpenSSH's actual
+  `usr.bin/ssh/poly1305.c` (Andrew Moon's public-domain
+  `poly1305-donna-32`) — the literal code real OpenSSH ships today for
+  this same cipher suite. RFC 8439's own Implementation Advice
+  (Section 3) names poly1305-donna specifically as the reference to
+  use.
+- **`chacha20poly1305.c`** — the AEAD glue (key generation, padding,
+  length fields, tag) written directly from RFC 8439 Section 2.8.1's
+  pseudocode, since there's no equivalent "donna"-style reference for
+  the glue itself — it leans on the two verified primitives underneath
+  rather than needing separate arithmetic scrutiny of its own. Uses a
+  constant-time tag comparison (RFC 8439 Section 4 requires this
+  explicitly, warning against bare `memcmp()`). Builds the Poly1305
+  input in one bounded static buffer (`MAC_DATA_MAX`, 40KB) rather
+  than a heap allocation or unbounded stack buffer — safe here
+  specifically because this is meant to run inside `sshd`, which
+  handles one connection fully before accepting the next (see
+  `sshd.c`), so there's no cross-request reentrancy to worry about.
+
+**Verified against RFC 8439's test vectors**, compiled and run
+standalone with host gcc:
+
+```
+chacha20_block RFC8439 2.3.2: PASS
+chacha20_block A.1 #1: PASS
+chacha20_block A.1 #4: PASS
+chacha20_xor RFC8439 2.4.2: PASS
+poly1305 RFC8439 2.5.2: PASS
+poly1305 A.3 #1 (zero key/msg): PASS
+poly1305 A.3 #5 (130-bit reduction): PASS
+poly1305 A.3 #8 (result == 2^130-5): PASS
+chacha20poly1305 RFC8439 2.8.2 ciphertext: PASS
+chacha20poly1305 RFC8439 2.8.2 tag: PASS
+chacha20poly1305 round-trip tag verify: PASS
+chacha20poly1305 round-trip plaintext: PASS
+chacha20poly1305 tamper detection: PASS (rejected)
+
+ALL RFC 8439 TEST VECTORS PASSED
+```
+
+The Poly1305 edge-case vectors (A.3 #5, #8) specifically exercise the
+130-bit modular reduction near the field boundary — exactly the class
+of bug that's invisible by code inspection and only shows up on
+specific inputs, which is the whole reason to test against them
+rather than trust the port by eye. The tamper-detection check flips
+one ciphertext byte and confirms decryption now correctly refuses to
+return unauthenticated plaintext.
+
+Syntax-checked under this tree's real userspace `-Wall -Wextra
+-Werror` flags — clean. **Not yet integration-verified** (no
+`x86_64-elf-gcc` cross-toolchain in the environment this was written
+in) and **not yet wired into `sshd.c`** — still needed: SHA-256 (KDF,
+RFC 8731's `curve25519-sha256`), host-key signing, and the actual
+`SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` protocol state machine, each
+to be verified the same way before being wired in.
 
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 

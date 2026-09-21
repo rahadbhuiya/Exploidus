@@ -57,17 +57,18 @@ Exploidus treats it as a foundation.
 - [~] sshd — remote access daemon. TCP listener (port 22) + RFC 4253
       §4.2 identification-string exchange done and real (accepts a
       real SSH client's connection, negotiates protocol version,
-      logs its software version). X25519 (Curve25519) key exchange
-      primitive ported (kernel/crypto/x25519.c, from the public-domain
-      curve25519-donna-c64.c) and verified against both official
-      RFC 7748 test vectors plus the actual Diffie-Hellman property —
-      not yet integration-tested with the real cross-toolchain, and
+      logs its software version). X25519 (Curve25519, key exchange)
+      and ChaCha20-Poly1305 (AEAD cipher) ported and verified against
+      RFC 7748 / RFC 8439 test vectors — both in kernel/crypto/,
+      meant to compile as sshd's own userspace objects (not kernel
+      objects — X25519 briefly was, corrected). Not yet integration-
+      tested as userspace objects with the real cross-toolchain, and
       not yet wired into sshd.c. Still needed before real SSH key
-      exchange works: ChaCha20-Poly1305 (cipher), SHA-256 (KDF, RFC
-      8731's curve25519-sha256), host-key signing, and the actual
-      SSH_MSG_KEXINIT/KEX_ECDH_INIT/REPLY state machine in sshd.c —
-      each to be verified against its own test vectors before wiring
-      in, same as x25519.c was.
+      exchange works: SHA-256 (KDF, RFC 8731's curve25519-sha256),
+      host-key signing, and the actual SSH_MSG_KEXINIT/KEX_ECDH_INIT/
+      REPLY state machine in sshd.c — each to be verified against its
+      own test vectors before wiring in, same as x25519.c/chacha20.c/
+      poly1305.c were.
 
 ## Architecture
 
