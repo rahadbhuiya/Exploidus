@@ -675,6 +675,57 @@ RFC 8731's `curve25519-sha256`), host-key signing, and the actual
 `SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` protocol state machine, each
 to be verified the same way before being wired in.
 
+## SHA-256 (verified, not yet wired into sshd)
+
+Third step on sshd's crypto gap: ported `kernel/crypto/sha256.c`/`.h`
+from Brad Conte's `crypto-algorithms` (public domain, "released into
+the public domain free of any restrictions" per that project's
+README) — needed for RFC 8731's `curve25519-sha256` SSH key-exchange
+hash (the KDF half of the suite X25519 above is the DH half of) and
+for HMAC-SHA2 message authentication, both still to be wired in.
+
+SHA-256's compression function is exactly specified by FIPS 180-4
+with no room for a "faster but different" rewrite that stays
+correct, so there's little to gain and real risk to lose by
+re-deriving it by hand versus porting a reference already checked
+against the standard. Only cosmetic changes from the original: type
+names adjusted to this kernel's conventions, a one-shot `sha256()`
+convenience wrapper added around the streaming `sha256_init`/
+`_update`/`_final` API. No arithmetic changed — the round constants,
+message schedule, and compression function are unmodified.
+
+The streaming API (not just a one-shot buffer-in-hash-out function)
+matters here specifically because RFC 8731's KEX hash is computed
+incrementally over several concatenated fields as a handshake
+progresses (client/server identification strings, KEXINIT payloads,
+host key, ephemeral public keys, shared secret) — not available as
+one buffer up front.
+
+**Verified against FIPS 180-4's standard test vectors**, compiled and
+run standalone with host gcc:
+
+```
+sha256(""): PASS
+sha256("abc"): PASS
+sha256(two-block msg): PASS
+sha256 streaming (a+b+c separately): PASS
+
+ALL FIPS 180-4 TEST VECTORS PASSED
+```
+
+The streaming check feeds `"abc"` through three separate
+`sha256_update()` calls instead of one buffer, confirming multi-call
+state accumulation works correctly — the specific behavior RFC 8731's
+incremental KEX hash will depend on, not just single-shot hashing.
+
+Syntax-checked under this tree's real userspace `-Wall -Wextra
+-Werror` flags — clean. Meant to compile as an `sshd.elf` userspace
+object, same as `x25519.c`/`chacha20.c`/`poly1305.c`/
+`chacha20poly1305.c` above (not wired into the kernel build). Not yet
+integration-verified with the real cross-toolchain, and not yet wired
+into `sshd.c` — still needed: host-key signing and the actual
+`SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` protocol state machine.
+
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 
 New `userspace/bin/sshd.c`, listening on port 22, auto-started by
