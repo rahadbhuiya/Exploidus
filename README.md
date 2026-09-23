@@ -726,6 +726,79 @@ integration-verified with the real cross-toolchain, and not yet wired
 into `sshd.c` — still needed: host-key signing and the actual
 `SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` protocol state machine.
 
+## SHA-512 + Ed25519 (verified, not yet wired into sshd)
+
+Fourth step on sshd's crypto gap: ported `kernel/crypto/sha512.c` and
+`kernel/crypto/ed25519.c` (with headers), both from TweetNaCl
+(https://tweetnacl.cr.yp.to/, version 20131229) — Daniel J.
+Bernstein, Bart Mennink, Bernard van Gastel, Wesley Janssen, Tanja
+Lange, Peter Schwabe, Sjaak Smetsers — public domain. Ed25519 is the
+last crypto primitive needed for sshd's host-key signing (the piece
+that lets a connecting client trust it's really talking to this
+server, distinct from X25519's ephemeral per-session key exchange
+above). Ed25519 uses SHA-512 internally throughout (RFC 8032) — a
+different hash from the SHA-256 this project already has for RFC
+8731's KEX hash, hence the separate file.
+
+**Why TweetNaCl specifically, and why its arithmetic wasn't
+rewritten**: the twisted-Edwards field arithmetic and point
+operations in `ed25519.c` (the `gf` type, `M`/`S`/`A`/`Z`/
+`inv25519`/`pow2523`, the Edwards point add/scalarmult/pack) are
+exactly the kind of code that's correct by construction in a
+reviewed reference and easy to break subtly by "cleaning up" —
+TweetNaCl was specifically written and published to be small enough
+to audit by hand while still a complete, correct NaCl-compatible
+implementation (see its paper, "A Crypto Library in 100 Tweets").
+Only the outer API shape was adapted (TweetNaCl's `crypto_sign`
+bundles the message and signature into one buffer; SSH's wire format
+needs them as separate fields, so `ed25519_sign()`/`ed25519_verify()`
+here use a detached-signature API instead) and the RNG dependency was
+removed (`ed25519_keypair_from_seed()` takes a seed parameter rather
+than calling `randombytes()` itself, so a host key can be generated
+once and persisted deliberately, and so this file stays
+host-testable with no RNG dependency). Every field-element and point
+operation is otherwise unmodified from the original.
+
+**Verified against all three of RFC 8032 Section 7.1's Ed25519 test
+vectors**, compiled and run standalone with host gcc — checking
+derived public key, signature, successful verification of a valid
+signature, and correct rejection of a tampered one, for each:
+
+```
+TEST1 pubkey: PASS
+TEST1 signature: PASS
+TEST1 verify (valid sig): PASS
+TEST1 verify (tampered sig): PASS (rejected)
+TEST2 pubkey: PASS
+TEST2 signature: PASS
+TEST2 verify (valid sig): PASS
+TEST2 verify (tampered sig): PASS (rejected)
+TEST3 pubkey: PASS
+TEST3 signature: PASS
+TEST3 verify (valid sig): PASS
+TEST3 verify (tampered sig): PASS (rejected)
+
+ALL RFC 8032 TEST VECTORS PASSED
+```
+
+`sha512.c` was separately verified against FIPS 180-4's own SHA-512
+test vectors (empty string, `"abc"`, and a two-block message) before
+being used inside `ed25519.c` at all.
+
+Syntax-checked under this tree's real userspace `-Wall -Wextra
+-Werror` flags — clean. Meant to compile as `sshd.elf` userspace
+objects, same as the other four crypto files above (not wired into
+the kernel build). Not yet integration-verified with the real
+cross-toolchain, and not yet wired into `sshd.c`.
+
+**Crypto primitive stack for sshd is now complete**: X25519 (KEX) +
+ChaCha20-Poly1305 (cipher) + SHA-256 (KEX hash) + SHA-512/Ed25519
+(host-key signing), all verified against their respective published
+test vectors. What's left is entirely protocol wiring, not crypto:
+generating and persisting a host key, and the actual
+`SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` state machine in `sshd.c`
+that combines these primitives into a working handshake.
+
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 
 New `userspace/bin/sshd.c`, listening on port 22, auto-started by
