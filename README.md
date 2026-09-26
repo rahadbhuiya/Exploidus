@@ -799,6 +799,71 @@ generating and persisting a host key, and the actual
 `SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` state machine in `sshd.c`
 that combines these primitives into a working handshake.
 
+## `SYS_GETRANDOM` — userspace had no source of randomness at all
+
+Discovered while about to build sshd's actual key exchange: RDRAND
+access (`kernel/cap/capability.c`'s `rdrand64()`/`has_rdrand()`) was
+entirely `static inline`, private to the capability system, seeding
+capability tokens only. No syscall exposed randomness to userspace —
+**no userspace process could get a random byte at all**. Not
+decorative: a predictable ephemeral X25519 key-exchange private key
+breaks a session's confidentiality entirely, so this was a genuine
+hard blocker for using the crypto primitives already ported, not
+scope creep.
+
+New `SYS_GETRANDOM(buf, len)` duplicates capability.c's own
+~20-line RDRAND-with-fallback logic (rather than exposing that
+module's deliberately-private internals) and fills a user buffer.
+Userspace: `getrandom(buf, len)` in `userspace/libc/syscall.h`.
+
+**Honest caveat, matching capability.c's own**: on hardware without
+RDRAND (vanishingly rare on any real or emulated x86_64 from the last
+decade-plus, including QEMU/KVM's default CPU models), this falls
+back to an RDTSC-derived value XORed with a fixed constant — NOT
+cryptographically secure, just enough to avoid returning all-zero
+garbage. The syscall doesn't report which path was taken; generating
+long-lived key material on genuinely RDRAND-less hardware would be
+trusting a weak fallback silently. Doesn't apply on any RDRAND-capable
+CPU, which is the overwhelming common case.
+
+## sshd: SSH_MSG_KEXINIT negotiation (still no encryption)
+
+New `userspace/bin/sshd_packet.c`/`.h`: the SSH binary packet protocol
+(RFC 4253 §6, unencrypted mode — length-prefixed, randomly padded
+using real `getrandom()` padding) and `SSH_MSG_KEXINIT` (§7.1)
+construction/parsing, wired into `sshd.c` right after the
+identification exchange. `sshd` now sends its own KEXINIT (advertising
+exactly one algorithm per category — `curve25519-sha256` /
+`ssh-ed25519` / `chacha20-poly1305@openssh.com`, matching the ported
+crypto primitives above, no legacy/fallback algorithms offered),
+receives and parses the peer's KEXINIT, logs everything the peer
+offered in every category, and checks whether the peer supports each
+algorithm this server requires — genuine RFC 4253 negotiation
+behavior, not a simulation of it (KEXINIT is defined to be sent in
+plaintext, before any key exchange happens, so there's nothing
+missing from this phase specifically).
+
+Written directly from RFC 4253's own field-by-field description
+rather than ported from a reference — unlike the crypto primitives,
+there's no equivalent "donna"-style reference for packet framing, and
+the risk profile is different: a framing bug produces a packet that
+fails to parse (loud, easy to notice) rather than a subtly wrong
+number (quiet, easy to miss).
+
+**Still closes honestly after negotiation** — the actual
+`SSH_MSG_KEX_ECDH_INIT`/`REPLY` Diffie-Hellman exchange that would
+follow isn't wired in yet, even though every crypto primitive it
+needs is now ported and verified (see the crypto sections above).
+That's the next and final piece: combining X25519 key exchange,
+SHA-256 hashing, Ed25519 host-key signing, and switching to encrypted
+ChaCha20-Poly1305 packet framing, into an actual working handshake.
+
+Syntax-checked under this tree's real userspace `-Wall -Wextra
+-Werror` flags and wired into the `Makefile` (`sshd_packet.c` compiles
+and links as one of `sshd`'s own objects) — confirmed via `make -n`,
+not yet booted with the actual negotiation exercised end-to-end
+against a real client.
+
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 
 New `userspace/bin/sshd.c`, listening on port 22, auto-started by

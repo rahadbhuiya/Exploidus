@@ -389,6 +389,18 @@ static inline int meminfo(meminfo_t *mi)
     return (int)syscall1(SYS_MEMINFO, (uint64_t)(uintptr_t)mi);
 }
 
+/*
+ * getrandom(buf, len) -- fills buf with len bytes of RDRAND-backed
+ * random data. The only source of randomness available to userspace
+ * -- needed for anything generating key material (e.g. sshd's
+ * ephemeral X25519 key-exchange keys) rather than predictable data.
+ */
+#define SYS_GETRANDOM 100
+static inline int getrandom(void *buf, uint64_t len)
+{
+    return (int)syscall2(SYS_GETRANDOM, (uint64_t)(uintptr_t)buf, len);
+}
+
 /*  lseek / stat / dup  */
 #define SEEK_SET 0
 #define SEEK_CUR 1
