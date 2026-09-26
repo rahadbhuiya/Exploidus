@@ -1215,6 +1215,79 @@ static __attribute__((unused)) int64_t sys_meminfo(syscall_frame_t *f)
     return 0;
 }
 
+/*
+ * sys_getrandom -- fills a user buffer with RDRAND-backed random
+ * bytes. Duplicates the same ~20-line has_rdrand()/rdrand64() logic
+ * kernel/cap/capability.c already uses for capability-token seeding,
+ * rather than exposing that module's internals (deliberately
+ * `static inline`, private to the capability system) -- this is a
+ * separate, syscall-level RNG source for userspace, not a reuse of
+ * the capability system's own secret state.
+ *
+ * No userspace process had ANY source of randomness before this
+ * syscall existed. Added specifically because sshd's ephemeral
+ * X25519 key-exchange keys need to be genuinely unpredictable (a
+ * guessable KEX private key breaks session confidentiality
+ * entirely) -- this isn't decorative, it's a hard prerequisite for
+ * the crypto primitives already ported (kernel/crypto/x25519.c etc.)
+ * to be used safely at all.
+ *
+ * Honesty about the fallback: like capability.c's own rdrand64(),
+ * if the CPU lacks RDRAND (vanishingly rare on any real or emulated
+ * x86_64 from the last decade-plus, including QEMU/KVM's default CPU
+ * models) this falls back to an RDTSC-derived value XORed with a
+ * fixed constant -- NOT cryptographically secure, just enough to
+ * avoid returning all-zero garbage on hardware missing the
+ * instruction. This syscall does not report which path was taken;
+ * a caller generating long-lived key material on genuinely
+ * RDRAND-less hardware would be trusting a weak fallback silently.
+ * On any RDRAND-capable CPU (the overwhelmingly common case) this
+ * caveat doesn't apply.
+ */
+static int sys_getrandom_has_rdrand(void)
+{
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
+    return (ecx & (1 << 30)) != 0;
+}
+
+static uint64_t sys_getrandom_rdrand64(void)
+{
+    uint64_t val = 0;
+    uint8_t ok = 0;
+
+    if (!sys_getrandom_has_rdrand()) {
+        uint32_t lo, hi;
+        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+        return ((uint64_t)hi << 32 | lo) ^ 0xA5A5A5A5A5A5A5A5ULL;
+    }
+
+    for (int i = 0; i < 10; i++) {
+        __asm__ volatile ("rdrand %0\n" "setc %1\n" : "=r"(val), "=qm"(ok));
+        if (ok) break;
+    }
+    return val;
+}
+
+static __attribute__((unused)) int64_t sys_getrandom(syscall_frame_t *f)
+{
+    uint64_t len = f->rsi;
+    if (!uptr_ok(f->rdi, len)) return -1;
+
+    uint8_t *out = (uint8_t *)(uintptr_t)f->rdi;
+    uint64_t off = 0;
+
+    while (off < len) {
+        uint64_t r = sys_getrandom_rdrand64();
+        uint64_t chunk = (len - off) < 8 ? (len - off) : 8;
+        for (uint64_t i = 0; i < chunk; i++)
+            out[off + i] = (uint8_t)(r >> (8 * i));
+        off += chunk;
+    }
+
+    return 0;
+}
+
 static __attribute__((unused)) int64_t sys_spawn(syscall_frame_t *f)
 {
     if (!uptr_ok(f->rdi, 1)) { serial_print("[SPAWN] uptr fail\n"); return -1; }
@@ -1779,6 +1852,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_EXECV]        = sys_execv,
     [SYS_EXECVE]       = sys_execve,
     [SYS_MEMINFO]      = sys_meminfo,
+    [SYS_GETRANDOM]    = sys_getrandom,
     /* GUI Phase 1 */
     [SYS_IPC_SEND]     = sys_ipc_send,
     [SYS_IPC_RECV]     = sys_ipc_recv,

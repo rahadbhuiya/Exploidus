@@ -55,19 +55,24 @@ Exploidus treats it as a foundation.
 - [ ] Smooth horizontal scaling via HuddleCluster
 - [ ] Advanced cybersecurity platform at OS level
 - [~] sshd — remote access daemon. TCP listener (port 22) + RFC 4253
-      §4.2 identification-string exchange done and real (accepts a
-      real SSH client's connection, negotiates protocol version,
-      logs its software version). Full crypto primitive stack ported
-      and verified against published test vectors: X25519 (KEX, RFC
-      7748), ChaCha20-Poly1305 (AEAD cipher, RFC 8439), SHA-256 (KEX
-      hash, RFC 8731), SHA-512 + Ed25519 (host-key signing, RFC
-      8032) — all in kernel/crypto/, meant to compile as sshd's own
-      userspace objects (not kernel objects). None yet integration-
-      tested as userspace objects with the real cross-toolchain, and
-      none yet wired into sshd.c. What remains is protocol wiring,
-      not crypto: generating/persisting a host key and the actual
-      SSH_MSG_KEXINIT/KEX_ECDH_INIT/REPLY state machine in sshd.c
-      that combines these primitives into a working handshake.
+      §4.2 identification-string exchange + §7.1 SSH_MSG_KEXINIT
+      negotiation both done and real (accepts a real SSH client's
+      connection, negotiates protocol version, exchanges and checks
+      KEXINIT against curve25519-sha256/ssh-ed25519/chacha20-
+      poly1305@openssh.com, logs what the peer offered). New
+      SYS_GETRANDOM syscall added first — no source of randomness
+      existed for userspace before it, a hard blocker for ephemeral
+      KEX keys. Full crypto primitive stack ported and verified
+      against published test vectors: X25519 (KEX, RFC 7748),
+      ChaCha20-Poly1305 (AEAD cipher, RFC 8439), SHA-256 (KEX hash,
+      RFC 8731), SHA-512 + Ed25519 (host-key signing, RFC 8032) — all
+      in kernel/crypto/, compiled as sshd's own userspace objects.
+      Still closes honestly after negotiation: the actual
+      SSH_MSG_KEX_ECDH_INIT/REPLY Diffie-Hellman exchange isn't wired
+      in yet, even though every primitive it needs is ready. That's
+      the last piece — combining X25519 + SHA-256 + Ed25519 + switching
+      to encrypted ChaCha20-Poly1305 packet framing into an actual
+      working handshake.
 
 ## Architecture
 

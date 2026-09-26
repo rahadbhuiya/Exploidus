@@ -162,8 +162,29 @@
                                   * Returns 0 on success, -1 on a bad
                                   * pointer. See sys_meminfo() in
                                   * kernel/syscall/table.c. */
+#define SYS_GETRANDOM      100  /* fill rsi bytes at rdi with random
+                                  * data -- RDRAND-backed, same safe
+                                  * generator kernel/cap/capability.c
+                                  * already uses for capability tokens
+                                  * (this syscall duplicates that
+                                  * ~20-line rdrand64()/has_rdrand()
+                                  * logic rather than exposing
+                                  * capability.c's internals, since
+                                  * those are deliberately private to
+                                  * the capability system). No
+                                  * userspace process had ANY source
+                                  * of randomness before this --
+                                  * needed for sshd's ephemeral X25519
+                                  * key exchange keys (predictable KEX
+                                  * keys would break session
+                                  * confidentiality entirely) and its
+                                  * SSH_MSG_KEXINIT cookie. rdi = user
+                                  * buffer, rsi = byte count. Returns
+                                  * 0 on success, -1 on a bad pointer.
+                                  * See sys_getrandom() in
+                                  * kernel/syscall/table.c. */
 
-#define SYS_COUNT          100
+#define SYS_COUNT          101
 
 
 /*
