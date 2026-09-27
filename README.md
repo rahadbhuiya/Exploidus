@@ -799,6 +799,36 @@ generating and persisting a host key, and the actual
 `SSH_MSG_KEXINIT`/`KEX_ECDH_INIT`/`REPLY` state machine in `sshd.c`
 that combines these primitives into a working handshake.
 
+## Resolved: out-of-order TCP segments were silently dropped with no ACK at all
+
+Found and fixed alongside the KEXINIT work above, once a real
+multi-segment exchange (the client's KEXINIT, ~830 bytes across
+several TCP segments) was actually tested against real OpenSSH.
+`tcp_input()`'s `TCP_ESTABLISHED` handling only accepted a segment
+whose sequence number exactly matched `conn->rcv_nxt`; anything else
+(an out-of-order segment — real network reordering happens even on a
+virtual NIC, confirmed in practice) was dropped with **no ACK sent at
+all**, not even a duplicate ACK. Proper TCP requires acking an
+out-of-order segment with the current (unchanged) `rcv_nxt` so the
+sender knows what actually arrived and retransmits correctly; without
+that, the sender has no signal a segment went missing and simply
+waits on an ACK that will never come — a stall that looks identical
+to "the connection just hung," which is exactly what this looked like
+before being traced.
+
+Fixed by sending a duplicate ACK on any out-of-order/mismatched
+segment. Verified against a real OpenSSH client sending its KEXINIT
+in several segments that arrived out of order at the receiver: the
+first two segments arrived before the segment that should have come
+first, got correctly logged and duplicate-ACKed, and the client's own
+TCP stack responded exactly as TCP's retransmission logic specifies —
+retransmitting the missing region, coalescing what had been two
+smaller out-of-order segments into one larger retransmission whose
+byte range exactly covered both (confirmed by comparing sequence
+numbers and lengths byte-for-byte). The full KEXINIT was correctly
+reassembled and parsed after that, with the connection proceeding
+normally.
+
 ## `SYS_GETRANDOM` — userspace had no source of randomness at all
 
 Discovered while about to build sshd's actual key exchange: RDRAND
@@ -860,9 +890,17 @@ ChaCha20-Poly1305 packet framing, into an actual working handshake.
 
 Syntax-checked under this tree's real userspace `-Wall -Wextra
 -Werror` flags and wired into the `Makefile` (`sshd_packet.c` compiles
-and links as one of `sshd`'s own objects) — confirmed via `make -n`,
-not yet booted with the actual negotiation exercised end-to-end
-against a real client.
+and links as one of `sshd`'s own objects). **Now verified end-to-end
+against a real OpenSSH client** (`ssh -v`, after fixing a packet-
+padding bug and the out-of-order-segment bug above, both only caught
+by this real test): the client sent its own KEXINIT, sshd received
+and correctly reassembled it despite real out-of-order delivery,
+parsed every algorithm category, and both sides agreed on exactly
+`curve25519-sha256` / `ssh-ed25519` / `chacha20-poly1305@openssh.com`
+— confirmed on the client side too (`debug1: kex: algorithm:
+curve25519-sha256`, `debug1: kex: host key algorithm: ssh-ed25519`,
+`debug1: expecting SSH2_MSG_KEX_ECDH_REPLY`), which then closed
+cleanly with no error when sshd disconnected as designed.
 
 ## sshd — protocol version exchange (no encryption yet, on purpose)
 

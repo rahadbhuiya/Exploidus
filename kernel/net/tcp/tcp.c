@@ -358,7 +358,21 @@ void tcp_input(netif_t *iface, netbuf_t *buf, ip4_t src, ip4_t dst)
             conn->rcv_nxt += payload_len;
             tcp_send_segment(iface, conn, TCP_ACK, NULL, 0);
         } else if (payload_len > 0) {
-            serial_print(" expected="); serial_printhex((uint64_t)conn->rcv_nxt); serial_print("\n");
+            /*
+             * Out-of-order or duplicate segment (real network
+             * reordering happens even on a virtual NIC -- confirmed
+             * in practice against a real OpenSSH client, see the
+             * project README). This used to be silently dropped with
+             * NO ack sent at all -- proper TCP requires acking with
+             * the current (unchanged) rcv_nxt so the sender knows
+             * what was actually received and retransmits correctly,
+             * instead of waiting on an ack that would never come.
+             */
+            serial_print("[TCP] out-of-order segment, expected=");
+            serial_printhex((uint64_t)conn->rcv_nxt);
+            serial_print(" got="); serial_printhex((uint64_t)seq);
+            serial_print(" -- sending duplicate ACK\n");
+            tcp_send_segment(iface, conn, TCP_ACK, NULL, 0);
         }
 
         /* Process ACK */
