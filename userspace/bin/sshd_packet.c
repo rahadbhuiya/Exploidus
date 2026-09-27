@@ -88,8 +88,20 @@ int ssh_packet_send(cap_token_t cap, int fd, const uint8_t *payload,
     if (payload_len > SSH_PACKET_MAX)
         return 0;
 
-    uint32_t padded = 1 + payload_len; /* padding_length byte + payload */
-    uint32_t pad = block_size - (padded % block_size);
+    /*
+     * BUG FIX: RFC 4253 Section 6 requires "the length of the
+     * concatenation of 'packet_length', 'padding_length', 'payload',
+     * and 'random padding'" -- i.e. the FULL on-wire size INCLUDING
+     * the 4-byte packet_length field itself -- to be a multiple of
+     * the block size. This originally only aligned
+     * (padding_length + payload + padding), which is packet_length's
+     * own VALUE, missing the +4 for the length field that precedes
+     * it on the wire. A real OpenSSH client correctly rejected the
+     * result: "padding error: need N block 8 mod 4" -- the "mod 4"
+     * there is exactly this off-by-4.
+     */
+    uint32_t base = 4 + 1 + payload_len; /* length field + padding_length byte + payload */
+    uint32_t pad = block_size - (base % block_size);
     if (pad < 4) pad += block_size;
 
     uint32_t packet_length = 1 + payload_len + pad;
