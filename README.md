@@ -1256,3 +1256,80 @@ mouse/GUI testing instead).
   aren't (early boot, before `sti` — `exfs_mount()` for the root
   filesystem runs in exactly that window, so an IRQ-only wait would
   hang boot).
+## sshd: curve25519-sha256 key exchange wired in (KEX_ECDH_INIT/REPLY/NEWKEYS)
+
+The primitives above are now combined into the actual handshake, in
+`userspace/bin/sshd_kex.c`: ephemeral X25519 → shared secret → RFC 8731
+exchange hash `H` over (V_C, V_S, I_C, I_S, K_S, Q_C, Q_S, mpint K) →
+Ed25519 signature of `H` with the host key → `SSH_MSG_KEX_ECDH_REPLY`,
+`SSH_MSG_NEWKEYS` both ways → RFC 4253 §7.2 derivation of the two
+64-byte `chacha20-poly1305@openssh.com` keys (`ssh_keys_t`).
+
+Other changes in the same step:
+
+- **Host key** is a 32-byte ed25519 seed persisted at
+  `SSHD_HOSTKEY_PATH` (`/ssh_host_ed25519_key`, mode 0600), generated
+  from `getrandom()` on first start, with its SHA256 fingerprint printed
+  in the format `ssh` shows. If it can't be written, sshd says the key
+  is ephemeral instead of pretending otherwise.
+- **Fixed: identification line over-read.** `sshd.c` used one bulk
+  `xrecv()` for the client's ID line; if the client's KEXINIT arrives
+  in the same TCP segment, it was swallowed and `ssh_packet_recv()`
+  then hung on a stream starting mid-packet (reproduced). The ID line is
+  now read up to LF only.
+- **Fixed: `kernel/crypto/sha512.c` and `sha512.h` had each other's
+  contents** (since the SHA-512 commit): the `.c` held the header and
+  vice versa, so nothing could link against `sha512()`. Swapped back.
+- `first_kex_packet_follows` with a wrong guess: the speculative packet
+  is now discarded (RFC 4253 §7.1) via `ssh_kexinit_wrong_guess()`.
+- Makefile: `sshd.elf` links `x25519 sha256 sha512 ed25519` from
+  `kernel/crypto/` into `build/sshd-crypto/` using the userspace PIE
+  flags (separate from kernel-flag objects).
+
+**Verified on Exploidus itself:** OpenSSH_10.2p1 (Debian-6) against the
+VM (QEMU, port 2222 -> 22): negotiates `curve25519-sha256` +
+`ssh-ed25519` + `chacha20-poly1305@openssh.com`, the `Server host key`
+fingerprint `ssh -vvv` prints matches the one sshd printed at boot
+(so OpenSSH accepted the exchange hash and the Ed25519 signature), and
+`SSH2_MSG_NEWKEYS` is exchanged in both directions, after which sshd
+closes the connection (no encrypted layer yet). The build with the real
+cross-toolchain links with the new `build/sshd-crypto/*.o` objects.
+
+**Verified on a Linux host** (`tests/sshd-host/run.sh`; the real sshd
+sources behind a socket shim, ASan+UBSan; needs `pip install paramiko
+cryptography`): a third-party client (paramiko 5.0.0) completes the
+exchange including host-key signature verification; an independent raw
+client recomputes `H` and verifies the signature; the C mpint encoding
+and key derivation match paramiko's `_compute_key` byte-for-byte on six
+edge-case secrets (leading zeros, top bit set, all-0xff, tiny, ...);
+low-order, malformed and wrong-type `KEX_ECDH_INIT` are rejected; a
+client that sends ID + KEXINIT + KEX_ECDH_INIT in one segment works; the
+host key persists across a daemon restart. (paramiko only knows the
+`@libssh.org` alias of the kex name and lacks chacha20-poly1305, so the
+harness aliases those names; the KEX code itself is paramiko's. The
+harness also advertises a never-used MAC name because paramiko demands
+a MAC match even for AEAD ciphers.)
+
+**Not yet verified:**
+
+- Host key persistence across a *VM reboot* (the first boot generated
+  and saved `/ssh_host_ed25519_key`; a second boot should print
+  `loaded ed25519 host key` with the same fingerprint).
+- That the derived cipher keys equal OpenSSH's. They match paramiko's
+  derivation byte-for-byte and the signature over `H` verified, but only
+  a working encrypted layer exercises them end to end.
+- Observation, not yet root-caused: with OpenSSH 10.x the client's
+  KEXINIT is large (it lists post-quantum kex names) and arrives as
+  several TCP segments; the log shows `out-of-order segment` lines and
+  the handshake pauses until retransmission. It completes, but slowly.
+  The kernel TCP drops out-of-order segments (see the section above)
+  instead of buffering them; a packet capture has not been checked.
+
+**Still missing:** the encrypted packet layer. That cipher is NOT the
+RFC 8439 AEAD in `chacha20poly1305.c`: OpenSSH's variant uses two keys
+(the header key encrypts the length), a nonce made of the packet
+sequence number, and Poly1305 over length+payload. OpenSSH already
+sends `kex-strict-c-v00@openssh.com`; the server side should answer
+with `kex-strict-s-v00@openssh.com` (sequence-number reset on NEWKEYS,
+Terrapin mitigation) when that layer is added. sshd closes after
+NEWKEYS until then.

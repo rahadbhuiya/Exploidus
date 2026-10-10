@@ -61,3 +61,16 @@ uint32_t ssh_kexinit_build(uint8_t *out, const uint8_t cookie[16]);
  * payload).
  */
 int ssh_kexinit_check(const uint8_t *data, uint32_t len);
+
+/*
+ * ssh_kexinit_wrong_guess -- RFC 4253 Section 7.1: if the peer set
+ * first_kex_packet_follows, it sent its KEX packet speculatively,
+ * assuming the first algorithm in its kex / host-key lists would be
+ * chosen. When that guess doesn't match what this server picks
+ * (curve25519-sha256 / ssh-ed25519), the guessed packet "MUST be
+ * ignored" -- the caller must read and discard one packet before
+ * starting the real exchange. Returns 1 if exactly that applies, 0
+ * if there is nothing to discard (flag clear, guess right, or a
+ * payload ssh_kexinit_check() would already have rejected).
+ */
+int ssh_kexinit_wrong_guess(const uint8_t *data, uint32_t len);

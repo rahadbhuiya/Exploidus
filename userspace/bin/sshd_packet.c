@@ -290,3 +290,33 @@ int ssh_kexinit_check(const uint8_t *data, uint32_t len) {
 
     return ok_kex && ok_hostkey && ok_cipher_cs && ok_cipher_sc;
 }
+
+/* True if the FIRST comma-separated entry of the list equals needle. */
+static int namelist_first_is(const uint8_t *list, uint32_t len, const char *needle) {
+    uint32_t needle_len = (uint32_t)slen(needle);
+    uint32_t tok = 0;
+    while (tok < len && list[tok] != ',') tok++;
+    return tok == needle_len && mcompare(list, needle, needle_len) == 0;
+}
+
+int ssh_kexinit_wrong_guess(const uint8_t *data, uint32_t len) {
+    uint32_t pos = 1 + 16;
+    const uint8_t *kex = NULL, *hostkey = NULL;
+    uint32_t kex_len = 0, hostkey_len = 0;
+
+    if (len < pos || data[0] != SSH_MSG_KEXINIT) return 0;
+    for (int i = 0; i < 10; i++) {
+        uint32_t n = 0;
+        const uint8_t *l = read_namelist(data, len, &pos, &n);
+        if (!l) return 0;
+        if (i == 0) { kex = l; kex_len = n; }
+        if (i == 1) { hostkey = l; hostkey_len = n; }
+    }
+    if (pos + 1 > len) return 0;
+    if (data[pos] == 0) return 0;   /* first_kex_packet_follows not set */
+
+    if (namelist_first_is(kex, kex_len, KEX_ALGORITHMS) &&
+        namelist_first_is(hostkey, hostkey_len, HOST_KEY_ALGORITHMS))
+        return 0;                   /* guess matches our choice: it is the real KEX packet */
+    return 1;
+}

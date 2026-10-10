@@ -7,3 +7,5 @@ registry/index.json
 build/
 iso/
 build.log
+*.img
+tests/sshd-host/.build/
