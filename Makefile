@@ -105,7 +105,12 @@ LUA_C_SRCS     := userspace/lua/lua-5.5.0/onelua.c
 AUDITD_C_SRCS  := userspace/bin/auditd.c
 INIT_C_SRCS    := userspace/bin/init.c
 HTTPD_C_SRCS   := userspace/bin/httpd.c
-SSHD_C_SRCS    := userspace/bin/sshd.c userspace/bin/sshd_packet.c
+SSHD_C_SRCS    := userspace/bin/sshd.c userspace/bin/sshd_packet.c userspace/bin/sshd_kex.c
+# Crypto primitives sshd links directly (not via the kernel image).
+# Built into build/sshd-crypto/ with the userspace PIE flags, separate
+# from any kernel-flag objects of the same sources. chacha20/poly1305
+# join this list when the encrypted packet layer lands.
+SSHD_CRYPTO_SRCS := x25519 sha256 sha512 ed25519
 HTTPT_C_SRCS   := userspace/bin/httptest.c
 RAHU_C_SRCS    := userspace/bin/rahu.c
 COMP_C_SRCS    := userspace/compositor/compositor.c
@@ -146,7 +151,8 @@ LUA_OBJS := $(patsubst %.c,   build/%.o, $(LUA_C_SRCS))
 AD_OBJS  := $(patsubst %.c,   build/%.o, $(AUDITD_C_SRCS))
 IN_OBJS  := $(patsubst %.c,   build/%.o, $(INIT_C_SRCS))
 HT_OBJS  := $(patsubst %.c,   build/%.o, $(HTTPD_C_SRCS))
-SSHD_OBJS := $(patsubst %.c,  build/%.o, $(SSHD_C_SRCS))
+SSHD_OBJS := $(patsubst %.c,  build/%.o, $(SSHD_C_SRCS)) \
+             $(patsubst %,    build/sshd-crypto/%.o, $(SSHD_CRYPTO_SRCS))
 HTT_OBJS := $(patsubst %.c,   build/%.o, $(HTTPT_C_SRCS))
 RH_OBJS  := $(patsubst %.c,   build/%.o, $(RAHU_C_SRCS))
 COMP_OBJS     := $(patsubst %.c, build/%.o, $(COMP_C_SRCS))
@@ -316,6 +322,12 @@ build/userspace/shell/%.o: userspace/shell/%.c
 build/userspace/bin/%.o: userspace/bin/%.c
 	@mkdir -p $(dir $@)
 	@echo "[CC]  bin: $<"
+	$(CC) $(SHELL_CFLAGS) -c $< -o $@
+
+# sshd's crypto objects: kernel/crypto sources, userspace PIE flags
+build/sshd-crypto/%.o: kernel/crypto/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC]  sshd-crypto: $<"
 	$(CC) $(SHELL_CFLAGS) -c $< -o $@
 
 # Lua interpreter — onelua.c amalgamation, generic ISO-C fallback path
