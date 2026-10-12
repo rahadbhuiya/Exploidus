@@ -152,12 +152,19 @@ static void derive_key(uint8_t *out, uint32_t outlen,
 
 /* ---- packet receive that tolerates IGNORE/DEBUG (RFC 4253 11) ---- */
 
-static int32_t recv_kex_packet(cap_token_t cap, int fd, uint8_t *buf) {
+static int32_t recv_kex_packet(ssh_transport_t *t, uint8_t *buf) {
     for (int i = 0; i < 16; i++) {
-        int32_t n = ssh_packet_recv(cap, fd, buf);
+        int32_t n = ssh_recv(t, buf);
         if (n <= 0) return -1;
-        if (buf[0] == SSH_MSG_IGNORE || buf[0] == SSH_MSG_DEBUG)
+        if (buf[0] == SSH_MSG_IGNORE || buf[0] == SSH_MSG_DEBUG) {
+            /* kex-strict: nothing but KEX messages may appear before
+             * NEWKEYS (the Terrapin attack injects exactly these). */
+            if (t->strict) {
+                println("[SSHD] strict-kex violation: IGNORE/DEBUG during key exchange");
+                return -1;
+            }
             continue;
+        }
         if (buf[0] == SSH_MSG_DISCONNECT) {
             println("[SSHD] peer sent SSH_MSG_DISCONNECT during key exchange");
             return -1;
@@ -167,7 +174,7 @@ static int32_t recv_kex_packet(cap_token_t cap, int fd, uint8_t *buf) {
     return -1;
 }
 
-int ssh_kex_ecdh_server(cap_token_t cap, int fd,
+int ssh_kex_ecdh_server(ssh_transport_t *t,
                         const uint8_t *v_c, uint32_t v_c_len,
                         const uint8_t *v_s, uint32_t v_s_len,
                         const uint8_t *i_c, uint32_t i_c_len,
@@ -187,7 +194,7 @@ int ssh_kex_ecdh_server(cap_token_t cap, int fd,
 
     /* 1. SSH_MSG_KEX_ECDH_INIT: byte 30, string Q_C (exactly 32). */
     println("[SSHD] waiting for SSH_MSG_KEX_ECDH_INIT...");
-    int32_t n = recv_kex_packet(cap, fd, rx);
+    int32_t n = recv_kex_packet(t, rx);
     if (n < 0) {
         println("[SSHD] no KEX_ECDH_INIT received");
         return 0;
@@ -235,6 +242,12 @@ int ssh_kex_ecdh_server(cap_token_t cap, int fd,
         sha256_final(&c, H);
     }
 
+    /* Derive the two cipher keys now (first KEX, so session_id = H):
+     * the send direction must switch the instant our NEWKEYS is out. */
+    kx_copy(out->session_id, H, 32);
+    derive_key(out->key_c2s, 64, kmp, kmp_len, H, 'C', out->session_id);
+    derive_key(out->key_s2c, 64, kmp, kmp_len, H, 'D', out->session_id);
+
     /* 4. Sign H with the host key (ssh-ed25519 signs the 32-byte hash
      * itself, RFC 8709 Section 6) and build the signature blob. */
     ed25519_sign(sig, H, sizeof(H), hk->secret_key);
@@ -250,7 +263,7 @@ int ssh_kex_ecdh_server(cap_token_t cap, int fd,
         rp += put_string(reply + rp, q_s, 32);
         rp += put_string(reply + rp, sigblob, pos);
         println("[SSHD] sending SSH_MSG_KEX_ECDH_REPLY...");
-        if (!ssh_packet_send(cap, fd, reply, rp)) {
+        if (!ssh_send(t, reply, rp)) {
             println("[SSHD] failed to send KEX_ECDH_REPLY");
             goto done;
         }
@@ -258,25 +271,27 @@ int ssh_kex_ecdh_server(cap_token_t cap, int fd,
     {
         const uint8_t newkeys = SSH_MSG_NEWKEYS;
         println("[SSHD] sending SSH_MSG_NEWKEYS...");
-        if (!ssh_packet_send(cap, fd, &newkeys, 1)) {
+        if (!ssh_send(t, &newkeys, 1)) {
             println("[SSHD] failed to send NEWKEYS");
             goto done;
         }
+        /* Everything we send from here on is encrypted (RFC 4253 7.3). */
+        ssh_transport_start_send_crypto(t, out->key_s2c);
     }
 
     /* 6. The client's NEWKEYS tells us it has switched; nothing else
      * is legal between its KEX_ECDH_INIT and this. */
     println("[SSHD] waiting for the client's SSH_MSG_NEWKEYS...");
-    n = recv_kex_packet(cap, fd, rx);
+    n = recv_kex_packet(t, rx);
     if (n != 1 || rx[0] != SSH_MSG_NEWKEYS) {
         println("[SSHD] expected a bare SSH_MSG_NEWKEYS from the client");
         goto done;
     }
 
-    /* 7. Derive the two cipher keys; first KEX, so session_id = H. */
-    kx_copy(out->session_id, H, 32);
-    derive_key(out->key_c2s, 64, kmp, kmp_len, H, 'C', out->session_id);
-    derive_key(out->key_s2c, 64, kmp, kmp_len, H, 'D', out->session_id);
+    /* 7. Our receive direction switches to the client's key now that
+     * its NEWKEYS arrived (the send direction was switched right after
+     * ours went out, step 5). */
+    ssh_transport_start_recv_crypto(t, out->key_c2s);
     ok = 1;
 
 done:

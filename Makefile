@@ -109,8 +109,8 @@ SSHD_C_SRCS    := userspace/bin/sshd.c userspace/bin/sshd_packet.c userspace/bin
 # Crypto primitives sshd links directly (not via the kernel image).
 # Built into build/sshd-crypto/ with the userspace PIE flags, separate
 # from any kernel-flag objects of the same sources. chacha20/poly1305
-# join this list when the encrypted packet layer lands.
-SSHD_CRYPTO_SRCS := x25519 sha256 sha512 ed25519
+# serve the OpenSSH chacha20-poly1305@openssh.com packet layer.
+SSHD_CRYPTO_SRCS := x25519 sha256 sha512 ed25519 chacha20 poly1305
 HTTPT_C_SRCS   := userspace/bin/httptest.c
 RAHU_C_SRCS    := userspace/bin/rahu.c
 COMP_C_SRCS    := userspace/compositor/compositor.c

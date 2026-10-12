@@ -56,7 +56,7 @@ typedef uint32_t u32;
     a += b; d ^= a; d = ROTL32(d, 8); \
     c += d; b ^= c; b = ROTL32(b, 7);
 
-static const char sigma[16] = "expand 32-byte k";
+static const u8 sigma[16] = { 'e','x','p','a','n','d',' ','3','2','-','b','y','t','e',' ','k' };
 
 void chacha20_block(uint8_t out[64], const uint8_t key[32],
                      uint32_t counter, const uint8_t nonce[12]) {

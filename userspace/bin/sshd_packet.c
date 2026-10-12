@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include "../libc/syscall.h"
 #include "sshd_packet.h"
+#include "../../kernel/crypto/chacha20.h"
+#include "../../kernel/crypto/poly1305.h"
 
 #define SSH_MSG_KEXINIT 20
 
@@ -80,8 +82,8 @@ static uint32_t get_u32(const uint8_t *p) {
 
 /* ---- binary packet protocol (RFC 4253 Section 6) ---- */
 
-int ssh_packet_send(cap_token_t cap, int fd, const uint8_t *payload,
-                     uint32_t payload_len) {
+static int plain_send(cap_token_t cap, int fd, const uint8_t *payload,
+                      uint32_t payload_len) {
     static uint8_t buf[SSH_PACKET_MAX + 64];
     const uint32_t block_size = 8; /* unencrypted minimum, RFC 4253 Section 6 */
 
@@ -125,7 +127,7 @@ int ssh_packet_send(cap_token_t cap, int fd, const uint8_t *payload,
     return send_all(cap, fd, buf, total);
 }
 
-int32_t ssh_packet_recv(cap_token_t cap, int fd, uint8_t *out) {
+static int32_t plain_recv(cap_token_t cap, int fd, uint8_t *out) {
     uint8_t lenbuf[4];
     if (!recv_exact(cap, fd, lenbuf, 4))
         return -1;
@@ -152,6 +154,142 @@ int32_t ssh_packet_recv(cap_token_t cap, int fd, uint8_t *out) {
     return (int32_t)payload_len;
 }
 
+/* ---- chacha20-poly1305@openssh.com packet layer ----
+ *
+ * OpenSSH's construction (PROTOCOL.chacha20poly1305), NOT RFC 8439:
+ *   - 64 bytes of key per direction: K_2 = key[0..31] (main: payload
+ *     and the one-time Poly1305 key), K_1 = key[32..63] (header: the
+ *     4-byte length).
+ *   - The nonce is the 32-bit packet sequence number as an 8-byte
+ *     big-endian value. OpenSSH uses the original ChaCha layout (64-bit
+ *     block counter, 64-bit nonce); with the counter's high word zero
+ *     that is exactly the RFC 8439 layout with the 12-byte nonce
+ *     00 00 00 00 || seqno8, which is what chacha20.c implements.
+ *   - Poly1305 key = first 32 bytes of K_2's block 0; the payload is
+ *     encrypted with K_2 from block 1; the length with K_1 from block 0.
+ *   - Tag = Poly1305 over (encrypted length || encrypted body), 16
+ *     bytes, appended. Wire: enc(len)[4] || enc(body)[len] || tag[16].
+ *   - packet_length is NOT included in the padding alignment: it
+ *     is (padding_length byte + payload + padding), a multiple of 8,
+ *     with at least 4 bytes of padding.
+ * The tag is verified BEFORE anything is decrypted or parsed.
+ */
+
+static void chacha_nonce(uint8_t n[12], uint32_t seq) {
+    for (int i = 0; i < 8; i++) n[i] = 0;
+    put_u32(n + 8, seq);
+}
+
+static int ct_equal16(const uint8_t *a, const uint8_t *b) {
+    uint8_t acc = 0;
+    for (int i = 0; i < 16; i++) acc |= (uint8_t)(a[i] ^ b[i]);
+    return acc == 0;
+}
+
+static void wipe(void *p, uint32_t n) {
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
+static int enc_send(ssh_transport_t *t, const uint8_t *payload, uint32_t payload_len) {
+    static uint8_t buf[4 + SSH_PACKET_MAX + 16];
+    uint8_t nonce[12], blk[64];
+
+    uint32_t pad = 8 - ((1 + payload_len) % 8);
+    if (pad < 4) pad += 8;
+    uint32_t packet_length = 1 + payload_len + pad;     /* multiple of 8 */
+    if (payload_len > SSH_PACKET_MAX || packet_length > SSH_PACKET_MAX)
+        return 0;
+
+    put_u32(buf, packet_length);
+    buf[4] = (uint8_t)pad;
+    mcopy(buf + 5, payload, payload_len);
+    {
+        uint8_t padbuf[16];
+        if (getrandom(padbuf, (uint64_t)pad) < 0) return 0;
+        mcopy(buf + 5 + payload_len, padbuf, pad);
+    }
+
+    chacha_nonce(nonce, t->seq_send);
+    chacha20_block(blk, t->key_send, 0, nonce);                    /* Poly1305 key: blk[0..31] */
+    chacha20_xor(buf + 4, buf + 4, packet_length, t->key_send, 1, nonce);
+    chacha20_xor(buf, buf, 4, t->key_send + 32, 0, nonce);         /* length, header key */
+    poly1305_auth(buf + 4 + packet_length, buf, 4 + packet_length, blk);
+    wipe(blk, sizeof(blk));
+
+    return send_all(t->cap, t->fd, buf, 4 + packet_length + 16);
+}
+
+static int32_t enc_recv(ssh_transport_t *t, uint8_t *out) {
+    static uint8_t buf[4 + SSH_PACKET_MAX + 16];
+    uint8_t nonce[12], blk[64], lenp[4], tag[16];
+
+    if (!recv_exact(t->cap, t->fd, buf, 4)) return -1;
+    chacha_nonce(nonce, t->seq_recv);
+    mcopy(lenp, buf, 4);
+    chacha20_xor(lenp, lenp, 4, t->key_recv + 32, 0, nonce);
+    uint32_t packet_length = get_u32(lenp);
+    /* Smallest legal: padding_length(1) + payload(1) + padding(4) = 6,
+     * rounded up to the block size 8. */
+    if (packet_length < 8 || packet_length > SSH_PACKET_MAX || (packet_length % 8) != 0)
+        return -1;
+
+    if (!recv_exact(t->cap, t->fd, buf + 4, packet_length + 16)) return -1;
+
+    chacha20_block(blk, t->key_recv, 0, nonce);
+    poly1305_auth(tag, buf, 4 + packet_length, blk);
+    wipe(blk, sizeof(blk));
+    if (!ct_equal16(tag, buf + 4 + packet_length)) {
+        println("[SSHD] packet authentication FAILED (bad Poly1305 tag), dropping connection");
+        return -1;
+    }
+
+    chacha20_xor(buf + 4, buf + 4, packet_length, t->key_recv, 1, nonce);
+    uint32_t pad = buf[4];
+    if (pad < 4 || pad + 1 >= packet_length) return -1;      /* also: payload >= 1 byte */
+    uint32_t payload_len = packet_length - pad - 1;
+    mcopy(out, buf + 5, payload_len);
+    return (int32_t)payload_len;
+}
+
+/* ---- transport: sequence numbers + plaintext/encrypted dispatch ---- */
+
+void ssh_transport_init(ssh_transport_t *t, cap_token_t cap, int fd) {
+    wipe(t, sizeof(*t));
+    t->cap = cap;
+    t->fd = fd;
+}
+
+int ssh_send(ssh_transport_t *t, const uint8_t *payload, uint32_t payload_len) {
+    int ok = t->enc_send ? enc_send(t, payload, payload_len)
+                         : plain_send(t->cap, t->fd, payload, payload_len);
+    if (ok) t->seq_send++;
+    return ok;
+}
+
+int32_t ssh_recv(ssh_transport_t *t, uint8_t *out) {
+    int32_t n = t->enc_recv ? enc_recv(t, out)
+                            : plain_recv(t->cap, t->fd, out);
+    if (n >= 0) t->seq_recv++;
+    return n;
+}
+
+void ssh_transport_start_send_crypto(ssh_transport_t *t, const uint8_t key[64]) {
+    mcopy(t->key_send, key, 64);
+    t->enc_send = 1;
+    if (t->strict) t->seq_send = 0;      /* kex-strict: reset on NEWKEYS */
+}
+
+void ssh_transport_start_recv_crypto(ssh_transport_t *t, const uint8_t key[64]) {
+    mcopy(t->key_recv, key, 64);
+    t->enc_recv = 1;
+    if (t->strict) t->seq_recv = 0;
+}
+
+void ssh_transport_wipe(ssh_transport_t *t) {
+    wipe(t, sizeof(*t));
+}
+
 /* ---- SSH_MSG_KEXINIT (RFC 4253 Section 7.1) ---- */
 
 /* This server's one and only supported algorithm per category --
@@ -163,6 +301,8 @@ int32_t ssh_packet_recv(cap_token_t cap, int fd, uint8_t *out) {
 #define KEX_ALGORITHMS      "curve25519-sha256"
 #define HOST_KEY_ALGORITHMS "ssh-ed25519"
 #define CIPHER_ALGORITHMS   "chacha20-poly1305@openssh.com"
+#define KEX_STRICT_S        "kex-strict-s-v00@openssh.com" /* Terrapin mitigation, advertised */
+#define KEX_STRICT_C        "kex-strict-c-v00@openssh.com"
 #define MAC_ALGORITHMS      "" /* AEAD cipher, no separate MAC per RFC 8439 Section 4 / OpenSSH convention */
 #define COMPRESSION_ALGORITHMS "none"
 #define LANGUAGES           ""
@@ -180,7 +320,7 @@ uint32_t ssh_kexinit_build(uint8_t *out, const uint8_t cookie[16]) {
     out[pos++] = SSH_MSG_KEXINIT;
     mcopy(out + pos, cookie, 16); pos += 16;
 
-    pos += put_namelist(out + pos, KEX_ALGORITHMS);
+    pos += put_namelist(out + pos, KEX_ALGORITHMS "," KEX_STRICT_S);
     pos += put_namelist(out + pos, HOST_KEY_ALGORITHMS);
     pos += put_namelist(out + pos, CIPHER_ALGORITHMS);      /* enc c->s */
     pos += put_namelist(out + pos, CIPHER_ALGORITHMS);      /* enc s->c */
@@ -319,4 +459,11 @@ int ssh_kexinit_wrong_guess(const uint8_t *data, uint32_t len) {
         namelist_first_is(hostkey, hostkey_len, HOST_KEY_ALGORITHMS))
         return 0;                   /* guess matches our choice: it is the real KEX packet */
     return 1;
+}
+
+int ssh_kexinit_peer_strict(const uint8_t *data, uint32_t len) {
+    uint32_t pos = 1 + 16, n = 0;
+    if (len < pos || data[0] != SSH_MSG_KEXINIT) return 0;
+    const uint8_t *kex = read_namelist(data, len, &pos, &n);
+    return kex && namelist_contains(kex, n, KEX_STRICT_C);
 }
