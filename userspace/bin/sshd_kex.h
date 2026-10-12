@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include "../libc/syscall.h"
+#include "sshd_packet.h"
 
 /*
  * Server side of curve25519-sha256 key exchange (RFC 8731, which is
@@ -13,9 +14,10 @@
  *   S -> C : SSH_MSG_NEWKEYS         (21)
  *   C -> S : SSH_MSG_NEWKEYS         (21)
  *
- * This module only does the handshake and key derivation. It does NOT
- * switch the connection to an encrypted packet layer -- the derived
- * keys are handed back in ssh_keys_t for whatever implements that.
+ * On success the derived keys are installed in the transport (send
+ * direction right after our NEWKEYS, receive direction after the
+ * client's) -- see ssh_transport_start_*_crypto() -- and also returned
+ * in ssh_keys_t so the caller can wipe them / use session_id.
  */
 
 #define SSH_MSG_NEWKEYS         21
@@ -53,10 +55,12 @@ uint32_t ssh_hostkey_blob(uint8_t *out, const uint8_t public_key[32]);
  *   v_c / v_s : identification strings, WITHOUT the trailing CR LF
  *   i_c / i_s : the raw KEXINIT payloads (starting at the type byte)
  *
- * Returns 1 on success (both NEWKEYS exchanged, *out filled in), 0 on
- * any failure (caller must close the connection; *out is zeroed).
+ * Returns 1 on success (both NEWKEYS exchanged, transport encrypted
+ * both ways, *out filled in), 0 on any failure (caller must close the
+ * connection; *out is zeroed). t->strict must already be set from
+ * ssh_kexinit_peer_strict() on the client's KEXINIT.
  */
-int ssh_kex_ecdh_server(cap_token_t cap, int fd,
+int ssh_kex_ecdh_server(ssh_transport_t *t,
                         const uint8_t *v_c, uint32_t v_c_len,
                         const uint8_t *v_s, uint32_t v_s_len,
                         const uint8_t *i_c, uint32_t i_c_len,

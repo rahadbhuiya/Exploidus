@@ -24,7 +24,7 @@ cd "$B"
 C=kernel/crypto
 # shift-base off: ed25519.c (TweetNaCl-derived) left-shifts negative values; gcc defines that, UBSan flags it.
 FLAGS="-std=gnu11 -g -O1 -fno-builtin -U_FORTIFY_SOURCE -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-sanitize=shift-base -Wall -Wextra -Wno-unused-parameter"
-CRYPTO="$C/x25519.c $C/sha256.c $C/sha512.c $C/ed25519.c"
+CRYPTO="$C/x25519.c $C/sha256.c $C/sha512.c $C/ed25519.c $C/chacha20.c $C/poly1305.c"
 gcc $FLAGS -DSSHD_HOSTKEY_PATH=\"$HK\" -o sshd_host userspace/bin/sshd.c userspace/bin/sshd_packet.c userspace/bin/sshd_kex.c $CRYPTO
 gcc $FLAGS -o test_kdf userspace/bin/test_kdf.c userspace/bin/sshd_packet.c $CRYPTO
 echo "built: $B/sshd_host $B/test_kdf"

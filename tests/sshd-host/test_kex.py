@@ -10,6 +10,7 @@ HK = "/tmp/exo_test_hostkey"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(HERE, ".build", "sshd_host")
 results = []
+if os.path.exists("/tmp/sshd_host.log"): os.remove("/tmp/sshd_host.log")   # the E1 check parses this log; start clean every run
 
 def check(name, ok, detail=""):
     results.append((name, ok))

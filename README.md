@@ -1256,7 +1256,8 @@ mouse/GUI testing instead).
   aren't (early boot, before `sti` — `exfs_mount()` for the root
   filesystem runs in exactly that window, so an IRQ-only wait would
   hang boot).
-## sshd: curve25519-sha256 key exchange wired in (KEX_ECDH_INIT/REPLY/NEWKEYS)
+  
+## sshd: curve25519-sha256 key exchange + encrypted transport (KEX_ECDH_INIT/REPLY/NEWKEYS, chacha20-poly1305@openssh.com)
 
 The primitives above are now combined into the actual handshake, in
 `userspace/bin/sshd_kex.c`: ephemeral X25519 → shared secret → RFC 8731
@@ -1325,11 +1326,75 @@ a MAC match even for AEAD ciphers.)
   The kernel TCP drops out-of-order segments (see the section above)
   instead of buffering them; a packet capture has not been checked.
 
-**Still missing:** the encrypted packet layer. That cipher is NOT the
-RFC 8439 AEAD in `chacha20poly1305.c`: OpenSSH's variant uses two keys
-(the header key encrypts the length), a nonce made of the packet
-sequence number, and Poly1305 over length+payload. OpenSSH already
-sends `kex-strict-c-v00@openssh.com`; the server side should answer
-with `kex-strict-s-v00@openssh.com` (sequence-number reset on NEWKEYS,
-Terrapin mitigation) when that layer is added. sshd closes after
-NEWKEYS until then.
+**Encrypted transport (added after the key exchange above).** After
+NEWKEYS the connection switches to OpenSSH's
+`chacha20-poly1305@openssh.com` packet format
+(`userspace/bin/sshd_packet.c`, `ssh_send()`/`ssh_recv()` over an
+`ssh_transport_t` that owns the sequence numbers): 64 key bytes per
+direction (K_2 main || K_1 header), a nonce made of the packet sequence
+number, the 4-byte length encrypted under K_1, the payload under K_2
+from block 1, and a Poly1305 tag (key = K_2 block 0) over the encrypted
+length and body, checked before anything is decrypted or parsed. It
+reuses `chacha20.c` and `poly1305.c`; it is **not** the RFC 8439 AEAD in
+`chacha20poly1305.c` (that file is unused by sshd). With the counter's
+high word zero, OpenSSH's 64-bit-counter ChaCha layout equals the RFC
+8439 layout with the 12-byte nonce `00 00 00 00 || seqno8`.
+
+**kex-strict** (Terrapin, CVE-2023-48795): sshd advertises
+`kex-strict-s-v00@openssh.com`; when the client advertises
+`kex-strict-c-v00@openssh.com` too, sequence numbers reset to 0 at each
+NEWKEYS and SSH_MSG_IGNORE/DEBUG during the key exchange are rejected.
+Without the client marker the RFC 4253 behaviour applies (counters
+continue, IGNORE tolerated).
+
+**Session after NEWKEYS:** `SERVICE_REQUEST("ssh-userauth")` is accepted
+(`SERVICE_ACCEPT`); any other service gets `DISCONNECT` 7. The first
+`USERAUTH_REQUEST` is answered with `DISCONNECT` 14 ("authentication is
+not implemented yet"). There is **no authentication**, and no method is
+advertised that can't be verified, so nobody can log in yet. Attacker-
+controlled strings are printed to the console as printable ASCII only,
+at most 32 bytes.
+
+**Verified for the encrypted transport (Linux host,
+`tests/sshd-host/run.sh`, ASan+UBSan):** asyncssh 2.24 (an independent
+SSH implementation with its own chacha20-poly1305@openssh.com and strict
+kex) completes the whole handshake, sends service request and userauth
+request through our encrypted layer and receives our `DISCONNECT` 14. A
+raw client written from PROTOCOL.chacha20poly1305, with
+`cryptography`'s ChaCha20/Poly1305 as the reference, checks the exact
+bytes and sequence numbers in strict and non-strict mode. Flipped tag,
+ciphertext or length bits, a client that forgets the strict sequence
+reset, and an IGNORE injected before KEX_ECDH_INIT in strict mode are
+rejected, while the same IGNORE is tolerated in non-strict mode. The
+tests were mutation-checked: removing the tag comparison, the strict
+sequence reset or the strict IGNORE rule makes them fail.
+
+**Verified for the encrypted transport on Exploidus itself:**
+OpenSSH_10.2p1 (Debian-6) against the VM (QEMU, port 2222 -> 22)
+negotiates strict kex (`kex-strict-s-v00@openssh.com` in sshd's KEXINIT,
+`kex-strict: ON` in the serial log), completes the key exchange with a
+matching `Server host key` fingerprint, decrypts and authenticates
+sshd's packets, and sshd decrypts and authenticates its
+`SERVICE_REQUEST` (`ssh-userauth`) and `USERAUTH_REQUEST` (`none`); the
+client ends with `Received disconnect ... 14: authentication is not
+implemented yet`. That run also exercises the cross-toolchain build with
+`chacha20.o` and `poly1305.o` in `build/sshd-crypto/`.
+
+**Host key persistence verified on Exploidus:** the first boot of a
+fresh `build/disk.img` generated and saved `/ssh_host_ed25519_key`; a
+second boot of the same image (no rebuild) printed `loaded ed25519 host
+key from /ssh_host_ed25519_key` with the identical fingerprint. Note that
+`rm -f build/disk.img` (or any rebuilt `.elf`, which makes `make`
+regenerate the image) starts from an empty disk, so a fresh host key after
+a rebuild is expected.
+
+**Not yet verified / limits:** Packets are capped at `SSH_PACKET_MAX` (35000 bytes), rekeying is not
+implemented (a connection that sends 2^32 packets would wrap its
+sequence counter), compression is not offered, and the handshake with
+OpenSSH 10.x is slowed by the kernel TCP dropping out-of-order segments
+(the client's KEXINIT is large and arrives in several segments; the log
+shows duplicate ACKs until retransmission; not yet root-caused with a
+packet capture).
+
+**Still missing:** user authentication (and with it channels, a shell,
+anything after login), and the `ext-info` / `server-sig-algs` extension.

@@ -9,9 +9,7 @@
  * string exchange (sshd.c) until SSH_MSG_NEWKEYS, and what
  * SSH_MSG_KEXINIT rides in.
  *
- * Once encryption is wired in (not yet), sending/receiving switches
- * to a cipher-aware packet path -- these functions cover the
- * pre-encryption phase, which is as far as sshd currently gets.
+ * After NEWKEYS the same transport switches to the encrypted path.
  */
 
 #define SSH_PACKET_MAX 35000  /* generous, safely above real KEXINIT
@@ -21,22 +19,44 @@
                                  * ED25519_SCRATCH_MAX assume other
                                  * SSH data will fit under */
 
-/* Sends `payload_len` bytes from `payload` as one SSH binary packet
- * (length-prefixed, randomly padded per RFC 4253 Section 6, using
- * real getrandom() padding). Returns 1 on success, 0 on a send
- * failure (connection likely gone). */
-int ssh_packet_send(cap_token_t cap, int fd, const uint8_t *payload,
-                     uint32_t payload_len);
-
 /*
- * Reads one SSH binary packet into `out` (caller-provided buffer of
- * at least SSH_PACKET_MAX bytes), stripping the length/padding
- * framing. Returns the payload length on success, or -1 on a read
- * failure / malformed packet (bad length field, connection closed
- * mid-packet, etc.) -- callers must treat -1 as "stop, don't trust
- * `out`'s contents."
+ * Transport: one per connection. Owns the sequence numbers and the
+ * per-direction cipher state, so the same ssh_send()/ssh_recv() work
+ * before NEWKEYS (plaintext framing, RFC 4253 Section 6) and after
+ * (chacha20-poly1305@openssh.com, see sshd_packet.c). Sequence
+ * numbers count every packet, plaintext ones included.
  */
-int32_t ssh_packet_recv(cap_token_t cap, int fd, uint8_t *out);
+typedef struct {
+    cap_token_t cap;
+    int         fd;
+    uint32_t    seq_send, seq_recv;
+    int         strict;               /* kex-strict negotiated (both sides advertised) */
+    int         enc_send, enc_recv;   /* direction switched to the cipher yet */
+    uint8_t     key_send[64], key_recv[64];
+} ssh_transport_t;
+
+void ssh_transport_init(ssh_transport_t *t, cap_token_t cap, int fd);
+
+/* Sends `payload_len` bytes as one SSH binary packet (random padding
+ * from getrandom()). Returns 1 on success, 0 on failure. */
+int ssh_send(ssh_transport_t *t, const uint8_t *payload, uint32_t payload_len);
+
+/* Reads one packet into `out` (>= SSH_PACKET_MAX bytes) and returns its
+ * payload length, or -1 on a read failure / malformed packet / failed
+ * authentication tag -- the caller must then drop the connection and
+ * not trust `out`. */
+int32_t ssh_recv(ssh_transport_t *t, uint8_t *out);
+
+/* Switch one direction to chacha20-poly1305@openssh.com with the 64-byte
+ * key (K_2 main || K_1 header). Call right AFTER our NEWKEYS has been
+ * sent (send direction) / the peer's NEWKEYS has been received (recv
+ * direction). In strict-kex mode that direction's sequence number
+ * resets to 0 here. */
+void ssh_transport_start_send_crypto(ssh_transport_t *t, const uint8_t key[64]);
+void ssh_transport_start_recv_crypto(ssh_transport_t *t, const uint8_t key[64]);
+
+/* Zeroizes keys and state. */
+void ssh_transport_wipe(ssh_transport_t *t);
 
 /*
  * ssh_kexinit_build -- fills `out` with a complete SSH_MSG_KEXINIT
@@ -74,3 +94,13 @@ int ssh_kexinit_check(const uint8_t *data, uint32_t len);
  * payload ssh_kexinit_check() would already have rejected).
  */
 int ssh_kexinit_wrong_guess(const uint8_t *data, uint32_t len);
+
+/*
+ * ssh_kexinit_peer_strict -- 1 if the peer's kex_algorithms list
+ * contains "kex-strict-c-v00@openssh.com". We always advertise the
+ * server marker, so this alone decides whether strict KEX (Terrapin
+ * countermeasure) applies: sequence numbers reset to 0 at each
+ * NEWKEYS, and nothing but the KEX messages is accepted before
+ * NEWKEYS. Only meaningful on the peer's FIRST KEXINIT.
+ */
+int ssh_kexinit_peer_strict(const uint8_t *data, uint32_t len);
