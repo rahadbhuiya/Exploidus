@@ -45,11 +45,11 @@ jobs:
       - name: Download & Install x86_64-elf Cross-Compiler
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          echo "[CI] Downloading prebuilt x86_64-elf toolchain..."
-          wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/13.2.0/x86_64-elf-tools.zip
+          echo "[CI] Downloading prebuilt x86_64-elf toolchain (GCC 13.2.0)..."
+          wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/13.2.0/x86_64-elf-tools-linux.zip -O x86_64-elf-tools-linux.zip
           sudo mkdir -p /opt/x86_64-elf
-          sudo unzip -q x86_64-elf-tools.zip -d /opt/x86_64-elf
-          rm -f x86_64-elf-tools.zip
+          sudo unzip -q x86_64-elf-tools-linux.zip -d /opt/x86_64-elf
+          rm -f x86_64-elf-tools-linux.zip
 
       - name: Configure Toolchain Environment
         run: |
