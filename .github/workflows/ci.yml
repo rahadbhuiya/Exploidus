@@ -1,0 +1,112 @@
+name: Exploidus CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build Kernel & Live ISO
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            nasm \
+            mtools \
+            xorriso \
+            grub-pc-bin \
+            grub-common \
+            qemu-system-x86 \
+            python3 \
+            python3-pip \
+            python3-setuptools \
+            unzip \
+            wget \
+            curl
+
+      - name: Cache x86_64-elf Toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: /opt/x86_64-elf
+          key: x86_64-elf-tools-13.2.0
+
+      - name: Download & Install x86_64-elf Cross-Compiler
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          echo "[CI] Downloading prebuilt x86_64-elf toolchain..."
+          wget -q https://github.com/lordmilko/i686-elf-tools/releases/download/13.2.0/x86_64-elf-tools.zip
+          sudo mkdir -p /opt/x86_64-elf
+          sudo unzip -q x86_64-elf-tools.zip -d /opt/x86_64-elf
+          rm -f x86_64-elf-tools.zip
+
+      - name: Configure Toolchain Environment
+        run: |
+          BIN_DIR=$(dirname $(sudo find /opt/x86_64-elf -name "x86_64-elf-gcc" | head -n 1))
+          echo "$BIN_DIR" >> $GITHUB_PATH
+          echo "Toolchain directory: $BIN_DIR"
+
+      - name: Verify Toolchain
+        run: |
+          x86_64-elf-gcc --version
+          x86_64-elf-ld --version
+          nasm -v
+          python3 --version
+
+      - name: Build Exploidus Kernel & All Userspace Binaries
+        run: |
+          make -j$(nproc)
+
+      - name: Install Test Dependencies
+        run: |
+          python3 -m pip install --break-system-packages paramiko asyncssh cryptography || \
+          python3 -m pip install paramiko asyncssh cryptography
+
+      - name: Run Automated Host Crypto & SSH Tests
+        run: |
+          bash tests/sshd-host/run.sh
+
+      - name: Build Exploidus Bootable Live Ramdisk ISO
+        run: |
+          make iso
+
+      - name: Verify Built ISO
+        run: |
+          ls -la build/exploidus.iso
+          ls -la build/exploidus.elf
+
+      - name: Upload Live ISO Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exploidus-live-iso
+          path: build/exploidus.iso
+          retention-days: 14
+
+      - name: Upload Kernel ELF Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exploidus-kernel-elf
+          path: build/exploidus.elf
+          retention-days: 14
+
+      - name: Automatic GitHub Release on Tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/exploidus.iso
+            build/exploidus.elf
+          draft: false
+          prerelease: false
+          generate_release_notes: true
