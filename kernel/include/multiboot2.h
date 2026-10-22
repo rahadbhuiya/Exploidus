@@ -57,3 +57,14 @@ typedef struct {
     uint8_t  fb_type;
     uint16_t reserved;
 } __attribute__((packed)) mb2_tag_fb_t;
+
+/*  MODULE TAG  */
+#define MB2_TAG_MODULE  3
+
+typedef struct {
+    uint32_t type;
+    uint32_t size;
+    uint32_t mod_start;
+    uint32_t mod_end;
+    char     cmdline[];
+} __attribute__((packed)) mb2_tag_module_t;

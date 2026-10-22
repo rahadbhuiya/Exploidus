@@ -65,7 +65,7 @@ KERNEL_C_SRCS := \
     kernel/proc/process.c kernel/proc/scheduler.c \
     kernel/proc/fork_exec.c kernel/syscall/table.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \
-    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c kernel/drivers/blockdev.c \
+    kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c kernel/drivers/blockdev.c kernel/drivers/ramdisk.c \
     kernel/fs/vfs/vfs.c kernel/fs/exfs/exfs.c \
     kernel/elf/elf.c \
     kernel/net/net.c kernel/net/netstack.c \
@@ -386,16 +386,22 @@ qemu-dbg: build/exploidus.elf
 
 iso: build/exploidus.iso
 
-build/exploidus.iso: build/exploidus.elf
+build/exploidus.iso: build/exploidus.elf build/disk.img
 	@mkdir -p iso/boot/grub
 	@cp build/exploidus.elf iso/boot/exploidus.elf
+	@cp build/disk.img iso/boot/disk.img
 	@echo 'set gfxmode=800x600x32'                >  iso/boot/grub/grub.cfg
 	@echo 'set gfxpayload=keep'                   >> iso/boot/grub/grub.cfg
-	@echo 'set timeout=0'                              >> iso/boot/grub/grub.cfg
-	@echo 'menuentry "Exploidus" {'             >> iso/boot/grub/grub.cfg
-	@echo '    multiboot2 /boot/exploidus.elf'  >> iso/boot/grub/grub.cfg
-	@echo '    boot'                            >> iso/boot/grub/grub.cfg
-	@echo '}'                                   >> iso/boot/grub/grub.cfg
+	@echo 'set timeout=2'                         >> iso/boot/grub/grub.cfg
+	@echo 'menuentry "Exploidus (Live Ramdisk)" {' >> iso/boot/grub/grub.cfg
+	@echo '    multiboot2 /boot/exploidus.elf'    >> iso/boot/grub/grub.cfg
+	@echo '    module2 /boot/disk.img disk'       >> iso/boot/grub/grub.cfg
+	@echo '    boot'                              >> iso/boot/grub/grub.cfg
+	@echo '}'                                     >> iso/boot/grub/grub.cfg
+	@echo 'menuentry "Exploidus (Direct Disk)" {'  >> iso/boot/grub/grub.cfg
+	@echo '    multiboot2 /boot/exploidus.elf'    >> iso/boot/grub/grub.cfg
+	@echo '    boot'                              >> iso/boot/grub/grub.cfg
+	@echo '}'                                     >> iso/boot/grub/grub.cfg
 	grub-mkrescue -o build/exploidus.iso iso
 	@echo "[ISO] build/exploidus.iso ready"
 

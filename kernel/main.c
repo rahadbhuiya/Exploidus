@@ -24,6 +24,7 @@ extern void syscall_init_msr(void);
 #include "drivers/serial.h"
 #include "drivers/ata.h"
 #include "drivers/blockdev.h"
+#include "drivers/ramdisk.h"
 #include "drivers/driver.h"
 #include "arch/x86_64/fpu.h"
 #include "fs/vfs/vfs.h"
@@ -68,24 +69,50 @@ static void parse_framebuffer(uint64_t mb_info_phys)
     }
 }
 
+/*  Multiboot2 module parser (for Live ramdisk)  */
+
+static void parse_modules(uint64_t mb_info_phys, uint64_t *out_start, uint64_t *out_size)
+{
+    *out_start = 0;
+    *out_size  = 0;
+    if (!mb_info_phys) return;
+    mb2_info_t *info = (mb2_info_t *)(uintptr_t)mb_info_phys;
+    uint8_t *ptr = (uint8_t *)(info + 1);
+    uint8_t *end = (uint8_t *)info + info->total_size;
+    while (ptr < end) {
+        mb2_tag_t *tag = (mb2_tag_t *)ptr;
+        if (tag->type == 0) break;
+        if (tag->type == MB2_TAG_MODULE) {
+            mb2_tag_module_t *mod = (mb2_tag_module_t *)tag;
+            if (mod->mod_end > mod->mod_start) {
+                *out_start = (uint64_t)mod->mod_start;
+                *out_size  = (uint64_t)(mod->mod_end - mod->mod_start);
+                serial_print("[MOD ] Multiboot module found at 0x");
+                serial_printhex(*out_start);
+                serial_print(" size: 0x");
+                serial_printhex(*out_size);
+                serial_print("\n");
+                break;
+            }
+        }
+        ptr += MB2_ALIGN(tag->size);
+    }
+}
+
 extern char _kernel_end[];
 
-static void parse_memory_map(uint64_t mb_info_phys,
+static void parse_memory_map(uint64_t mb_info_phys, uint64_t reserved_limit,
                               uint64_t *out_base, uint64_t *out_size)
 {
     /* Anything before the true end of the kernel's own loaded image
      * (code + data + .bss, which includes the 4MB static heap array)
-     * is NOT free — handing it out to a process would let that
-     * process's memory silently alias and corrupt the running
-     * kernel's own state. The old hardcoded 0x200000 (2MB) cutoff
-     * was wrong: it didn't account for .bss/the heap array, so once
-     * a process needed enough physical pages (as Lua's ~60-page
-     * binary does, vs a handful for tiny test programs), PMM would
-     * eventually hand out a page that was still live kernel memory —
-     * exactly the kind of corruption that shows up later as an
-     * unrelated-looking kernel-mode page fault. */
+     * and any loaded boot modules (ramdisk) is NOT free — handing it
+     * out to a process would corrupt live memory. */
     uint64_t kernel_end = ((uint64_t)(uintptr_t)_kernel_end + 0xFFF) & ~0xFFFULL;
     if (kernel_end < 0x200000) kernel_end = 0x200000; /* sane floor */
+    if (reserved_limit > kernel_end) {
+        kernel_end = (reserved_limit + 0xFFFULL) & ~0xFFFULL;
+    }
 
     *out_base = kernel_end;
     *out_size = 0x4000000;
@@ -227,8 +254,17 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     kprint("[IRQ ] Remapping PIC (IRQ 0-15 -> vectors 32-47)...\n");
     irq_init();
 
+    uint64_t mod_start = 0, mod_size = 0;
+    parse_modules(mb_info_phys, &mod_start, &mod_size);
+    if (mod_size > 0) {
+        ramdisk_init(mod_start, mod_size);
+        driver_register("ramdisk");
+        driver_mark_initialized("ramdisk");
+    }
+
+    uint64_t reserved_limit = (mod_size > 0) ? (mod_start + mod_size) : 0;
     uint64_t mem_base, mem_size;
-    parse_memory_map(mb_info_phys, &mem_base, &mem_size);
+    parse_memory_map(mb_info_phys, reserved_limit, &mem_base, &mem_size);
     parse_framebuffer(mb_info_phys);
     font_init();
     fb_console_init();
@@ -322,8 +358,21 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     hc_add_server(&g_cluster, "exploidus-0", 0x0a00020f, 80, 1);
 
     kprint("[ExFS] Attempting to mount root filesystem...\n");
-    vfs_node_t *fs_root = exfs_mount(ata_get_blockdev(), 0);
+    block_device_t *root_dev = NULL;
+    if (ramdisk_is_available()) {
+        kprint("[ExFS] Live Ramdisk detected — using ram0 as root device\n");
+        root_dev = ramdisk_get_blockdev();
+    } else {
+        root_dev = ata_get_blockdev();
+    }
+
+    vfs_node_t *fs_root = NULL;
+    if (root_dev) {
+        fs_root = exfs_mount(root_dev, 0);
+    }
+
     if (fs_root) {
+        blockdev_set_root(root_dev);
         vfs_mount("/", fs_root);
         kprint("[ExFS] Root mounted at /\n");
     } else {
