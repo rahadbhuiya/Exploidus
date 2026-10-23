@@ -28,16 +28,16 @@
 #define CORNER_R         8      /* window corner radius                */
 
 /*  desktop palette (matches fb.h COL_* defines)  */
-#define COL_DESKTOP      0x0D1117
-#define COL_SURFACE      0x161B22
-#define COL_ELEVATED     0x1F2937
-#define COL_BORDER       0x30363D
-#define COL_TEXT_PRI     0xE6EDF3
-#define COL_TEXT_SEC     0x8B949E
+#define COL_DESKTOP      0x0B0F17
+#define COL_SURFACE      0x161F2E
+#define COL_ELEVATED     0x1E293B
+#define COL_BORDER       0x334155
+#define COL_TEXT_PRI     0xE2E8F0
+#define COL_TEXT_SEC     0x94A3B8
 #define COL_ACCENT_PUR   0xA78BFA
-#define COL_ACCENT_BLU   0x58A6FF
-#define COL_ACCENT_GRN   0x10B981
-#define COL_BTN_CLOSE    0xEF4444
+#define COL_ACCENT_BLU   0x38BDF8
+#define COL_ACCENT_GRN   0x34D399
+#define COL_BTN_CLOSE    0xF43F5E
 #define COL_BTN_MIN      0xF59E0B
 #define COL_BTN_MAX      0x10B981
 
@@ -218,26 +218,25 @@ static void draw_wallpaper(void)
 
 static void draw_menubar(void)
 {
-    int mh = 22;
-    /* Real frosted glass: blend a dark tint over whatever's actually
-     * behind it (wallpaper glow, anything), instead of drawing a
-     * flat solid color that only looked like glass in the name. */
-    draw_blend_rect(0, 0, (int)g_screen_w, mh, 0x0D1117, 200);
+    int mh = 24;
+    /* Real frosted glass: blend a dark slate tint over background */
+    draw_blend_rect(0, 0, (int)g_screen_w, mh, 0x0F172A, 220);
 
-    /* Apple-style logo placeholder */
-    draw_str(10, 4, "Exploidus", COL_TEXT_PRI, 0x161B22);
+    /* Left: Brand badge */
+    draw_str(12, 5, "Exploidus", COL_ACCENT_BLU, 0x0F172A);
+    draw_str(92, 5, "Reactive OS", COL_TEXT_SEC, 0x0F172A);
 
     /* Focused window title in center */
     if (g_focused >= 0 && g_windows[g_focused].valid) {
         const char *t = g_windows[g_focused].title;
         int tw = _strlen(t) * 8;   /* 8px per char (bitmap font) */
         int tx = ((int)g_screen_w - tw) / 2;
-        if (tx < 80) tx = 80;
-        draw_str(tx, 4, t, COL_TEXT_PRI, 0x161B22);
+        if (tx < 200) tx = 200;
+        draw_str(tx, 5, t, COL_TEXT_PRI, 0x0F172A);
     }
 
-    /* Clock area placeholder (right side) */
-    draw_str((int)g_screen_w - 60, 4, "Exploidus", COL_TEXT_SEC, 0x161B22);
+    /* Right: Status pill */
+    draw_str((int)g_screen_w - 170, 5, "Live RAM * CNSL", COL_ACCENT_GRN, 0x0F172A);
 
     /* Bottom border */
     draw_rect(0, mh - 1, (int)g_screen_w, 1, COL_BORDER);
@@ -252,11 +251,12 @@ typedef struct {
     const char *path;
 } dock_item_t;
 
-#define DOCK_ITEMS 3
+#define DOCK_ITEMS 4
 static const dock_item_t g_dock_items[DOCK_ITEMS] = {
-    { "T", COL_ACCENT_PUR, "/bin/terminal" },
-    { "F", COL_ACCENT_GRN, "/bin/exploish" },
-    { "S", COL_ACCENT_BLU, "/bin/gui_demo" },
+    { "T", COL_ACCENT_BLU, "/bin/terminal" },
+    { "S", COL_ACCENT_PUR, "/bin/gui_demo" },
+    { "R", COL_ACCENT_GRN, "/bin/rahu" },
+    { "E", COL_ACCENT_BLU, "/bin/exploish" },
 };
 
 /* dock geometry — computed once, used for hit testing */
@@ -266,7 +266,7 @@ static int g_dock_dw = 200, g_dock_spacing = 0;
 static void draw_dock(void)
 {
     int dy = (int)g_screen_h - DOCK_H;
-    int dw = 200;
+    int dw = 250;
     int dx = ((int)g_screen_w - dw) / 2;
     int spacing = dw / (DOCK_ITEMS + 1);
 
@@ -838,6 +838,9 @@ void main(void)
     draw_menubar();
     draw_dock();
     fb_flip();
+
+    /* Automatically launch the default terminal window */
+    spawn("/bin/terminal");
 
     int32_t prev_mx = 0, prev_my = 0, prev_btn = 0;
     /* Last real wall-clock tick (from uptime(), driven by the 100Hz

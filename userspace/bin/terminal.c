@@ -24,11 +24,11 @@
 #define WIN_W       (GRID_COLS * CELL_W + 16)   /* + padding              */
 #define WIN_H       (GRID_ROWS * CELL_H + 16)
 
-#define COL_BG      0xFF0D1117u
-#define COL_FG      0xFFC9D1D9u
-#define COL_PROMPT  0xFF58A6FFu
-#define COL_CURSOR  0xFF58A6FFu
-#define COL_ERR     0xFFEF4444u
+#define COL_BG      0xFF0F172Au
+#define COL_FG      0xFFE2E8F0u
+#define COL_PROMPT  0xFF38BDF8u
+#define COL_CURSOR  0xFF38BDF8u
+#define COL_ERR     0xFFF43F5Eu
 
 static uint32_t *g_buf;    /* SHM pixel buffer, WIN_W x WIN_H ARGB32 */
 
@@ -319,6 +319,23 @@ static void execute_line(const char *line)
     if (term_starts(line, "rm "))    { cmd_rm(term_skip(line + 3)); return; }
     if (term_starts(line, "open "))  { cmd_open(term_skip(line + 5)); return; }
 
+    /* Try spawning from /bin/<cmd> or direct path */
+    char bin_path[64] = "/bin/";
+    int bi = 0;
+    while (line[bi] && line[bi] != ' ' && bi < 50) {
+        bin_path[5 + bi] = line[bi];
+        bi++;
+    }
+    bin_path[5 + bi] = '\0';
+    if (spawn(bin_path) >= 0) {
+        grid_puts("launched "); grid_puts(bin_path); grid_putc('\n');
+        return;
+    }
+    if (line[0] == '/' && spawn(line) >= 0) {
+        grid_puts("launched "); grid_puts(line); grid_putc('\n');
+        return;
+    }
+
     grid_puts("unknown: "); grid_puts(line); grid_putc('\n');
 }
 
@@ -326,7 +343,7 @@ static void execute_line(const char *line)
 
 static void draw_prompt(void)
 {
-    grid_puts("$ ");
+    grid_puts("star@exploidus:~$ ");
 }
 
 /*  main  */
