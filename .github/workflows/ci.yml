@@ -26,6 +26,8 @@ jobs:
             mtools \
             xorriso \
             grub-pc-bin \
+            grub-efi-amd64-bin \
+            grub-efi-ia32-bin \
             grub-common \
             qemu-system-x86 \
             qemu-utils \

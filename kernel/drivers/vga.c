@@ -1,5 +1,6 @@
 #include "vga.h"
 #include "fb_console.h"
+#include "fb.h"
 
 #define VGA_BASE    ((volatile uint16_t *)0xB8000)
 #define VGA_WIDTH   80
@@ -41,6 +42,7 @@ static inline void outb(uint16_t port, uint8_t val)
 
 static void update_cursor(void)
 {
+    if (g_fb.active) return;
     uint16_t pos = (uint16_t)(g_row * VGA_WIDTH + g_col);
     outb(VGA_CTRL_REG, 0x0F);
     outb(VGA_DATA_REG, (uint8_t)(pos & 0xFF));
@@ -50,6 +52,7 @@ static void update_cursor(void)
 
 static void scroll(void)
 {
+    if (g_fb.active) return;
     volatile uint16_t *vga = VGA_BASE;
     uint16_t blank = VGA_CHAR(' ', g_color);
 
@@ -70,11 +73,19 @@ void vga_init(void)
     g_color = VGA_COLOR(VGA_LGREEN, VGA_BLACK);
     g_row   = 0;
     g_col   = 0;
+    if (g_fb.active) {
+        fb_console_init();
+        return;
+    }
     vga_clear();
 }
 
 void vga_clear(void)
 {
+    if (g_fb.active) {
+        fb_console_init();
+        return;
+    }
     volatile uint16_t *vga   = VGA_BASE;
     uint16_t           blank = VGA_CHAR(' ', g_color);
 
@@ -88,6 +99,11 @@ void vga_clear(void)
 
 void vga_putc(char c)
 {
+    if (g_fb.active) {
+        fb_console_putc(c);
+        return;
+    }
+
     volatile uint16_t *vga = VGA_BASE;
 
     if (c == '\n') {
