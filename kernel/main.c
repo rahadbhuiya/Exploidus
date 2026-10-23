@@ -232,9 +232,13 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     serial_print("  EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
     serial_print("==============================================\n");
 
+    parse_framebuffer(mb_info_phys);
+    font_init();
+    fb_console_init();
+
     vga_init();
-    driver_register("vga");
-    driver_mark_initialized("vga");
+    driver_register(g_fb.active ? "fb_console" : "vga");
+    driver_mark_initialized(g_fb.active ? "fb_console" : "vga");
     vga_set_color(10, 0);
 
     kprint("EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
@@ -265,9 +269,6 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     uint64_t reserved_limit = (mod_size > 0) ? (mod_start + mod_size) : 0;
     uint64_t mem_base, mem_size;
     parse_memory_map(mb_info_phys, reserved_limit, &mem_base, &mem_size);
-    parse_framebuffer(mb_info_phys);
-    font_init();
-    fb_console_init();
 
     kprint("[PMM ] Initializing colored memory zones...\n");
     pmm_init(mem_base, mem_size);

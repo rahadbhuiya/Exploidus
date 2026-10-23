@@ -3,8 +3,15 @@
 #include "font.h"
 #include <string.h>
 
-#define COLS  (800 / FONT_W)   /* 100 columns */
-#define ROWS  (600 / FONT_H)   /* 37 rows     */
+static inline uint32_t fb_cols(void)
+{
+    return (g_fb.width && FONT_W) ? (g_fb.width / FONT_W) : (800 / FONT_W);
+}
+
+static inline uint32_t fb_rows(void)
+{
+    return (g_fb.height && FONT_H) ? (g_fb.height / FONT_H) : (600 / FONT_H);
+}
 
 #define FG  0xFFFFFF
 #define BG  0x000000
@@ -19,26 +26,31 @@ int  fb_console_enabled(void) { return g_enabled; }
 
 void fb_console_init(void)
 {
-    fb_clear(BG);
+    if (g_fb.active) {
+        fb_clear(BG);
+    }
     g_col = 0;
     g_row = 0;
 }
 
 static void scroll_up(void)
 {
-    /* Copy rows 1..ROWS-1 up by one */
+    uint32_t rows = fb_rows();
     uint8_t *fb = (uint8_t *)(uintptr_t)g_fb.addr;
     uint32_t row_bytes = g_fb.pitch * FONT_H;
-    for (uint32_t r = 0; r < ROWS - 1; r++)
+    for (uint32_t r = 0; r < rows - 1; r++)
         memcpy(fb + r * row_bytes, fb + (r+1) * row_bytes, row_bytes);
     /* Clear last row */
-    fb_fill_rect(0, (ROWS-1)*FONT_H, g_fb.width, FONT_H, BG);
+    fb_fill_rect(0, (rows - 1) * FONT_H, g_fb.width, FONT_H, BG);
 }
 
 void fb_console_putc(char c)
 {
     if (!g_fb.active) return;
     if (!g_enabled)   return;   /* GUI mode — suppress text output */
+
+    uint32_t cols = fb_cols();
+    uint32_t rows = fb_rows();
 
     if (c == '\n') {
         g_col = 0;
@@ -53,15 +65,15 @@ void fb_console_putc(char c)
     } else {
         font_draw_char(g_col * FONT_W, g_row * FONT_H, c, FG, BG);
         g_col++;
-        if (g_col >= COLS) {
+        if (g_col >= cols) {
             g_col = 0;
             g_row++;
         }
     }
 
-    if (g_row >= ROWS) {
+    if (g_row >= rows) {
         scroll_up();
-        g_row = ROWS - 1;
+        g_row = rows - 1;
     }
 }
 
