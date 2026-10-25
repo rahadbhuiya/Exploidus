@@ -391,6 +391,9 @@ build/exploidus.iso: build/exploidus.elf build/disk.img
 	@cp build/exploidus.elf iso/boot/exploidus.elf
 	@cp build/disk.img iso/boot/disk.img
 	@echo 'insmod efi_gop'                        >  iso/boot/grub/grub.cfg
+	@echo 'insmod efi_uga'                        >> iso/boot/grub/grub.cfg
+	@echo 'insmod vbe'                            >> iso/boot/grub/grub.cfg
+	@echo 'insmod vga'                            >> iso/boot/grub/grub.cfg
 	@echo 'insmod font'                           >> iso/boot/grub/grub.cfg
 	@echo 'set gfxmode=1024x768x32,800x600x32,auto' >> iso/boot/grub/grub.cfg
 	@echo 'set gfxpayload=keep'                   >> iso/boot/grub/grub.cfg
