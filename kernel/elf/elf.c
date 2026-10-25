@@ -64,8 +64,27 @@
  * Falls back to a fixed constant only if RDRAND keeps failing (a
  * hardware fault condition that should not occur on supported CPUs).
  */
+/*
+ * CPU feature check for RDRAND
+ */
+static inline int has_rdrand(void)
+{
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile (
+        "cpuid"
+        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(1)
+    );
+    return (ecx & (1 << 30));
+}
+
 static uint64_t aslr_rdrand(void)
 {
+    if (!has_rdrand()) {
+        uint32_t lo, hi;
+        __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+        return ((uint64_t)hi << 32 | lo) ^ 0x5A5A5A5A5A5A5A5AULL;
+    }
     uint64_t val = 0;
     uint8_t  ok  = 0;
     for (int i = 0; i < 10; i++) {
