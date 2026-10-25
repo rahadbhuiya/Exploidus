@@ -137,10 +137,15 @@ static void parse_memory_map(uint64_t mb_info_phys, uint64_t reserved_limit,
                 if (e->type != MB2_MMAP_AVAILABLE) continue;
                 uint64_t base = e->base_addr;
                 uint64_t size = e->length;
+                /* Only use memory within the boot-mapped 0-4GB identity range */
+                if (base >= 0x100000000ULL) continue;
                 if (base < kernel_end) {
                     uint64_t skip = kernel_end - base;
                     if (skip >= size) continue;
                     base += skip; size -= skip;
+                }
+                if (base + size > 0x100000000ULL) {
+                    size = 0x100000000ULL - base;
                 }
                 if (size > *out_size) { *out_base = base; *out_size = size; }
             }
