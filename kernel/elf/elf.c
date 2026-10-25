@@ -169,7 +169,7 @@ static uint64_t make_isolated_pml4(void)
         uint64_t *pd0 = (uint64_t *)(uintptr_t)pd0_phys;
 
         for (int i = 0; i < 512; i++)
-            pd0[i] = (i < 16) ? kpd0[i] : 0; /* keep kernel 0-32MB, clear user range */
+            pd0[i] = kpd0[i]; /* keep full kernel 0-1GB identity map (supervisor huge pages) */
 
         pdpt[0] = pd0_phys | (kpdpt[0] & 0xFFF);
     }
@@ -184,7 +184,7 @@ static uint64_t make_isolated_pml4(void)
         uint64_t *pd1 = (uint64_t *)(uintptr_t)pd1_phys;
 
         for (int i = 0; i < 512; i++)
-            pd1[i] = (i < 511) ? kpd1[i] : 0; /* keep all but last (stack) */
+            pd1[i] = kpd1[i]; /* keep full kernel 1-2GB identity map */
 
         pdpt[1] = pd1_phys | (kpdpt[1] & 0xFFF);
     }

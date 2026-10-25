@@ -187,9 +187,19 @@ void exception_handler(interrupt_frame_t *frame)
         }
     }
 
+    vga_set_color(12, 0);
     vga_puts("\n\n  *** KERNEL PANIC ***\n");
     vga_puts("  Exception: ");
     if (vec < 32) vga_puts(g_exception_names[vec]);
+    else vga_puts("Unknown");
+    vga_puts("\n  RIP: 0x"); vga_puthex(frame->rip);
+    vga_puts("\n  RSP: 0x"); vga_puthex(frame->rsp);
+    vga_puts("\n  ERR: 0x"); vga_puthex(frame->error_code);
+    if (vec == 14) {
+        uint64_t cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        vga_puts("\n  CR2: 0x"); vga_puthex(cr2);
+    }
     vga_puts("\n  System halted.\n");
 
     for (;;) {
