@@ -65,9 +65,9 @@ static void keyboard_irq_handler(interrupt_frame_t *frame)
 {
     (void)frame;
 
-    /* Ignore mouse data (PS/2 bit 5 = aux/mouse) */
     uint8_t status = inb(KB_STATUS_PORT);
-    if (status & 0x20) { inb(KB_DATA_PORT); return; }
+    if (!(status & 0x01)) return; /* output buffer empty */
+    if (status & 0x20) return;   /* mouse data, leave for mouse handler */
 
     uint8_t scancode = inb(KB_DATA_PORT);
 
@@ -119,10 +119,59 @@ static void keyboard_irq_handler(interrupt_frame_t *frame)
     ring_push((uint8_t)c);
 }
 
+static inline void outb(uint16_t port, uint8_t val)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static void kb_wait_write(void)
+{
+    uint32_t t = 100000;
+    while (t-- && (inb(KB_STATUS_PORT) & 2));
+}
+
+static void kb_wait_read(void)
+{
+    uint32_t t = 100000;
+    while (t-- && !(inb(KB_STATUS_PORT) & 1));
+}
+
 void keyboard_init(void)
 {
-    serial_print("[KBD] registering IRQ1\n");
+    serial_print("[KBD] initializing PS/2 keyboard\n");
+
+    /* Flush leftover bytes */
+    uint32_t flush = 100;
+    while (flush-- && (inb(KB_STATUS_PORT) & 1)) inb(KB_DATA_PORT);
+
+    /* Enable first PS/2 port (Keyboard) */
+    kb_wait_write();
+    outb(KB_STATUS_PORT, 0xAE);
+
+    /* Read controller configuration byte */
+    kb_wait_write();
+    outb(KB_STATUS_PORT, 0x20);
+    kb_wait_read();
+    uint8_t cfg = inb(KB_DATA_PORT);
+
+    /* Enable keyboard IRQ1 (bit 0) and enable keyboard clock (clear bit 4) */
+    cfg |= 0x01;
+    cfg &= (uint8_t)~0x10;
+
+    /* Write configuration byte back */
+    kb_wait_write();
+    outb(KB_STATUS_PORT, 0x60);
+    kb_wait_write();
+    outb(KB_DATA_PORT, cfg);
+
+    /* Enable scanning on keyboard device */
+    kb_wait_write();
+    outb(KB_DATA_PORT, 0xF4);
+    kb_wait_read();
+    (void)inb(KB_DATA_PORT); /* read ACK */
+
     irq_register(KB_IRQ, keyboard_irq_handler);
+    serial_print("[KBD] keyboard initialized, IRQ1 enabled\n");
 }
 
 bool keyboard_read(char *out)

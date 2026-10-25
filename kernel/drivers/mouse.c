@@ -153,8 +153,8 @@ void mouse_init(void)
     mouse_wait_write(); outb(0x64, 0x20);
     mouse_wait_read();
     uint8_t cfg = inb(0x60);
-    cfg |= 0x02;
-    cfg &= (uint8_t)~0x20;
+    cfg |= 0x03;           /* enable BOTH Keyboard (bit 0) and Mouse (bit 1) IRQs */
+    cfg &= (uint8_t)~0x30; /* enable BOTH Keyboard (bit 4) and Mouse (bit 5) clocks */
     mouse_wait_write(); outb(0x64, 0x60);
     mouse_wait_write(); outb(0x60, cfg);
     mouse_write(0xF6); mouse_read();
