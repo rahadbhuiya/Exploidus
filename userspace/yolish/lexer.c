@@ -11,6 +11,8 @@ static int streq(const char *a, int n, const char *b){
 
 static Token make_kw_or_ident(const char *s, int n){
     Token t; t.start=s; t.len=n; t.ival=0; t.fval=0;
+    if(streq(s,n,"or"))     {t.kind=TK_OR;     return t;}
+    if(streq(s,n,"and"))    {t.kind=TK_AND;    return t;}
     if(streq(s,n,"fn"))     {t.kind=TK_FN;     return t;}
     if(streq(s,n,"let"))    {t.kind=TK_LET;    return t;}
     if(streq(s,n,"var"))    {t.kind=TK_VAR;    return t;}
@@ -107,6 +109,8 @@ Token lex_next(Lexer *l){
     if(c=='.'&&*p<end&&s[*p]=='.'){t.kind=TK_DOTDOT;t.len=2;(*p)++;return t;}
     if(c=='&'&&*p<end&&s[*p]=='&'){t.kind=TK_AND;t.len=2;(*p)++;return t;}
     if(c=='|'&&*p<end&&s[*p]=='|'){t.kind=TK_OR; t.len=2;(*p)++;return t;}
+    if(c=='<'&&*p<end&&s[*p]=='<'){t.kind=TK_SHL;t.len=2;(*p)++;return t;}
+    if(c=='>'&&*p<end&&s[*p]=='>'){t.kind=TK_SHR;t.len=2;(*p)++;return t;}
 
     switch(c){
     case '+': t.kind=TK_PLUS;     break;
@@ -129,6 +133,10 @@ Token lex_next(Lexer *l){
     case ',': t.kind=TK_COMMA;    break;
     case ':': t.kind=TK_COLON;    break;
     case ';': t.kind=TK_SEMICOLON;break;
+    case '&': t.kind=TK_AMP;      break;
+    case '|': t.kind=TK_PIPE;     break;
+    case '^': t.kind=TK_CARET;    break;
+    case '~': t.kind=TK_TILDE;    break;
     default:  t.kind=TK_EOF;      break;
     }
     return t;

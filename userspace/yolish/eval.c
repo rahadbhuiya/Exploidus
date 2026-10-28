@@ -430,6 +430,17 @@ __attribute__((noinline)) Val eval_node(Node *n,Env *env){
     }
 
     case ND_BINOP:{
+        /* Short-circuit value-preserving evaluation for OR / AND */
+        if(n->op == TK_OR){
+            Val L = eval_node(n->left, env);
+            if(val_bool(L)) return L;
+            return eval_node(n->right, env);
+        }
+        if(n->op == TK_AND){
+            Val L = eval_node(n->left, env);
+            if(!val_bool(L)) return L;
+            return eval_node(n->right, env);
+        }
         Val L=eval_node(n->left,env);
         Val R=eval_node(n->right,env);
         int use_f=(L.type==VT_FLOAT||R.type==VT_FLOAT);
@@ -461,6 +472,11 @@ __attribute__((noinline)) Val eval_node(Node *n,Env *env){
         case TK_GTE: return make_bool(use_f?val_float(L)>=val_float(R):val_int(L)>=val_int(R));
         case TK_AND: return make_bool(val_bool(L)&&val_bool(R));
         case TK_OR:  return make_bool(val_bool(L)||val_bool(R));
+        case TK_AMP:   return make_int(val_int(L) & val_int(R));
+        case TK_PIPE:  return make_int(val_int(L) | val_int(R));
+        case TK_CARET: return make_int(val_int(L) ^ val_int(R));
+        case TK_SHL:   return make_int(val_int(L) << (val_int(R) & 63));
+        case TK_SHR:   return make_int(val_int(L) >> (val_int(R) & 63));
         default: return make_nil();
         }
     }
@@ -469,6 +485,7 @@ __attribute__((noinline)) Val eval_node(Node *n,Env *env){
         Val v=eval_node(n->left,env);
         if(n->op==TK_MINUS) return v.type==VT_FLOAT?make_float(-v.fval):make_int(-val_int(v));
         if(n->op==TK_BANG) return make_bool(!val_bool(v));
+        if(n->op==TK_TILDE) return make_int(~val_int(v));
         return v;
     }
 

@@ -229,11 +229,15 @@ static int prec(TokenKind k){
     switch(k){
     case TK_OR:  return 1;
     case TK_AND: return 2;
-    case TK_EQEQ: case TK_NEQ: return 3;
-    case TK_LT: case TK_GT: case TK_LTE: case TK_GTE: return 4;
-    case TK_DOTDOT: return 4; /* range operator, same level as comparison */
-    case TK_PLUS: case TK_MINUS: return 5;
-    case TK_STAR: case TK_SLASH: case TK_PERCENT: return 6;
+    case TK_PIPE:  return 3;
+    case TK_CARET: return 4;
+    case TK_AMP:   return 5;
+    case TK_EQEQ: case TK_NEQ: return 6;
+    case TK_LT: case TK_GT: case TK_LTE: case TK_GTE: return 7;
+    case TK_DOTDOT: return 7;
+    case TK_SHL: case TK_SHR: return 8;
+    case TK_PLUS: case TK_MINUS: return 9;
+    case TK_STAR: case TK_SLASH: case TK_PERCENT: return 10;
     default: return 0;
     }
 }
