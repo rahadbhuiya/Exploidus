@@ -331,6 +331,13 @@ static void execute_line(const char *line)
         grid_puts("launched "); grid_puts(bin_path); grid_putc('\n');
         return;
     }
+    /* Try Exploidus native .fozu executable */
+    bin_path[5 + bi] = '.'; bin_path[5 + bi + 1] = 'f'; bin_path[5 + bi + 2] = 'o';
+    bin_path[5 + bi + 3] = 'z'; bin_path[5 + bi + 4] = 'u'; bin_path[5 + bi + 5] = '\0';
+    if (spawn(bin_path) >= 0) {
+        grid_puts("launched "); grid_puts(bin_path); grid_putc('\n');
+        return;
+    }
     if (line[0] == '/' && spawn(line) >= 0) {
         grid_puts("launched "); grid_puts(line); grid_putc('\n');
         return;
