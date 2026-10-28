@@ -1762,13 +1762,30 @@ static void dispatch(const char *line)
             char binpath[270];
             int64_t pid = -1;
 
-            if (path[0] != '/') {
+            /* If it's a Yolish script (.y), execute via /bin/ys */
+            int plen = 0; while (path[plen]) plen++;
+            if (plen > 2 && path[plen-2] == '.' && path[plen-1] == 'y') {
+                int pfd = open("/ys_run", 0x0001 | 0x0200 | 0x0400);
+                if (pfd >= 0) {
+                    write(pfd, path, plen);
+                    close(pfd);
+                }
+                pid = spawn("/bin/ys");
+            }
+
+            if (pid < 0 && path[0] != '/') {
                 binpath[0] = '/'; binpath[1] = 'b'; binpath[2] = 'i';
                 binpath[3] = 'n'; binpath[4] = '/';
                 int j = 5, k = 0;
-                while (path[k] && j < 268) binpath[j++] = path[k++];
+                while (path[k] && j < 255) binpath[j++] = path[k++];
                 binpath[j] = '\0';
                 pid = spawn(binpath);
+                /* Try Exploidus native .fozu executable */
+                if (pid < 0 && j < 250) {
+                    binpath[j] = '.'; binpath[j+1] = 'f'; binpath[j+2] = 'o';
+                    binpath[j+3] = 'z'; binpath[j+4] = 'u'; binpath[j+5] = '\0';
+                    pid = spawn(binpath);
+                }
             }
 
             /* fallback: try as-is with / prefix */
@@ -1776,9 +1793,14 @@ static void dispatch(const char *line)
                 char abspath[260];
                 abspath[0] = '/';
                 int j = 1, k = 0;
-                while (path[k] && j < 258) abspath[j++] = path[k++];
+                while (path[k] && j < 250) abspath[j++] = path[k++];
                 abspath[j] = '\0';
                 pid = spawn(abspath);
+                if (pid < 0 && j < 245) {
+                    abspath[j] = '.'; abspath[j+1] = 'f'; abspath[j+2] = 'o';
+                    abspath[j+3] = 'z'; abspath[j+4] = 'u'; abspath[j+5] = '\0';
+                    pid = spawn(abspath);
+                }
             }
 
             if (pid < 0) {
