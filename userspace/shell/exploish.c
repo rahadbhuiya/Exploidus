@@ -1825,7 +1825,7 @@ static void dispatch(const char *line)
                         print("Run 'rahu install ");
                         print(cand);
                         println("' to install it.");
-                        continue;
+                        return;
                     }
                 }
 
