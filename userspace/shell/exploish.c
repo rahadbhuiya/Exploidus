@@ -1760,6 +1760,9 @@ static void dispatch(const char *line)
 
             /* If not absolute path, try /bin/<cmd> first */
             char binpath[270];
+            char abspath[260];
+            binpath[0] = '\0';
+            abspath[0] = '\0';
             int64_t pid = -1;
 
             /* If it's a Yolish script (.y), execute via /bin/ys */
@@ -1790,7 +1793,6 @@ static void dispatch(const char *line)
 
             /* fallback: try as-is with / prefix */
             if (pid < 0) {
-                char abspath[260];
                 abspath[0] = '/';
                 int j = 1, k = 0;
                 while (path[k] && j < 250) abspath[j++] = path[k++];
