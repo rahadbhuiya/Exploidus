@@ -319,6 +319,20 @@ static void execute_line(const char *line)
     if (term_starts(line, "rm "))    { cmd_rm(term_skip(line + 3)); return; }
     if (term_starts(line, "open "))  { cmd_open(term_skip(line + 5)); return; }
 
+    /* If it's a Yolish script (.y), execute via /bin/ys */
+    int plen = 0; while (line[plen] && line[plen] != ' ') plen++;
+    if (plen > 2 && line[plen-2] == '.' && line[plen-1] == 'y') {
+        int pfd = open("/ys_run", 0x0001 | 0x0200 | 0x0400);
+        if (pfd >= 0) {
+            write(pfd, line, plen);
+            close(pfd);
+        }
+        if (spawn("/bin/ys") >= 0) {
+            grid_puts("launched /bin/ys "); grid_puts(line); grid_putc('\n');
+            return;
+        }
+    }
+
     /* Try spawning from /bin/<cmd> or direct path */
     char bin_path[64] = "/bin/";
     int bi = 0;
