@@ -1804,6 +1804,31 @@ static void dispatch(const char *line)
             }
 
             if (pid < 0) {
+                /* Check if the file is a .fozu package archive */
+                int chk_fd = -1;
+                const char *cand = 0;
+                if ((chk_fd = open(binpath, 0)) >= 0) {
+                    cand = binpath;
+                } else if ((chk_fd = open(abspath, 0)) >= 0) {
+                    cand = abspath;
+                } else if ((chk_fd = open(path, 0)) >= 0) {
+                    cand = path;
+                }
+                if (chk_fd >= 0) {
+                    char mg[4];
+                    int n = (int)read(chk_fd, mg, 4);
+                    close(chk_fd);
+                    if (n == 4 && mg[0] == 'F' && mg[1] == 'O' && mg[2] == 'Z' && mg[3] == 'U') {
+                        print("exploish: '");
+                        print(cand);
+                        println("' is a rahu package archive.");
+                        print("Run 'rahu install ");
+                        print(cand);
+                        println("' to install it.");
+                        continue;
+                    }
+                }
+
                 print("exploish: command not found: ");
                 println(l);
                 println("Type 'help' for available commands.");

@@ -588,6 +588,38 @@ static int install_package(const char *pkg, int depth)
 static void cmd_install(const char *pkg)
 {
     if (!pkg || !*pkg) { println("[rahu] Usage: rahu install <package>"); return; }
+
+    /* If argument is a local .fozu file, install directly from local disk */
+    int plen = 0; while (pkg[plen]) plen++;
+    if ((plen > 5 && pkg[plen-5] == '.' && pkg[plen-4] == 'f' && pkg[plen-3] == 'o' && pkg[plen-2] == 'z' && pkg[plen-1] == 'u') ||
+        pkg[0] == '/' || (pkg[0] == '.' && pkg[1] == '/')) {
+        int tfd = open(pkg, 0);
+        if (tfd >= 0) {
+            close(tfd);
+            ensure_rahu_dirs();
+            print("[rahu] Installing local package: "); println(pkg);
+            const char *base = pkg;
+            for (int i = 0; pkg[i]; i++) {
+                if (pkg[i] == '/') base = &pkg[i+1];
+            }
+            char clean_name[64];
+            int ci = 0;
+            while (base[ci] && base[ci] != '.' && ci < 63) {
+                clean_name[ci] = base[ci];
+                ci++;
+            }
+            clean_name[ci] = 0;
+            int installed = unpack_fozu(pkg, clean_name, 0);
+            if (installed <= 0) {
+                println("[rahu] Failed to unpack package.");
+                return;
+            }
+            write_manifest_entry(clean_name, 0);
+            print("[rahu] Installed "); print_uint((uint64_t)installed); println(" file(s).");
+            return;
+        }
+    }
+
     install_package(pkg, 0);
 }
 
