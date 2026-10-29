@@ -1,0 +1,13 @@
+# Auto-detect text files and perform LF normalization
+* text=auto
+
+# Exploidus Native Language (Yolish - 100% From Scratch)
+*.y text linguist-language=Yolish
+
+# Binary, package, and disk image formats
+*.fozu binary
+*.bin binary
+*.elf binary
+*.img binary
+*.iso binary
+*.o binary
