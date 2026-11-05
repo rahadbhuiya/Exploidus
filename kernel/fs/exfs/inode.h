@@ -2,10 +2,16 @@
 #include "exfs.h"
 #include "journal.h"
 
+typedef struct {
+    exfs_volume_t *vol;
+    uint64_t       inode_num;
+    exfs_inode_t   inode;
+} exfs_node_data_t;
+
 /*  Inode & Block Allocation Internals  */
 uint64_t exfs_resolve_block(exfs_volume_t *vol, exfs_inode_t *in,
-                           uint64_t file_block, bool alloc,
-                           bool *inode_dirty);
+                            uint64_t file_block, bool alloc,
+                            bool *inode_dirty);
 
 void exfs_compute_whole_file_hash(exfs_volume_t *vol,
                                   exfs_inode_t *in,

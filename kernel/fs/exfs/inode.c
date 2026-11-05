@@ -198,11 +198,7 @@ void exfs_append_prov(exfs_volume_t *vol, uint64_t inode_num,
 /*  VFS operation implementations for ExFS */
 
 
-typedef struct {
-    exfs_volume_t *vol;
-    uint64_t       inode_num;
-    exfs_inode_t   inode;
-} exfs_node_data_t;
+
 
 /*
  * exfs_debug_corrupt_file — TEST ONLY. Flips every bit of the first
