@@ -60,7 +60,9 @@ static acpi_rsdp_t *find_rsdp(uint64_t mb_info_phys)
     }
 
     /* 2. Check Extended BIOS Data Area (EBDA) */
-    uint16_t ebda_seg = *(const volatile uint16_t *)0x40E;
+    const volatile uint16_t *bda_ptr = (const volatile uint16_t *)(uintptr_t)0x40E;
+    __asm__ volatile("" : "+r"(bda_ptr));
+    uint16_t ebda_seg = *bda_ptr;
     if (ebda_seg) {
         uint64_t ebda_phys = (uint64_t)ebda_seg << 4;
         acpi_rsdp_t *found = scan_rsdp_range(ebda_phys, ebda_phys + 1024);
