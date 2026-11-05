@@ -10,7 +10,7 @@
 #define CNSL_WINDOW_SHORT   180    /* 3 min  */
 #define CNSL_WINDOW_MEDIUM  300    /* 5 min  */
 #define CNSL_WINDOW_LONG    600    /* 10 min */
-#define CNSL_WINDOW_RECON  1800    /* 30 min — persistent_recon */
+#define CNSL_WINDOW_RECON  1800    /* 30 min — anomaly_scan_window */
 #define CNSL_COOLDOWN       120    /* 2 min between same alerts */
 #define CNSL_NUM_RULES        6    /* rules 0-5 */
 
@@ -55,7 +55,7 @@ void cnsl_init(void)
     memset(g_block_table, 0, sizeof(g_block_table));
     g_ip_count    = 0;
     g_block_count = 0;
-    serial_print("[CNSL] Correlated Network Security Layer initialized\n");
+    serial_print("[CNSL] Kernel Security Policy Engine initialized\n");
 }
 
 /*  Helpers  */
@@ -93,7 +93,7 @@ static uint8_t count_kind(ip_buf_t *buf, uint8_t kind, uint32_t window_sec)
 }
 
 /*
- * count_window_stats — used by persistent_recon.
+ * count_window_stats — used by anomaly_scan_window.
  * Returns total event count in window and fills:
  * unique_kinds_mask  — bitmask of seen event kinds
  * unique_groups_mask — bitmask of seen source groups
@@ -248,7 +248,7 @@ static bool rule_web_auth_flood(ip_buf_t *buf, uint32_t ip)
  * attack types and service categories over a 30-minute window:
  * - total events  >= 20
  */
-static bool rule_persistent_recon(ip_buf_t *buf, uint32_t ip)
+static bool rule_anomaly_scan_window(ip_buf_t *buf, uint32_t ip)
 {
     if (!check_cooldown(buf, 5)) return false;
 
@@ -261,7 +261,7 @@ static bool rule_persistent_recon(ip_buf_t *buf, uint32_t ip)
     uint8_t unique_groups = popcount16((uint16_t)groups_mask);
 
     if (total >= 20 && unique_kinds >= 4 && unique_groups >= 3) {
-        do_block(ip, "persistent_recon: multi-vector 30min recon");
+        do_block(ip, "anomaly_scan_window: multi-vector 30min recon");
         return true;
     }
     return false;
@@ -292,7 +292,7 @@ bool cnsl_ingest(uint32_t src_ip, uint8_t kind)
     if (rule_web_recon_ssh   (buf, src_ip)) return true;
     if (rule_privesc         (buf, src_ip)) return true;
     if (rule_web_auth_flood  (buf, src_ip)) return true;
-    if (rule_persistent_recon(buf, src_ip)) return true;
+    if (rule_anomaly_scan_window(buf, src_ip)) return true;
 
     return false;
 }
