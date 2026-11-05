@@ -6,6 +6,8 @@
 #include "../cap/broker.h"
 #include "../proc/scheduler.h"
 #include "../drivers/serial.h"
+#include "../fs/vfs/vfs.h"
+#include "../crypto/blake3.h"
 #include <string.h>
 
 int icmp_send_echo(uint32_t dst, uint16_t seq);

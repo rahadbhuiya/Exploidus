@@ -5,6 +5,7 @@
 #include "../drivers/serial.h"
 #include "../proc/process.h"
 #include "../audit/audit.h"
+#include "../mm/kmalloc.h"
 #include <string.h>
 
 #define O_RDONLY  0x0000
