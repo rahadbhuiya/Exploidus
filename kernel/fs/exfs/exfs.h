@@ -11,8 +11,6 @@
 #define EXFS_NAME_MAX        255
 #define EXFS_DIRECT_BLOCKS   12
 #define EXFS_MAX_INODES      4096
-#define BITS_PER_BYTE        8
-#define BITS_PER_BLK         (EXFS_BLOCK_SIZE * BITS_PER_BYTE)
 
 /* Indirect block pointers */
 #define EXFS_INDIRECT_PTRS   (EXFS_BLOCK_SIZE / sizeof(uint64_t))
