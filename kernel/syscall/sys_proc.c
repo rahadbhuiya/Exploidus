@@ -15,7 +15,18 @@
 #include "../crypto/blake3.h"
 #include "../drivers/rtc.h"
 #include "../drivers/serial.h"
+#include "../fs/vfs/vfs.h"
 #include <string.h>
+
+extern void proc_trampoline(void);
+extern uint64_t g_ticks;
+
+static int sys_getrandom_has_rdrand(void)
+{
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile ("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
+    return (ecx & (1 << 30)) != 0;
+}
 
 
 static uint64_t sys_getrandom_rdrand64(void)
