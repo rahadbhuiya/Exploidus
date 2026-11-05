@@ -9,13 +9,6 @@ The project is built from scratch and continues to evolve with new kernel subsys
 To the best of the author's knowledge, Exploidus is among the earliest publicly documented from-scratch operating system projects developed in Bangladesh. If you are aware of an earlier publicly documented project, please open an issue with supporting evidence.
 
 
-## Demo
-
-![Exploidus Boot Demo](docs/exploidus_demo.gif)
-
-
-
-
 **Features:**
 - Multiboot2 boot via GRUB2
 - 4-level x86-64 paging with NX enforcement

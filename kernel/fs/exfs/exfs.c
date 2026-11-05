@@ -7,30 +7,11 @@
 #include <string.h>
 
 /*
- * Deterministic crash-injection hook for testing journal recovery
- * (EXFS_JOURNAL_MAGIC above). Timing a real crash by hand against a
- * live QEMU session can't reliably land inside a multi-microsecond
- * window, so this lets a test deliberately halt execution at one of
- * the three points that matter for exfs_journal_commit()'s
- * correctness argument, armed via SYS_DEBUG_EXFS_CRASH from the
- * shell's `crashtest` command:
- *
- *   1 = after the journal's data slots are written, before the
- *       header (commit point) — nothing should be replayed on
- *       reboot; the operation should look like it never happened.
- *   2 = after the header (commit point), before the real blocks are
- *       applied — this is the case the whole journal exists for:
- *       replay must apply the operation on the next mount.
- *   3 = after the real blocks are applied, before the header is
- *       cleared — replay must be safe to run again (idempotent):
- *       the operation already happened, reapplying it must be a
- *       no-op, not corruption.
- *
- * Disabled (0) in normal operation; this file is not conditionally
- * compiled out because the hook is inert (single branch, single
- * global) unless explicitly armed, and keeping it always-present
- * means the exact same kernel binary is what's being tested rather
- * than a special "test build".
+ * Crash injection hook for testing journal replay idempotency.
+ * Armed via SYS_DEBUG_EXFS_CRASH:
+ *   1 = pre-commit (slots written, before header commit)
+ *   2 = post-commit (header written, before block update)
+ *   3 = post-apply (blocks written, before header clear)
  */
 static volatile int g_exfs_crash_point = 0;
 
