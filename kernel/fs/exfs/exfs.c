@@ -9,18 +9,7 @@
 #include <string.h>
 
 
-        static uint8_t block_buf[EXFS_BLOCK_SIZE];
-        if (!exfs_read_block(nd->vol, disk_block, block_buf)) break;
 
-        memcpy(dst + bytes_read, block_buf + block_off, can_read);
-        bytes_read += can_read;
-    }
-
-    exfs_append_prov(nd->vol, nd->inode_num, in,
-                     PROV_OP_READ, 0, 0, offset, bytes_read);
-
-    return (int64_t)bytes_read;
-}
 
 static int64_t exfs_op_write(vfs_node_t *node, uint64_t offset,
                               const void *buf, uint64_t len)
