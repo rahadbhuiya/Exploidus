@@ -54,10 +54,10 @@ The target system architecture is structured as follows:
   - Path: `kernel/boot/efi_main.c` or GRUB EFI configuration
   - Objective: Pass linear framebuffer base address and resolution (1920x1080x32bpp) from UEFI Graphics Output Protocol (GOP) into the kernel.
   - Verification: Bootable directly from modern PC and laptop UEFI boot menus without legacy CSM.
-- [ ] **1.2 ACPI Table Parsing (RSDP, XSDT, MADT)**
+- [x] **1.2 ACPI Table Parsing (RSDP, XSDT, MADT)**
   - Path: `kernel/arch/x86_64/acpi.c`, `kernel/arch/x86_64/acpi.h`
   - Objective: Enumerate multi-core CPU topology and hardware IRQ routing tables.
-- [ ] **1.3 Local APIC & I/O APIC Drivers (Retire Legacy PIC)**
+- [x] **1.3 Local APIC & I/O APIC Drivers (Retire Legacy PIC)**
   - Path: `kernel/arch/x86_64/apic.c`, `kernel/arch/x86_64/ioapic.c`
   - Objective: Handle multi-core hardware interrupts and high-resolution timer events.
 - [ ] **1.4 Symmetric Multiprocessing (SMP / Multi-Core)**

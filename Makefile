@@ -64,7 +64,7 @@ KERNEL_C_SRCS := \
     kernel/cap/capability.c kernel/cap/broker.c \
     kernel/crypto/blake3.c kernel/audit/audit.c \
     kernel/proc/process.c kernel/proc/scheduler.c \
-    kernel/proc/fork_exec.c kernel/syscall/table.c \
+    kernel/proc/fork_exec.c kernel/syscall/table.c kernel/syscall/sys_file.c kernel/syscall/sys_net.c kernel/syscall/sys_proc.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \
     kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c kernel/drivers/blockdev.c kernel/drivers/ramdisk.c \
     kernel/fs/vfs/vfs.c kernel/fs/exfs/exfs.c kernel/fs/exfs/journal.c kernel/fs/exfs/inode.c \
@@ -76,6 +76,7 @@ KERNEL_C_SRCS := \
     kernel/net/tcp/tcp.c kernel/net/socket/socket.c \
     kernel/net/drivers/e1000.c \
     kernel/usb/uhci.c \
+    kernel/usb/msc.c \
     kernel/cnsl/cnsl.c \
     kernel/cnsl/fim.c \
     kernel/ipc/ipc.c \

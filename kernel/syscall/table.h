@@ -174,5 +174,123 @@ typedef struct __attribute__((packed)) {
     uint64_t user_rsp; /* offset 72 — user RSP    */
 } syscall_frame_t;
 
+
+/* Userspace address check */
+#define USER_ADDR_MAX  0x00007FFFFFFFFFFFULL
+
+static inline bool uptr_ok(uint64_t addr, uint64_t len)
+{
+    if (!addr) return false;
+    if (addr > USER_ADDR_MAX) return false;
+    if (!len)  return true;
+    if (len  > USER_ADDR_MAX) return false;
+    if (len - 1 > USER_ADDR_MAX - addr) return false;
+    return true;
+}
+
+typedef int64_t (*syscall_fn_t)(syscall_frame_t *);
+
+/* Syscall Handler Prototypes */
+int64_t sys_accept(syscall_frame_t *f);
+int64_t sys_audit_dump(syscall_frame_t *f);
+int64_t sys_audit_read_h(syscall_frame_t *f);
+int64_t sys_bind(syscall_frame_t *f);
+int64_t sys_blake3(syscall_frame_t *f);
+int64_t sys_cap_create_h(syscall_frame_t *f);
+int64_t sys_cap_delegate_h(syscall_frame_t *f);
+int64_t sys_cap_revoke_h(syscall_frame_t *f);
+int64_t sys_chdir(syscall_frame_t *f);
+int64_t sys_chgrp(syscall_frame_t *f);
+int64_t sys_chmod(syscall_frame_t *f);
+int64_t sys_close(syscall_frame_t *f);
+int64_t sys_cnsl_block_ttl(syscall_frame_t *f);
+int64_t sys_cnsl_list(syscall_frame_t *f);
+int64_t sys_cnsl_unblock(syscall_frame_t *f);
+int64_t sys_connect(syscall_frame_t *f);
+int64_t sys_create(syscall_frame_t *f);
+int64_t sys_debug_exfs_corrupt(syscall_frame_t *f);
+int64_t sys_debug_exfs_crash(syscall_frame_t *f);
+int64_t sys_dup(syscall_frame_t *f);
+int64_t sys_dup2(syscall_frame_t *f);
+int64_t sys_exec(syscall_frame_t *f);
+int64_t sys_execv(syscall_frame_t *f);
+int64_t sys_execve(syscall_frame_t *f);
+int64_t sys_exit(syscall_frame_t *f);
+int64_t sys_fb_blend_rect(syscall_frame_t *f);
+int64_t sys_fb_blit(syscall_frame_t *f);
+int64_t sys_fb_circle(syscall_frame_t *f);
+int64_t sys_fb_clear(syscall_frame_t *f);
+int64_t sys_fb_console_set(syscall_frame_t *f);
+int64_t sys_fb_flip(syscall_frame_t *f);
+int64_t sys_fb_flip_rect(syscall_frame_t *f);
+int64_t sys_fb_info(syscall_frame_t *f);
+int64_t sys_fb_pixel(syscall_frame_t *f);
+int64_t sys_fb_rect(syscall_frame_t *f);
+int64_t sys_fb_rrect(syscall_frame_t *f);
+int64_t sys_fb_str(syscall_frame_t *f);
+int64_t sys_file_write(syscall_frame_t *f);
+int64_t sys_fork(syscall_frame_t *f);
+int64_t sys_fstat(syscall_frame_t *f);
+int64_t sys_futex_wait(syscall_frame_t *f);
+int64_t sys_futex_wake(syscall_frame_t *f);
+int64_t sys_getcwd(syscall_frame_t *f);
+int64_t sys_getgid(syscall_frame_t *f);
+int64_t sys_getifaddr(syscall_frame_t *f);
+int64_t sys_getpid(syscall_frame_t *f);
+int64_t sys_getprocs(syscall_frame_t *f);
+int64_t sys_getrandom(syscall_frame_t *f);
+int64_t sys_getuid(syscall_frame_t *f);
+int64_t sys_http_download(syscall_frame_t *f);
+int64_t sys_http_get(syscall_frame_t *f);
+int64_t sys_ipc_recv(syscall_frame_t *f);
+int64_t sys_ipc_recv_nb(syscall_frame_t *f);
+int64_t sys_ipc_send(syscall_frame_t *f);
+int64_t sys_kbd_owner_set(syscall_frame_t *f);
+int64_t sys_kbd_read_nb(syscall_frame_t *f);
+int64_t sys_kill(syscall_frame_t *f);
+int64_t sys_listen(syscall_frame_t *f);
+int64_t sys_lseek(syscall_frame_t *f);
+int64_t sys_meminfo(syscall_frame_t *f);
+int64_t sys_mkfs(syscall_frame_t *f);
+int64_t sys_mmap(syscall_frame_t *f);
+int64_t sys_mount(syscall_frame_t *f);
+int64_t sys_mouse_pos(syscall_frame_t *f);
+int64_t sys_munmap(syscall_frame_t *f);
+int64_t sys_net_close(syscall_frame_t *f);
+int64_t sys_net_recv(syscall_frame_t *f);
+int64_t sys_net_send(syscall_frame_t *f);
+int64_t sys_open(syscall_frame_t *f);
+int64_t sys_ping(syscall_frame_t *f);
+int64_t sys_poweroff(syscall_frame_t *f);
+int64_t sys_read(syscall_frame_t *f);
+int64_t sys_readdir(syscall_frame_t *f);
+int64_t sys_readlink(syscall_frame_t *f);
+int64_t sys_reboot(syscall_frame_t *f);
+int64_t sys_rename(syscall_frame_t *f);
+int64_t sys_rmdir(syscall_frame_t *f);
+int64_t sys_rtc_read(syscall_frame_t *f);
+int64_t sys_set_intent(syscall_frame_t *f);
+int64_t sys_set_tls(syscall_frame_t *f);
+int64_t sys_setgid(syscall_frame_t *f);
+int64_t sys_setuid(syscall_frame_t *f);
+int64_t sys_shm_create(syscall_frame_t *f);
+int64_t sys_shm_destroy(syscall_frame_t *f);
+int64_t sys_shm_map(syscall_frame_t *f);
+int64_t sys_shm_unmap(syscall_frame_t *f);
+int64_t sys_sigaction(syscall_frame_t *f);
+int64_t sys_sigreturn(syscall_frame_t *f);
+int64_t sys_sleep(syscall_frame_t *f);
+int64_t sys_socket(syscall_frame_t *f);
+int64_t sys_spawn(syscall_frame_t *f);
+int64_t sys_stat(syscall_frame_t *f);
+int64_t sys_symlink(syscall_frame_t *f);
+int64_t sys_tty_set_raw(syscall_frame_t *f);
+int64_t sys_unlink(syscall_frame_t *f);
+int64_t sys_uptime(syscall_frame_t *f);
+int64_t sys_uptime_ticks(syscall_frame_t *f);
+int64_t sys_waitpid(syscall_frame_t *f);
+int64_t sys_write(syscall_frame_t *f);
+int64_t sys_yield(syscall_frame_t *f);
+
 void syscall_init(void);
 void syscall_dispatch(syscall_frame_t *frame);
