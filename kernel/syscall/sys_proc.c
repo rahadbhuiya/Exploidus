@@ -21,6 +21,25 @@
 extern void proc_trampoline(void);
 extern uint64_t g_ticks;
 
+#define MMAP_PAGE_SIZE  4096UL
+#define MMAP_MAX_BYTES  (256UL * 1024 * 1024)
+
+typedef struct __attribute__((packed)) {
+    uint64_t timestamp;
+    uint32_t pid;
+    uint32_t event;
+    uint64_t arg0;
+    uint64_t arg1;
+} audit_entry_user_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t pid;
+    uint32_t parent_pid;
+    uint32_t state;
+    uint32_t intent;
+    uint64_t ticks_used;
+} proc_info_t;
+
 static int sys_getrandom_has_rdrand(void)
 {
     uint32_t eax, ebx, ecx, edx;
