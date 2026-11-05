@@ -18,7 +18,15 @@
 #include "../fs/vfs/vfs.h"
 #include <string.h>
 
-extern void proc_trampoline(void);
+extern void jump_to_userspace(uint64_t entry, uint64_t stack_top, uint64_t pml4);
+
+void proc_trampoline(void)
+{
+    process_t *p = g_current_proc;
+    uint64_t entry = p->user_entry; uint64_t stack = p->user_stack_top; uint64_t cr3 = p->cr3;
+    __asm__ volatile("cli\njmp jump_to_userspace\n" : : "D"(entry),"S"(stack),"d"(cr3));
+    __builtin_unreachable();
+}
 extern uint64_t g_ticks;
 
 #define MMAP_PAGE_SIZE  4096UL
