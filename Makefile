@@ -57,6 +57,7 @@ KERNEL_C_SRCS := \
     kernel/main.c kernel/string.c \
     kernel/arch/x86_64/gdt.c kernel/arch/x86_64/idt.c \
     kernel/arch/x86_64/irq.c kernel/arch/x86_64/apic.c \
+    kernel/arch/x86_64/acpi.c kernel/arch/x86_64/ioapic.c \
     kernel/arch/x86_64/fpu.c \
     kernel/arch/x86_64/stack_protector.c \
     kernel/mm/pmm.c kernel/mm/vmm.c kernel/mm/kmalloc.c \
@@ -77,7 +78,6 @@ KERNEL_C_SRCS := \
     kernel/usb/uhci.c \
     kernel/cnsl/cnsl.c \
     kernel/cnsl/fim.c \
-	kernel/huddlecluster/huddlecluster.c \
     kernel/ipc/ipc.c \
     kernel/shm/shm.c \
     kernel/sync/sync.c \

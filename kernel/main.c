@@ -2,6 +2,8 @@
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/irq.h"
 #include "arch/x86_64/apic.h"
+#include "arch/x86_64/acpi.h"
+#include "arch/x86_64/ioapic.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
@@ -15,7 +17,6 @@ extern void syscall_init_msr(void);
 #include "audit/audit.h"
 #include "cnsl/cnsl.h"
 #include "cnsl/fim.h"
-#include "huddlecluster/huddlecluster.h"
 #include "drivers/vga.h"
 #include "drivers/fb.h"
 #include "drivers/font.h"
@@ -263,6 +264,15 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     kprint("[IRQ ] Remapping PIC (IRQ 0-15 -> vectors 32-47)...\n");
     irq_init();
 
+    kprint("[ACPI] Discovering hardware topology...\n");
+    acpi_init(mb_info_phys);
+
+    kprint("[APIC] Initializing Local APIC...\n");
+    apic_init(acpi_get_lapic_addr());
+
+    kprint("[IOAP] Initializing I/O APIC...\n");
+    ioapic_init(acpi_get_ioapic_addr(0));
+
     uint64_t mod_start = 0, mod_size = 0;
     parse_modules(mb_info_phys, &mod_start, &mod_size);
     if (mod_size > 0) {
@@ -359,9 +369,6 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     fim_init();
 
     kprint("[HC  ] Starting HuddleCluster load balancer...\n");
-    extern hc_cluster_t g_cluster;
-    hc_init(&g_cluster);
-    hc_add_server(&g_cluster, "exploidus-0", 0x0a00020f, 80, 1);
 
     kprint("[ExFS] Attempting to mount root filesystem...\n");
     block_device_t *root_dev = NULL;
