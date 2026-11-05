@@ -1,20 +1,8 @@
 /*
  * shm.h — Exploidus Shared Memory
- *
  * Allows one process to create a named shared memory region and other
  * processes to map it into their own address spaces.
- *
  * Primary use case: compositor framebuffer sharing.
- *   1. App calls SYS_SHM_CREATE(size)  → gets back a shm_id (uint32_t)
- *   2. App draws into its mapped VA range
- *   3. Compositor calls SYS_SHM_MAP(shm_id) → maps the SAME physical
- *      pages into its own address space, reads and blends them
- *   4. Either side calls SYS_SHM_UNMAP(va, size) to unmap
- *   5. Original creator calls SYS_SHM_DESTROY(shm_id) when done
- *
- * Physical pages are ref-counted so they're only freed when no mapping
- * is left.  No kmalloc for the page frames themselves — they come from
- * PMM just like mmap pages.
  */
 
 #pragma once

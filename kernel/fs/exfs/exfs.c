@@ -264,9 +264,6 @@ static bool exfs_write_inode(exfs_volume_t *vol, uint64_t inode_num,
  * current transaction. If this exact block was already staged earlier
  * in the same transaction, overwrite that staged copy (last write
  * wins) instead of consuming another slot — a single operation can
- * legitimately touch the same directory block twice (e.g. remove one
- * entry, add another) and that must not overflow the fixed-size
- * journal.
  */
 static bool exfs_journal_stage(exfs_volume_t *vol, uint64_t block_idx,
                                 const void *data)
@@ -324,24 +321,6 @@ static bool exfs_meta_write_block(exfs_volume_t *vol, uint64_t block_idx,
  * it's already been staged earlier in the active transaction, that
  * staged (not-yet-committed-to-disk) copy is authoritative and is
  * returned instead of the on-disk version. Falls back to a normal
- * exfs_read_block() when there's no active transaction or this block
- * hasn't been touched by it yet.
- *
- * This matters for any read-modify-write against a block that more
- * than one call in the same transaction might touch -- the clearest
- * example is the inode table: EXFS_BLOCK_SIZE / EXFS_INODE_SIZE = 16
- * inodes share one on-disk block, so creating a file in a directory
- * that needs its first data block allocated writes *two* different
- * inodes (the new file's, and the parent directory's, for its updated
- * direct[] pointer) that can easily land in the same block. Without
- * this, exfs_write_inode()'s plain exfs_read_block() would miss the
- * first inode's still-only-staged update, and journal_stage's
- * same-block dedup ("stage again -> overwrite") would silently
- * discard it -- exactly the rename() bug fixed earlier, but for
- * inodes instead of dirents. Caught in testing: creating the first
- * file in a freshly made subdirectory left the new file's own inode
- * effectively blank (mode 0), so opening it for write failed
- * permission checks that a mode of 0 always fails.
  */
 static bool exfs_txn_read_block(exfs_volume_t *vol, uint64_t block_idx,
                                  void *buf)
@@ -368,15 +347,6 @@ static void exfs_journal_begin(exfs_volume_t *vol)
  * matching exfs_journal_begin(). Sequence: (1) write every staged
  * block's new content into the journal's data slots, (2) write the
  * journal header last, with a valid magic and the block count/index
- * list — this single block write is the commit point: if the kernel
- * crashes before it lands, exfs_journal_replay() at next mount sees no
- * valid header and does nothing, so the real (pre-transaction) blocks
- * are untouched. (3) apply every staged block to its real location.
- * (4) clear the header. Because step 3 writes the exact same final
- * content step 1 already durably recorded, replaying step 3 again
- * after a crash between (3) and (4) is always safe (idempotent) — so
- * is re-replaying an already-fully-applied transaction if the crash
- * landed between (2) and (4) in general.
  */
 static bool exfs_journal_commit(exfs_volume_t *vol)
 {
@@ -463,8 +433,6 @@ static bool exfs_journal_commit(exfs_volume_t *vol)
  * handed back to the VFS. If a committed transaction was left behind
  * by a crash (header has a valid magic), redo it: write every staged
  * block back to its real location, then clear the header. No-op for
- * legacy (journal_size == 0) volumes and for a clean unmount (header
- * already cleared by the last exfs_journal_commit()).
  */
 static void exfs_journal_replay(exfs_volume_t *vol)
 {
@@ -510,24 +478,6 @@ static void exfs_journal_replay(exfs_volume_t *vol)
  * into a disk block number, walking direct pointers, then single
  * indirect, then double indirect (see EXFS_INDIRECT_PTRS in exfs.h for
  * the addressable range each level covers).
- *
- * If `alloc` is false: returns 0 for a hole (unallocated block) —
- * used by reads, which should treat holes as EOF/end-of-data, same as
- * the original direct-only code did.
- *
- * If `alloc` is true: allocates any missing index blocks and the
- * final data block as needed, staging every index-block write as
- * metadata (so it participates in whatever journal transaction the
- * caller has open). Sets *inode_dirty = true if a *top-level* inode
- * field (direct[i], indirect, or double_indirect) was assigned for
- * the first time — the caller is responsible for persisting the
- * inode itself afterward (exfs_write_inode) when that happens;
- * changes to blocks an existing pointer already points *at* are
- * written here directly and don't require an inode rewrite.
- *
- * Returns 0 on allocation failure (volume full) or if file_block is
- * beyond what direct+indirect+double_indirect can address (triple
- * indirect is not implemented — see EXFS_INDIRECT_PTRS comment).
  */
 static uint64_t exfs_resolve_block(exfs_volume_t *vol, exfs_inode_t *in,
                                     uint64_t file_block, bool alloc,
@@ -631,21 +581,6 @@ static uint64_t exfs_resolve_block(exfs_volume_t *vol, exfs_inode_t *in,
  * content (offset 0 .. in->size), streamed through blake3_update() one
  * block at a time so this never needs a buffer larger than
  * EXFS_BLOCK_SIZE regardless of file size. Replaces an earlier version
- * of this field that only covered the bytes touched by the most recent
- * write() call -- that missed corruption in any earlier-written part
- * of the file; this catches corruption anywhere in it.
- *
- * Cost: O(file size) per call, and exfs_op_write() calls this once
- * per write() -- so N sequential small writes to the same file cost
- * O(N^2) total, not O(N). Deliberate, not an oversight: this
- * filesystem already leans toward correctness/detectability over
- * raw throughput (the provenance ring buffer, the journal), and
- * nothing on this kernel currently does the kind of write-heavy
- * workload (databases, log-structured writes) where that would bite.
- * If that changes, incremental hashing would need either an
- * append-only fast path (BLAKE3's streaming API already supports
- * that -- just don't restart from 0) or accepting that only the
- * last-written range is covered, as before.
  */
 static void exfs_compute_whole_file_hash(exfs_volume_t *vol,
                                           const exfs_inode_t *in,
@@ -739,12 +674,6 @@ typedef struct {
  * byte of a file's first data block, writing it back through
  * exfs_write_block() directly -- bypassing exfs_op_write() (and
  * therefore block_hash) entirely. This simulates genuine silent
- * on-disk corruption (bit rot, a bad sector, a bug somewhere else
- * entirely) for testing exfs_op_open()'s integrity-hash verification,
- * as opposed to corruption introduced through this filesystem's own
- * write path, which would legitimately update the hash and shouldn't
- * be flagged. Returns 0 on success, -1 if the node isn't a regular
- * ExFS file with at least one byte of content.
  */
 int exfs_debug_corrupt_file(vfs_node_t *node)
 {
@@ -776,19 +705,12 @@ static int exfs_op_open(vfs_node_t *node, uint32_t flags)
     /* Re-read inode on open to get fresh metadata */
     exfs_read_inode(nd->vol, nd->inode_num, &nd->inode);
 
-    /* Integrity check: if this file has ever actually been written to
-     * (a populated, non-zero stored block_hash -- see
-     * exfs_compute_whole_file_hash()), recompute its whole-file hash
-     * now and compare. A mismatch means the on-disk content changed
-     * since the hash was last set without going through a normal
-     * write() -- log it loudly; this adds active detection on top of
-     * the provenance trail that already records legitimate writes.
-     * Skipped when the stored hash is all-zero: that's this field's
-     * untouched-since-create default (exfs_op_create/exfs_op_symlink
-     * memset the new inode to zero), not a genuine "empty file"
-     * hash -- BLAKE3 of zero bytes is a specific non-zero digest, so
-     * comparing against an unset zero hash would always spuriously
-     * mismatch. */
+    /*
+ * (a populated, non-zero stored block_hash -- see
+ * exfs_compute_whole_file_hash()), recompute its whole-file hash
+ * now and compare. A mismatch means the on-disk content changed
+ * since the hash was last set without going through a normal
+ */
     {
         static const uint8_t zero8[8] = {0};
         if (memcmp(nd->inode.block_hash, zero8, 8) != 0) {
@@ -1056,18 +978,12 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
     uint64_t ipb = EXFS_BLOCK_SIZE / EXFS_INODE_SIZE;
     static uint8_t block_buf[EXFS_BLOCK_SIZE];
 
-    /* Refuse to create a name that already exists in this directory.
-     * Without this check, two dirents with the identical name could
-     * both exist (each pointing at a different inode) — e.g. any
-     * caller that falls back to create() after a failed open() for an
-     * unrelated reason would silently duplicate the file instead of
-     * either failing or reusing the existing one. Real filesystems
-     * never allow this; POSIX create()/O_CREAT without O_EXCL opens
-     * the existing file instead of duplicating it, which callers
-     * needing that exact semantic should implement by open()-first,
-     * same as today — this only closes the "duplicate name" hole,
-     * it doesn't change create()'s own contract of "always makes a
-     * new file". */
+    /*
+ * Without this check, two dirents with the identical name could
+ * both exist (each pointing at a different inode) — e.g. any
+ * caller that falls back to create() after a failed open() for an
+ * unrelated reason would silently duplicate the file instead of
+ */
     {
         exfs_inode_t *din = &nd->inode;
         static uint8_t dup_check_buf[EXFS_BLOCK_SIZE];
@@ -1200,18 +1116,6 @@ static vfs_node_t *exfs_op_create(vfs_node_t *dir, const char *name,
  * stored content is the raw target path string. Mirrors
  * exfs_op_create()'s structure (duplicate-name guard, free-inode
  * search, one journaled transaction covering the new inode + its one
- * data block + the parent's dirent insertion) with one addition: the
- * target string is written into the new inode's first data block
- * directly, in the same transaction, so a crash can't produce a
- * symlink inode with no content or a content block with no inode
- * pointing at it.
- *
- * Target length is capped at EXFS_NAME_MAX (255) bytes -- matches the
- * fixed-size buffer vfs_lookup_impl() reads a link's target into when
- * following it (see VFS_SYMLINK_MAX_DEPTH in vfs.c) -- comfortably
- * fits in the one data block this always allocates, so there's no
- * need to go through the general (indirect-block-capable) write path
- * for this.
  */
 static int exfs_op_symlink(vfs_node_t *dir, const char *name, const char *target)
 {
@@ -1341,18 +1245,9 @@ static int exfs_op_symlink(vfs_node_t *dir, const char *name, const char *target
 
 /*
  * exfs_op_unlink — remove a file from a directory.
- *
  * Frees the file's direct blocks and (if present) its indirect block
  * and everything it points to, zeroes the inode so exfs_op_create's
  * free-inode scan (mode==0 && size==0) can reuse it, then clears the
- * directory entry.
- *
- * Only regular files are supported — returns -2 for directories
- * (recursive delete is out of scope) and -1 if the name isn't found.
- *
- * Note: this does not check whether the file is currently open via
- * another fd. Nothing else in this codebase reference-counts open
- * files either, so that is a pre-existing gap, not new with this.
  */
 static int exfs_op_unlink(vfs_node_t *dir, const char *name)
 {
@@ -1386,25 +1281,12 @@ static int exfs_op_unlink(vfs_node_t *dir, const char *name)
                 exfs_inode_t cin;
                 if (!exfs_read_inode(vol, child_ino, &cin)) return -1;
 
-                /* Order matters for crash safety: the dirent removal
-                 * + inode zeroing happen FIRST, atomically (one
-                 * journal transaction), and the child's data blocks
-                 * are only freed AFTER that transaction durably
-                 * commits. Freeing blocks before removing the dirent
-                 * (the previous order) meant a crash in between left
-                 * the directory still listing the file, pointing at
-                 * an inode whose blocks had already been handed back
-                 * to the allocator — a *different* file created in
-                 * that window could then be silently corrupted by
-                 * whatever still resolved the dangling entry. With
-                 * this order, a crash before the commit leaves the
-                 * file fully intact (nothing was freed yet); a crash
-                 * after the commit but before freeing finishes leaves
-                 * at worst a leaked block (bitmap says used, nothing
-                 * references it) — the same acceptable, fsck.py-
-                 * repairable risk this journal's design doc already
-                 * documents for the "no data-block journaling" case,
-                 * not new corruption. */
+                /*
+ * + inode zeroing happen FIRST, atomically (one
+ * journal transaction), and the child's data blocks
+ * are only freed AFTER that transaction durably
+ * commits. Freeing blocks before removing the dirent
+ */
                 exfs_journal_begin(vol);
 
                 exfs_inode_t blank;
@@ -1600,15 +1482,6 @@ static int exfs_op_rmdir(vfs_node_t *dir, const char *name)
  * old_name) to (new_dir, new_name). old_dir and new_dir may be the
  * same directory (plain rename) or different ones (move) — vfs_rename()
  * has already confirmed both live on this same volume before calling
- * in. If new_name already exists and is a regular file, it is removed
- * first (POSIX rename() overwrite semantics); if it's a directory,
- * the rename is refused (-1) rather than attempting a merge.
- *
- * This does not update ".." for a moved directory because ExFS
- * directories don't store a real ".." dirent at all (see the comment
- * in vfs_create() about why an on-disk ".." is deliberately never
- * created) — so moving a directory to a new parent needs no such
- * fixup here.
  */
 static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
                            vfs_node_t *new_dir, const char *new_name)
@@ -1707,21 +1580,12 @@ static int exfs_op_rename(vfs_node_t *old_dir, const char *old_name,
     }
     if (!dst_block && !need_new_block) return -1; /* directory full */
 
-    /* The actual move: remove the source dirent, insert the
-     * destination dirent. One transaction — a crash between the two
-     * must never leave the entry visible in neither directory (lost)
-     * or in both (duplicated).
-     *
-     * When source and destination land in the *same* physical block
-     * (always true for a same-directory rename, and possible even
-     * across directories if their allocators happened to reuse the
-     * same block), both edits are applied to one in-memory copy and
-     * written/staged exactly once. Staging the same block twice with
-     * two different partial edits would be wrong: the journal's
-     * "same block staged again -> overwrite" dedup (see
-     * exfs_journal_stage) means only the *second* staged copy would
-     * survive, silently discarding whichever edit was staged first --
-     * this was an actual bug caught by testing, not a hypothetical. */
+    /*
+ * destination dirent. One transaction — a crash between the two
+ * must never leave the entry visible in neither directory (lost)
+ * or in both (duplicated).
+ * When source and destination land in the *same* physical block
+ */
     exfs_journal_begin(vol);
 
     if (need_new_block) {
@@ -1921,16 +1785,12 @@ bool exfs_format(block_device_t *dev, uint32_t lba_base, uint64_t total_blocks)
     uint64_t inode_blocks = (EXFS_MAX_INODES * EXFS_INODE_SIZE
                            + EXFS_BLOCK_SIZE - 1) / EXFS_BLOCK_SIZE;
     uint64_t block_bitmap_block = 1;
-    /* How many blocks the bitmap itself needs: one bit per block on
-     * the volume, BITS_PER_BLK (32768) bits per block. A volume of
-     * up to 32768 blocks (128 MiB at 4 KiB blocks) still fits in the
-     * original single block; past that, more are reserved here so
-     * every block on the volume has a bit to represent it -- this is
-     * exactly the gap bitmap_size (see exfs.h) exists to close: it
-     * used to be hardcoded to 1 block, silently leaving blocks
-     * beyond 32768 with no bitmap bit at all (always reading as
-     * "free" — real corruption risk on any volume bigger than that,
-     * not just a scale inconvenience). */
+    /*
+ * the volume, BITS_PER_BLK (32768) bits per block. A volume of
+ * up to 32768 blocks (128 MiB at 4 KiB blocks) still fits in the
+ * original single block; past that, more are reserved here so
+ * every block on the volume has a bit to represent it -- this is
+ */
     uint64_t bitmap_size = (total_blocks + BITS_PER_BLK - 1) / BITS_PER_BLK;
     if (bitmap_size < 1) bitmap_size = 1;
     uint64_t inode_table_block = block_bitmap_block + bitmap_size;

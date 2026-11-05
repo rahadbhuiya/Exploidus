@@ -90,13 +90,11 @@ static void ata_irq_install(void)
 static bool ata_wait_not_busy(void)
 {
     /*
-     * IRQ-driven path: if interrupts are enabled, park the CPU with
-     * hlt instead of spinning -- an ATA command's IRQ fires once BSY
-     * clears, so we can react to it directly rather than burning a
-     * core polling a port thousands of times a second. Bounded to
-     * ~5M wakeups so a wedged/IRQ-less drive still times out instead
-     * of hanging forever, same ceiling the old busy-poll used.
-     */
+ * IRQ-driven path: if interrupts are enabled, park the CPU with
+ * hlt instead of spinning -- an ATA command's IRQ fires once BSY
+ * clears, so we can react to it directly rather than burning a
+ * core polling a port thousands of times a second. Bounded to
+ */
     if (interrupts_enabled()) {
         g_ata_irq_pending = false;
         for (uint32_t i = 0; i < 5000000; i++) {
@@ -177,14 +175,11 @@ void ata_init(void)
     serial_print("\n");
 
     /*
-     * Register IRQ14 now. Safe even though we're still pre-sti at
-     * this point in boot: irq_register() only unmasks the PIC line
-     * and stores the handler pointer, it doesn't require interrupts
-     * to already be globally enabled -- and ata_wait_*() checks
-     * interrupts_enabled() before ever relying on the IRQ firing.
-     * Registering here means the very first post-boot disk access
-     * already gets the IRQ-driven path.
-     */
+ * Register IRQ14 now. Safe even though we're still pre-sti at
+ * this point in boot: irq_register() only unmasks the PIC line
+ * and stores the handler pointer, it doesn't require interrupts
+ * to already be globally enabled -- and ata_wait_*() checks
+ */
     ata_irq_install();
 }
 

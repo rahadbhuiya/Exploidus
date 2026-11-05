@@ -3,26 +3,6 @@
  * crypto-algorithms (https://github.com/B-Con/crypto-algorithms,
  * sha256.c) -- "released into the public domain free of any
  * restrictions" per that project's README.
- *
- * Chosen for the same reason as this project's other ported crypto
- * primitives: SHA-256's compression function (the 64-round message
- * schedule and the Ch/Maj/Sigma bit-mixing) is exactly specified by
- * FIPS 180-4 and has no room for a "faster but different" rewrite
- * that stays correct, so there's little to gain and real risk to
- * lose by re-deriving it by hand versus porting a reference that's
- * already checked against the standard's own test vectors.
- *
- * Needed for RFC 8731's curve25519-sha256 SSH key-exchange hash
- * (kernel/crypto/x25519.c is the DH half of that suite) and for
- * HMAC-SHA2 message authentication, both still to be wired in.
- *
- * Only cosmetic changes from the original: WORD/BYTE typedefs
- * replaced with this kernel's uint32_t/uint8_t/size_t conventions,
- * the context struct and function names given an sha256_ prefix and
- * _t suffix to match this project's style, a one-shot sha256()
- * convenience wrapper added, comments trimmed. No arithmetic changed
- * -- the round constants, message schedule, and compression function
- * below are unmodified from the source.
  */
 
 #include <stdint.h>

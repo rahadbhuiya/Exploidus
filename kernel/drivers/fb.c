@@ -276,9 +276,7 @@ void fb_draw_circle(int cx, int cy, int r, uint32_t color)
  * Soft drop shadow under a rounded-rect window.
  * Call this BEFORE drawing the window itself.
  * layers=3 gives a nice progressive fade. Each layer is 40% more transparent.
- *
  * shadow_color: use 0x000000 for black.
- * base_alpha:   0–255, suggest 80–100 for dark desktop.
  */
 void fb_draw_shadow(int x, int y, int w, int h, int r,
                     uint32_t shadow_color, uint8_t base_alpha)
@@ -319,14 +317,9 @@ void fb_draw_shadow(int x, int y, int w, int h, int r,
 
 /*
  * Draw a complete window frame with:
- *   - drop shadow
- *   - rounded body (bg_color)
- *   - title bar (title_color) with separator
- *   - left accent stripe (accent)
- *   - traffic-light close/min/max buttons
- *   - title text
- *
- * Returns the Y position where the content area starts.
+ * - drop shadow
+ * - rounded body (bg_color)
+ * - title bar (title_color) with separator
  */
 int fb_draw_window(int x, int y, int w, int h,
                    const char *title,
@@ -493,11 +486,6 @@ void fb_flip(void)
  * hasn't changed since the last flip, so copying the *entire*
  * back buffer to the real framebuffer (fb_flip(), a ~1-2MB memcpy at
  * typical resolutions) on every single small update -- one changed
- * character cell, one moved cursor -- is almost all wasted work.
- * This copies only the given rect, row by row (the backbuffer and
- * framebuffer are both row-major with `pitch` stride, so a rect
- * isn't contiguous memory and needs one memcpy per row rather than
- * one memcpy overall).
  */
 void fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h)
 {
@@ -523,28 +511,14 @@ void fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h)
 /*
  * Blit a whole ARGB32 buffer (top byte = alpha) into the framebuffer
  * at (dst_x, dst_y), width x height, in ONE kernel-space loop.
- *
  * This exists because the previous approach — the caller looping over
  * every pixel of a window and issuing one fb_put_pixel/fb_blend_pixel
- * *syscall* per pixel — meant a single 400x300 window redraw cost
- * ~120,000 syscalls (context switches) every frame. That overhead is
- * what was making window drag/redraw look laggy and "flickery": doing
- * the same loop here costs one syscall total, with the per-pixel work
- * done in kernel space where it's cheap.
  */
 /*
  * NOTE on "zero-copy": a compositor is fundamentally combining
  * multiple surfaces (windows + wallpaper + cursor) into one image, so
  * there's no way to hand the display hardware a client's buffer
  * directly the way a fullscreen, undecorated single-surface app could
- * — that only becomes possible with hardware overlay planes / a real
- * GPU, which this kernel doesn't have a driver for. What we CAN do
- * cheaply is avoid redundant work on the one copy that does have to
- * happen: resolve the destination pointer once per row instead of
- * re-deriving it (and re-checking bounds/back-buffer selection) on
- * every single pixel via fb_put_pixel, and memcpy contiguous runs of
- * fully-opaque pixels — the common case for most window content —
- * directly instead of storing them one at a time.
  */
 void fb_blit(int32_t dst_x, int32_t dst_y, uint32_t w, uint32_t h,
              const uint32_t *src, uint32_t bg_color)

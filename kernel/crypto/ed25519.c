@@ -3,43 +3,6 @@
  * (https://tweetnacl.cr.yp.to/, version 20131229)'s crypto_sign_*
  * functions -- Daniel J. Bernstein, Bart Mennink, Bernard van
  * Gastel, Wesley Janssen, Tanja Lange, Peter Schwabe, Sjaak
- * Smetsers -- public domain.
- *
- * Chosen for the same reason as this project's other ported crypto:
- * the twisted-Edwards field arithmetic and point operations below
- * (the gf type, M/S/A/Z/inv25519/pow2523, the Edwards point
- * add/scalarmult/pack) are exactly the kind of code that's correct
- * by construction in a reviewed reference and easy to break subtly
- * by "cleaning up" -- TweetNaCl in particular was written and
- * published specifically to be small enough to audit by hand while
- * still being a complete, correct NaCl-compatible implementation
- * (see the TweetNaCl paper, "A Crypto Library in 100 Tweets").
- *
- * Adapted from TweetNaCl's original API (which bundles the message
- * and signature into one buffer -- crypto_sign() outputs
- * signature||message, crypto_sign_open() verifies and strips the
- * signature back off) to a detached-signature shape
- * (ed25519_sign()/ed25519_verify(), matching ed25519.h) since that's
- * what SSH's wire format actually needs -- a signature is its own
- * field, sent alongside the data it covers, not concatenated with
- * it. This changes buffer layout/bookkeeping only, not the
- * arithmetic: every field-element/point operation below (M, S, A, Z,
- * inv25519, pow2523, the Edwards add/scalarmult/scalarbase/pack, and
- * modL's mod-L scalar reduction) is unmodified from TweetNaCl's
- * originals.
- *
- * Also adapted: crypto_sign_keypair() called randombytes() itself;
- * ed25519_keypair_from_seed() below takes the seed as a parameter
- * instead, so this file has no RNG dependency (portable/host-
- * testable, and lets a caller control/persist the seed for a host
- * key deliberately, rather than always generating a fresh random
- * one). Uses this project's own sha512.c (itself extracted from this
- * same TweetNaCl source -- see sha512.c) rather than TweetNaCl's
- * crypto_hash, which is the same function under a different name.
- *
- * Verified against RFC 8032 Section 7.1's Ed25519 test vectors
- * before being written into the kernel tree -- see the project
- * README for the verification transcript.
  */
 
 #include <stdint.h>
@@ -251,11 +214,6 @@ void ed25519_keypair_from_seed(u8 public_key[ED25519_PUBLIC_KEY_LEN],
  * for the nonce hash, and R||A||message for the challenge hash).
  * Static and bounded rather than heap-allocated or an unbounded VLA,
  * same reasoning as chacha20poly1305.c's MAC_DATA_MAX: this is meant
- * to run inside sshd, which handles one connection/signing operation
- * at a time, so per-process static state here isn't a cross-request
- * hazard (see chacha20poly1305.c's own comment for the fuller
- * argument, and the netbuf-pool-race section of the project README
- * for why that distinction matters at all).
  */
 #define ED25519_SCRATCH_MAX (40 * 1024 + 128)
 static u8 g_scratch[ED25519_SCRATCH_MAX];

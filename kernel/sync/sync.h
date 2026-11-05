@@ -3,32 +3,9 @@
 
 /*
  * kernel/sync — synchronization primitives.
- *
  * Exploidus is currently single-core, so there is no true parallel
  * execution — but there IS concurrency: an IRQ (timer, keyboard,
  * mouse, network card, ...) can interrupt kernel code at almost any
- * point. If that kernel code was in the middle of mutating a shared
- * data structure (like the kmalloc free-list), and the IRQ handler
- * touches the same structure, it gets corrupted. That's a real bug
- * class here, not a theoretical one — kmalloc()/kfree() had exactly
- * zero protection against it before this file existed.
- *
- * Two different tools for two different problems:
- *
- *   spinlock_t   — for data that can be touched from IRQ context
- *                  (allocators, driver rings, shared kernel tables).
- *                  Implemented as interrupt-disable, since with one
- *                  core that's sufficient and it's what makes it safe
- *                  to take from an IRQ handler itself. NEVER blocks.
- *
- *   mutex_t /
- *   semaphore_t  — for process-vs-process contention over a resource
- *                  where waiting is fine (e.g. two processes sharing
- *                  an IPC channel or a file). These actually block the
- *                  waiting process (PROC_BLOCKED + sched_yield()) so
- *                  it burns no CPU while waiting, matching the
- *                  existing blocking-waitpid design elsewhere in the
- *                  kernel. MUST NOT be called from IRQ context.
  */
 
 

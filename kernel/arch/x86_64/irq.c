@@ -1,5 +1,7 @@
 #include "irq.h"
 #include "idt.h"
+#include "apic.h"
+#include "ioapic.h"
 #include <stdint.h>
 #include <string.h>
 #include "../../drivers/serial.h"
@@ -98,6 +100,10 @@ void irq_register(uint8_t irq, irq_handler_fn fn)
         master &= ~(1 << 2);
         outb(PIC1_DATA, master);
     }
+
+    if (ioapic_is_enabled()) {
+        ioapic_route_irq(irq, IRQ_BASE + irq, 0, false);
+    }
 }
 
 void irq_dispatch(interrupt_frame_t *frame)
@@ -135,4 +141,8 @@ void irq_eoi(uint8_t irq)
 
     /* master PIC */
     outb(PIC1_CMD, PIC_EOI);
+
+    /* Local APIC EOI if active */
+    if (apic_is_enabled())
+        apic_eoi();
 }

@@ -3,18 +3,6 @@
  * (https://tweetnacl.cr.yp.to/, version 20131229), by Daniel J.
  * Bernstein, Bart Mennink, Bernard van Gastel, Wesley Janssen, Tanja
  * Lange, Peter Schwabe, Sjaak Smetsers -- public domain.
- *
- * Needed as Ed25519's internal hash function (ed25519.c) -- RFC 8032
- * specifies SHA-512 throughout, distinct from the SHA-256 this
- * kernel also has (sha256.c, for RFC 8731's curve25519-sha256 KEX
- * hash instead).
- *
- * Only cosmetic changes from TweetNaCl's crypto_hashblocks/
- * crypto_hash: renamed to sha512()/sha512_blocks(), u8/u64/i64
- * typedefs replaced with this kernel's uint8_t/uint64_t/int64_t,
- * `FOR(i,n)` macro expanded to plain for-loops, comments added. No
- * arithmetic changed -- the round constants, message schedule, and
- * compression function are unmodified from the original.
  */
 
 #include <stdint.h>

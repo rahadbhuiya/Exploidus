@@ -112,16 +112,6 @@ static uint32_t g_kbd_owner = 0;
  * mode line editing below via SYS_TTY_SET_RAW — for a process (like
  * exploish) that already does its own full echo/backspace/history
  * line editing in userspace. Everyone else gets standard terminal
- * canonical-mode behavior by default (see cooked-mode buffer below).
- *
- * Why this exists: before it, kernel_read() just handed back raw
- * keyboard bytes with no echo and no backspace handling at all. That
- * was invisible for exploish (which does its own full-screen editing
- * and never noticed), but any ordinary program reading stdin the
- * normal C way (Lua's REPL via fgetc(), for instance) got totally
- * silent, uneditable input — typed characters never appeared, and a
- * backspace became a literal byte embedded in the line instead of
- * deleting the previous character, producing garbled input.
  */
 static uint32_t g_console_raw_pid = 0;
 
@@ -166,32 +156,11 @@ static int64_t kernel_read(int fd, void *buf, uint64_t len)
             }
             if (n == 0) {
                 /*
-                 * BUG FIX: this used to be a bare "sti; hlt; cli" --
-                 * halt until the next interrupt, then loop back and
-                 * check the keyboard again, all without ever calling
-                 * sched_yield(). That means the calling process (the
-                 * shell, at an idle prompt) never actually gave up
-                 * the CPU to the scheduler: it stayed g_current_proc
-                 * the whole time, silently re-grabbing execution after
-                 * every timer/keyboard/network IRQ returned. Any other
-                 * READY process -- sshd/httpd sitting in their own
-                 * accept() loop calling sched_yield() -- never got a
-                 * turn: sched_next() was never even called on the
-                 * shell's behalf, so those processes' own
-                 * sched_yield() calls (elsewhere) were the only path
-                 * back into the scheduler, and with nothing to switch
-                 * away FROM, that path was dead too. In practice: a
-                 * background TCP daemon could sit fully alive with an
-                 * ESTABLISHED connection waiting in its accept queue
-                 * and simply never get scheduled to call accept() and
-                 * notice, for as long as a human was sitting idle at
-                 * the shell prompt -- which is effectively always.
-                 * sched_yield() still halts (see its own comment in
-                 * kernel/proc/scheduler.c) when this really is the
-                 * only ready process, so idle CPU usage doesn't
-                 * regress -- it just also actually offers the CPU to
-                 * anyone else who's ready first.
-                 */
+ * BUG FIX: this used to be a bare "sti; hlt; cli" --
+ * halt until the next interrupt, then loop back and
+ * check the keyboard again, all without ever calling
+ * sched_yield(). That means the calling process (the
+ */
                 sched_yield();
             }
         }
@@ -717,11 +686,6 @@ static __attribute__((unused)) int64_t sys_fb_blit(syscall_frame_t *f)
  * base (x86-64 FS_BASE). Native Exploidus syscall, not a Linux
  * arch_prctl clone — deliberately simpler (always sets FS_BASE, no
  * flag argument) since Exploidus doesn't need GS_BASE or the
- * get-instead-of-set variants Linux's arch_prctl supports.
- *
- * Applied immediately via wrmsr (takes effect for the calling process
- * right away) AND stored on process_t so the scheduler restores it on
- * every future context switch back to this process.
  */
 static __attribute__((unused)) int64_t sys_set_tls(syscall_frame_t *f)
 {
@@ -795,8 +759,6 @@ static __attribute__((unused)) int64_t sys_tty_set_raw(syscall_frame_t *f)
  * handler with the kernel, so idt.c's exception handler can redirect
  * execution to it on a crash instead of unconditionally killing the
  * process (see kernel/arch/x86_64/idt.c for the delivery side). A
- * handler can end by calling exit(), or by calling sigreturn() to
- * resume the code the fault interrupted (see sys_sigreturn below).
  */
 static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
 {
@@ -813,15 +775,6 @@ static __attribute__((unused)) int64_t sys_sigaction(syscall_frame_t *f)
  * done and wants to resume the code the fault interrupted, instead of
  * calling exit(). Restores the full register state (including
  * rip/rsp/rflags) idt.c saved at fault time and jumps straight back
- * to the faulting instruction.
- *
- * This cannot return through the normal syscall path: entry.asm's
- * epilogue only restores a handful of registers before sysret, not
- * enough to resume arbitrary interrupted code. Instead it hands off
- * to sigreturn_restore() (kernel/arch/x86_64/sigreturn.asm), which
- * pops every register out of the saved frame and iret's back to
- * userspace directly. That function never returns, so neither does
- * this one on the success path.
  */
 static __attribute__((unused)) int64_t sys_sigreturn(syscall_frame_t *f)
 {
@@ -842,14 +795,6 @@ static __attribute__((unused)) int64_t sys_sigreturn(syscall_frame_t *f)
  * process. This is a single-user system: any process may signal any
  * other live process, there is no owner/uid check here (a
  * multi-user build would check the caller's identity against the
- * target's owner before allowing this).
- *
- * Delivery is not instant: this just marks the signal pending on the
- * target and returns. It actually gets delivered the next time that
- * process is about to resume in userspace, through the interrupt/IRQ
- * return path (see deliver_pending_signal() in
- * kernel/arch/x86_64/idt.c) -- in practice at most one timer tick
- * away, including when a process signals itself.
  */
 static __attribute__((unused)) int64_t sys_kill(syscall_frame_t *f)
 {
@@ -885,17 +830,8 @@ static __attribute__((unused)) int64_t sys_rmdir(syscall_frame_t *f)
 /*
  * sys_mount(dev_name, mountpoint) — mount a registered block device
  * (e.g. "usb0", "ata0") as a fresh ExFS volume at a VFS path.
- *
  * Deliberately minimal: LBA 0 only (no partition table support), no
  * unmount, no re-mount-over-existing-mountpoint check (vfs_mount()
- * itself doesn't reject that -- longest-prefix-match lookup just
- * means the newest mount at a given path wins, which is enough for
- * this to be usable without being a real mount-table manager).
- *
- * Returns: 0 on success, -1 on bad arguments, -2 if the named device
- * isn't registered, -3 if exfs_mount() failed (e.g. no valid ExFS
- * superblock at LBA 0 -- a blank/unformatted USB stick, for
- * instance), -4 if vfs_mount() failed (mount table full).
  */
 static __attribute__((unused)) int64_t sys_mount(syscall_frame_t *f)
 {
@@ -917,23 +853,8 @@ static __attribute__((unused)) int64_t sys_mount(syscall_frame_t *f)
 /*
  * sys_mkfs(dev_name, total_blocks) — format a registered block
  * device with a fresh ExFS volume at LBA 0 (see exfs_format()).
- *
  * total_blocks is caller-specified rather than auto-derived from the
  * device's real capacity -- this driver doesn't have a generic
- * "query capacity" hook on block_device_t yet (ATA/USB each expose
- * it differently: ATA doesn't expose it as a callable function at
- * all today, USB's is packed into the SCSI READ CAPACITY response
- * seen once at enumeration time and not persisted anywhere
- * queryable). Caller is responsible for picking a total_blocks that
- * fits the real device -- exfs_format() itself doesn't validate
- * against actual device size either, so requesting more blocks than
- * the device has will silently write past the end of small devices.
- * A real implementation would add block_device_t.get_capacity() and
- * default to it if total_blocks is 0; not done yet.
- *
- * Returns: 0 success, -1 bad arguments, -2 no such device, -3
- * exfs_format() failed (total_blocks too small for even the
- * metadata, or a write failed).
  */
 static __attribute__((unused)) int64_t sys_mkfs(syscall_frame_t *f)
 {
@@ -955,14 +876,6 @@ static __attribute__((unused)) int64_t sys_mkfs(syscall_frame_t *f)
  * callable by a process currently at UID_ROOT, and only to switch to
  * a non-root uid; a process that has already dropped can never call
  * this again (whether to go back to root or to another non-root
- * uid), matching the real Unix setuid() rule that a non-privileged
- * process can't change its uid at all. There is deliberately no way
- * back up -- this is NOT a real setuid()/login mechanism (no
- * password/credential check backs it), it's a minimal, honest
- * building block so a process can voluntarily stop being root, which
- * is what makes the owner-vs-other distinction in vfs_open() actually
- * observable/testable rather than dead code every process trivially
- * bypasses via UID_ROOT.
  */
 static __attribute__((unused)) int64_t sys_setuid(syscall_frame_t *f)
 {
@@ -987,17 +900,6 @@ static __attribute__((unused)) int64_t sys_getuid(syscall_frame_t *f)
  * sys_setuid()'s rule exactly: only callable while the caller is
  * still at UID_ROOT (checked via uid, not gid -- so the correct
  * privilege-drop order is setgid() then setuid(), same order real
- * privilege-dropping code uses). Once a process has dropped away
- * from UID_ROOT via setuid(), it can no longer call this either,
- * which is what stops a dropped-privilege process from picking an
- * arbitrary group to gain group-permission access it shouldn't have.
- * Unlike setuid(), this allows setting to *any* gid including
- * GID_ROOT (there's no meaningful "already at group root" one-way
- * restriction the way there is for uid -- gid is a group membership
- * tag, not an identity/privilege level on its own; UID_ROOT is what
- * actually grants root's full bypass, not any particular gid). Same
- * honesty caveat as setuid(): not a real login/group-membership
- * system, no /etc/group, no supplementary groups.
  */
 static __attribute__((unused)) int64_t sys_setgid(syscall_frame_t *f)
 {
@@ -1116,14 +1018,7 @@ static int64_t sys_execv(syscall_frame_t *f)
  * sys_execve -- real execve(path, argv, envp): replaces the CALLING
  * process in place (see sys_execve_impl() in kernel/proc/fork_exec.c),
  * unlike sys_execv() above, which spawns a separate child process.
- *
  * All user memory (path string, argv array + its strings, envp array
- * + its strings) is copied into fixed kernel-owned buffers here,
- * *before* handing off to sys_execve_impl() -- that function switches
- * CR3 away from the calling process's own page tables partway
- * through (see its comment), so any user pointer still needs to be
- * read under the caller's own PML4, exactly like sys_execv() already
- * does for argv.
  */
 static __attribute__((unused)) int64_t sys_execve(syscall_frame_t *f)
 {
@@ -1180,14 +1075,6 @@ static __attribute__((unused)) int64_t sys_execve(syscall_frame_t *f)
  * physical-memory numbers. Backs the shell's `free` command, which
  * used to print a hardcoded "262144 / -- / --" placeholder
  * (cmd_ext_free() in userspace/shell/exploish_cmds.c) with no real
- * syscall behind it at all.
- *
- * Kernel-heap (kmalloc) usage is deliberately NOT included here:
- * kmalloc_total_used() (kernel/mm/kmalloc.c) only exists when built
- * with DEBUG_HEAP defined, which this tree isn't by default -- see
- * kernel/mm/kmalloc.h. Wiring it in would mean turning DEBUG_HEAP on
- * kernel-wide as a side effect of this fix, which is its own separate
- * decision.
  */
 static __attribute__((unused)) int64_t sys_meminfo(syscall_frame_t *f)
 {
@@ -1220,29 +1107,6 @@ static __attribute__((unused)) int64_t sys_meminfo(syscall_frame_t *f)
  * bytes. Duplicates the same ~20-line has_rdrand()/rdrand64() logic
  * kernel/cap/capability.c already uses for capability-token seeding,
  * rather than exposing that module's internals (deliberately
- * `static inline`, private to the capability system) -- this is a
- * separate, syscall-level RNG source for userspace, not a reuse of
- * the capability system's own secret state.
- *
- * No userspace process had ANY source of randomness before this
- * syscall existed. Added specifically because sshd's ephemeral
- * X25519 key-exchange keys need to be genuinely unpredictable (a
- * guessable KEX private key breaks session confidentiality
- * entirely) -- this isn't decorative, it's a hard prerequisite for
- * the crypto primitives already ported (kernel/crypto/x25519.c etc.)
- * to be used safely at all.
- *
- * Honesty about the fallback: like capability.c's own rdrand64(),
- * if the CPU lacks RDRAND (vanishingly rare on any real or emulated
- * x86_64 from the last decade-plus, including QEMU/KVM's default CPU
- * models) this falls back to an RDTSC-derived value XORed with a
- * fixed constant -- NOT cryptographically secure, just enough to
- * avoid returning all-zero garbage on hardware missing the
- * instruction. This syscall does not report which path was taken;
- * a caller generating long-lived key material on genuinely
- * RDRAND-less hardware would be trusting a weak fallback silently.
- * On any RDRAND-capable CPU (the overwhelmingly common case) this
- * caveat doesn't apply.
  */
 static int sys_getrandom_has_rdrand(void)
 {
@@ -1470,15 +1334,12 @@ static __attribute__((unused)) int64_t sys_http_get(syscall_frame_t *f)
         if(n<=0){
             empty_recvs++;
             if(empty_recvs>500)break;
-            /* Wait for the next interrupt (network data arriving,
-             * timer tick, ...) instead of immediately re-polling —
-             * this loop was busy-spinning up to 500 times back-to-back
-             * with nothing to yield the CPU, which could make the
-             * whole system sluggish for the duration of any HTTP
-             * request. Was a bare "sti; hlt; cli" (same starvation bug
-             * as kernel_read(), see its comment) -- sched_yield() so a
-             * background daemon polling its own accept()/recv() loop
-             * actually gets a turn while this download is in flight. */
+            /*
+ * timer tick, ...) instead of immediately re-polling —
+ * this loop was busy-spinning up to 500 times back-to-back
+ * with nothing to yield the CPU, which could make the
+ * whole system sluggish for the duration of any HTTP
+ */
             sched_yield();
             continue;
         }

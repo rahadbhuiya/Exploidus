@@ -29,9 +29,5 @@ void idt_init(void);
  * Restores every register (including rip/rsp/rflags/cs/ss) from a
  * saved interrupt_frame_t and iret's straight back into userspace,
  * bypassing the normal syscall return path in kernel/syscall/entry.asm
- * (which only restores a handful of registers, not enough to resume
- * arbitrary interrupted code). Used by sys_sigreturn() in
- * kernel/syscall/table.c to resume the code a signal handler
- * interrupted. Never returns.
  */
 void sigreturn_restore(interrupt_frame_t *frame) __attribute__((noreturn));

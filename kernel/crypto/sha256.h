@@ -17,8 +17,6 @@ typedef struct {
  * curve25519-sha256 SSH key-exchange hash, which is computed
  * incrementally over several concatenated fields (client ID string,
  * server ID string, KEXINIT payloads, host key, ephemeral public
- * keys, shared secret) as the handshake progresses, not over one
- * buffer available all at once.
  */
 void sha256_init(sha256_ctx_t *ctx);
 void sha256_update(sha256_ctx_t *ctx, const uint8_t *data, size_t len);

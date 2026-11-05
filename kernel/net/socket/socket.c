@@ -16,14 +16,7 @@ static uint16_t  g_next_ephemeral = 49152;
  * socket_udp_recv_cb — bridges the callback-based UDP layer
  * (udp_bind(), used directly by e.g. DNS) to the socket_t-based API
  * (net_socket(SOCK_UDP) + net_recv()).
- *
  * This didn't exist before: net_bind() never actually registered
- * anything with the UDP layer, so udp_input() had no way to know a
- * socket wanted packets for a given port — g_sockets[i].udp_rx_head
- * was written nowhere in the whole codebase. Every UDP socket's
- * net_recv() could only ever return 0 (nothing received), forever.
- * Went unnoticed because DNS resolution bypasses sockets entirely via
- * its own direct udp_bind() call.
  */
 static void socket_udp_recv_cb(netif_t *iface, ip4_t src_ip, uint16_t src_port,
                                 uint16_t dst_port, const uint8_t *data, uint16_t len)

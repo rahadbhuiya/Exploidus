@@ -46,12 +46,9 @@ typedef struct {
 
 /*
  * process_t byte layout (entry.asm hardcodes offset 96 for kernel_stack_top):
- *   pid(4) + parent_pid(4)              =  8  -> total  8
- *   state(4) + intent(4)                =  8  -> total 16
- *   cpu_context_t                       = 64  -> total 80
- *   cr3(8)                              =  8  -> total 88
- *   *kernel_stack(8)                    =  8  -> total 96
- *   kernel_stack_top(8)                 =  8  -> total 104  <-- offset 96
+ * pid(4) + parent_pid(4)              =  8  -> total  8
+ * state(4) + intent(4)                =  8  -> total 16
+ * cpu_context_t                       = 64  -> total 80
  */
 typedef struct process {
     uint32_t       pid;            /* offset   0 */
@@ -126,17 +123,12 @@ typedef struct process {
      * scheduler runs this process. */
     interrupt_frame_t  fork_frame;
 
-    /* Owning user ID. UID_ROOT (0) bypasses all VFS owner/other
-     * permission checks (see vfs_open() in kernel/fs/vfs/vfs.c); every
-     * other process defaults to UID_ROOT too until something calls
-     * sys_setuid() -- there is no login/auth mechanism yet, so this
-     * isn't a real multi-user system. It's the minimal identity
-     * primitive needed to make "owner" vs. "everyone else" a
-     * meaningful distinction in permission checks at all, which it
-     * wasn't before (every process was treated as every file's owner
-     * unconditionally, since there was no identity to compare
-     * against). Appended last, same reasoning as ipc/fs_base/
-     * fpu_state/etc above: safe, no offset reuse. */
+    /*
+ * permission checks (see vfs_open() in kernel/fs/vfs/vfs.c); every
+ * other process defaults to UID_ROOT too until something calls
+ * sys_setuid() -- there is no login/auth mechanism yet, so this
+ * isn't a real multi-user system. It's the minimal identity
+ */
     uint32_t           uid;
     /* Group ID -- see sys_setgid()'s comment in kernel/syscall/table.c
      * for what this is and isn't (not a real login/group-membership

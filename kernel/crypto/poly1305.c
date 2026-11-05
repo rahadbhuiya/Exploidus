@@ -1,34 +1,8 @@
 /*
  * poly1305.c -- Poly1305 one-time message authenticator, RFC 8439
  * Section 2.5.
- *
  * This is a faithful port of OpenBSD/OpenSSH's usr.bin/ssh/poly1305.c
  * ($OpenBSD: poly1305.c,v 1.3 2013/12/19 22:57:13 djm Exp $):
- *
- *   Public Domain poly1305 from Andrew Moon
- *   poly1305-donna-unrolled.c from
- *   https://github.com/floodyberry/poly1305-donna
- *
- * Chosen deliberately: this exact 32-bit implementation (32x32->64
- * multiplication, radix 2^26 limbs) is the actual code OpenSSH itself
- * ships and has shipped for years as part of its own
- * chacha20-poly1305@openssh.com cipher -- the same protocol this
- * kernel's sshd is working toward. RFC 8439's own Implementation
- * Advice (Section 3) names poly1305-donna specifically: "An
- * efficient constant-time implementation can be found in the public
- * domain library poly1305-donna." Modular arithmetic mod 2^130-5
- * implemented by hand, with its carry propagation and final
- * reduction against the field prime, is exactly the kind of code
- * where an off-by-one is invisible by inspection and only shows up
- * on specific inputs near the modulus boundary -- which is why
- * RFC 8439 Appendix A.3 includes edge-case test vectors #5-#11
- * specifically probing that reduction logic, all of which this port
- * is checked against (see the project README) before being written
- * into the kernel tree, rather than re-deriving the arithmetic here.
- *
- * Only cosmetic changes from the OpenBSD source: <sys/types.h>
- * dropped (unused beyond size_t, already available via <stddef.h>),
- * comments trimmed. No arithmetic changed.
  */
 
 #include <stdint.h>

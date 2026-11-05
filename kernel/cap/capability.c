@@ -10,28 +10,6 @@
  * instead of a fixed 256-entry array. The old fixed size meant a
  * long-running server that revoked more than 256 capabilities over
  * its lifetime would have every revocation AFTER the 256th silently
- * fail (cap_revoke() returning false) -- a real, permanent security
- * regression for anything long-lived, not a hypothetical: a
- * capability that genuinely needs revoking (e.g. after a compromise)
- * could no longer be revoked, and cap_validate() would keep accepting
- * it forever.
- *
- * Bounded at REVOKE_TABLE_MAX_CAPACITY (not literally unbounded) as
- * a defensive limit against unbounded kernel memory growth --
- * cap_revoke() requires CAP_RIGHT_REVOKE authority (see cap_validate()
- * call at the top of cap_revoke()), so this isn't reachable by an
- * arbitrary unauthenticated caller, but a buggy or compromised
- * privileged caller spamming revocations of never-before-seen tokens
- * still shouldn't be able to grow this without limit.
- *
- * NOTE (performance, not correctness): cap_validate() linearly scans
- * this table on every single capability check, so validation cost is
- * O(revocation count) and grows as revocations accumulate -- fine at
- * the scale this hobby OS actually sees, but if this table ever grows
- * into the thousands under real load, a hash set would keep
- * validation O(1) instead. Not done here; flagged as a known
- * follow-up rather than solved, since it's a performance concern, not
- * the correctness bug this change actually fixes.
  */
 #define REVOKE_TABLE_INITIAL_CAPACITY 256
 #define REVOKE_TABLE_MAX_CAPACITY     65536
@@ -101,8 +79,6 @@ static inline uint64_t rdrand64(void)
  * REVOKE_TABLE_INITIAL_CAPACITY), up to REVOKE_TABLE_MAX_CAPACITY.
  * Returns false if already at the cap or the allocation failed --
  * callers must treat that as "revoke this specific token failed",
- * not crash/assert, since it's driven by external (if authorized)
- * input.
  */
 static bool revoke_table_ensure_capacity(void)
 {

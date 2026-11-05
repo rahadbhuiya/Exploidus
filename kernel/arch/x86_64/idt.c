@@ -81,8 +81,6 @@ static const char *g_exception_names[32] = {
  * full pre-delivery register state first so sigreturn() can restore
  * it and resume exactly here later. Caller must already have checked
  * sig_in_progress and that handler != 0. Shared by fault-triggered
- * delivery (exception_handler below) and kill()-triggered delivery
- * (deliver_pending_signal below).
  */
 static void deliver_signal_to_handler(interrupt_frame_t *frame, int sig, uint64_t handler)
 {
@@ -127,34 +125,18 @@ void exception_handler(interrupt_frame_t *frame)
     }
 
     /*
-     * Crash isolation: a fault caused by a userspace process (bad
-     * pointer, divide-by-zero, illegal instruction, etc.) should only
-     * kill that one process — the same way sys_exit() does — instead
-     * of taking the whole kernel down. A fault while running KERNEL
-     * code is a different story: kernel state may be corrupted, so
-     * there's nothing safe to do except halt, same as before.
-     */
+ * Crash isolation: a fault caused by a userspace process (bad
+ * pointer, divide-by-zero, illegal instruction, etc.) should only
+ * kill that one process — the same way sys_exit() does — instead
+ * of taking the whole kernel down. A fault while running KERNEL
+ */
     if (user_fault && g_current_proc) {
         /*
-         * Signal delivery: map the fault vector to the signal a real
-         * Unix would raise for it, and if the process registered a
-         * handler (via signal()), redirect execution there instead
-         * of killing it outright — same as real crash-handler
-         * semantics (log-and-exit, custom cleanup, etc.).
-         *
-         * The handler can end either way: it can call exit() itself,
-         * or it can call sigreturn() (see sys_sigreturn() in
-         * kernel/syscall/table.c and sigreturn_restore() in
-         * kernel/arch/x86_64/sigreturn.asm) to restore the full
-         * pre-fault register state and resume exactly where the fault
-         * happened. If the handler does neither and just falls off
-         * the end, whatever runs next is undefined, same risk as any
-         * signal handler that misbehaves.
-         *
-         * sig_in_progress guards the single saved-frame slot: a fault
-         * that happens while a handler is already running falls
-         * through to the normal kill path below instead of nesting.
-         */
+ * Signal delivery: map the fault vector to the signal a real
+ * Unix would raise for it, and if the process registered a
+ * handler (via signal()), redirect execution there instead
+ * of killing it outright — same as real crash-handler
+ */
         int sig = 0;
         switch (vec) {
             case 0:  sig = 8;  break; /* divide error -> SIGFPE  */
@@ -214,19 +196,6 @@ extern void irq_dispatch(interrupt_frame_t *frame);
  * sys_kill()) on the process about to resume userspace through this
  * exact frame, and either redirects it to a registered handler or, if
  * none is registered, kills the process the same way an unhandled
- * fault does.
- *
- * Called from interrupt_handler() after every interrupt/exception/
- * IRQ, right before control returns to whichever process is now
- * current. That may not be whoever originally took the interrupt, if
- * irq_dispatch() below caused a context switch -- but g_current_proc
- * and frame stay correctly paired across that, since each process's
- * own saved frame lives on its own kernel stack and this code only
- * runs again, for that process, once the scheduler resumes that same
- * suspended call chain.
- *
- * Only fires for a frame returning to ring 3: a kernel-mode return
- * has no userspace handler to redirect to.
  */
 static void deliver_pending_signal(interrupt_frame_t *frame)
 {
@@ -303,19 +272,9 @@ void idt_init(void)
 
     __asm__ volatile ("lidt %0" : : "m"(g_idt_ptr));
     /*
-     * Deliberately NOT enabling interrupts here. The PIC is still in
-     * its default (BIOS) configuration at this point in boot, which
-     * maps hardware IRQ0-7 to vectors 0x08-0x0F -- directly
-     * overlapping CPU exception vectors, including 0x08 (Double
-     * Fault). If sti executed here and any hardware IRQ (the timer,
-     * likely already ticking since power-on) is pending, the very
-     * next instruction can take that interrupt, deliver it to
-     * whatever vector the un-remapped PIC still points it at, and a
-     * plain timer tick gets misinterpreted as a genuine CPU double
-     * fault -- which is exactly what was happening: this used to end
-     * with `sti` right here, before the PIC remap that moves IRQs to
-     * 32-47 has had a chance to run. Interrupts get enabled later in
-     * kernel_main(), once PIC remapping and the rest of early boot
-     * are done.
-     */
+ * Deliberately NOT enabling interrupts here. The PIC is still in
+ * its default (BIOS) configuration at this point in boot, which
+ * maps hardware IRQ0-7 to vectors 0x08-0x0F -- directly
+ * overlapping CPU exception vectors, including 0x08 (Double
+ */
 }

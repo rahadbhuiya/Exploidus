@@ -3,25 +3,6 @@
  * built directly on chacha20.c and poly1305.c. Written straight from
  * the RFC's own pseudocode (Section 2.8.1) -- there's no well-known
  * "donna"-style reference for the AEAD glue itself the way there is
- * for the two primitives it combines; the glue is just concatenation,
- * padding, and length fields, which is why it's written directly
- * rather than ported, and why it leans on the primitive-level
- * verification of chacha20.c/poly1305.c plus the RFC's own full
- * AEAD test vector (Section 2.8.2) rather than needing separate
- * "is the math right" scrutiny of its own.
- *
- * mac_data is built in one contiguous, bounded, static buffer rather
- * than streamed through Poly1305 incrementally or heap-allocated:
- * this file is meant to be compiled into sshd (a userspace process
- * that handles one SSH connection fully before accepting the next --
- * see sshd.c's accept loop), not into the kernel image, so a static
- * buffer here is private per-process state, not kernel-shared state
- * (see the netbuf-pool race elsewhere in this project's history for
- * why that distinction matters). MAC_DATA_MAX bounds the combined
- * AAD+ciphertext size this can authenticate in one call; callers
- * exceeding it get a defined failure (encrypt: undefined tag content
- * and no plaintext protection -- checked with an assert-style guard
- * below; decrypt: always fails closed) rather than a silent overflow.
  */
 
 #include <stdint.h>

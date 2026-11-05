@@ -102,14 +102,12 @@
 #define SYS_RENAME         90   /* rename/move a file or empty-or-not
                                   * directory: rename(old_path, new_path).
                                   * See vfs_rename()/exfs_op_rename(). */
-#define SYS_DEBUG_EXFS_CRASH 91 /* TEST-ONLY: arm a deterministic crash
-                                  * inside the next ExFS journal commit,
-                                  * to test crash recovery without
-                                  * relying on timing a real one by
-                                  * hand. See exfs_debug_arm_crash() in
-                                  * kernel/fs/exfs/exfs.h/.c. arg0 (rdi)
-                                  * = 0..4. Not meant for anything but
-                                  * a deliberate recovery test. */
+#define SYS_DEBUG_EXFS_CRASH 91 /*
+ * inside the next ExFS journal commit,
+ * to test crash recovery without
+ * relying on timing a real one by
+ * hand. See exfs_debug_arm_crash() in
+ */
 #define SYS_SYMLINK        92   /* symlink(target, linkpath) */
 #define SYS_READLINK       93   /* readlink(path, buf, bufsize) ->
                                   * bytes written, or -1. NOT
@@ -129,80 +127,39 @@
                                   * SYS_CHMOD: no owner/root check
                                   * (pre-existing chmod limitation,
                                   * not something added here). */
-#define SYS_DEBUG_EXFS_CORRUPT 97 /* TEST-ONLY: flips a byte in a
-                                    * file's first data block,
-                                    * bypassing the normal write path
-                                    * (so block_hash is left stale) --
-                                    * for testing the integrity-hash
-                                    * verification added in
-                                    * exfs_op_open(). See
-                                    * exfs_debug_corrupt_file() in
-                                    * kernel/fs/exfs/exfs.c. */
-#define SYS_EXECVE         98   /* real execve(path, argv, envp): loads
-                                  * the new image from *path* (unlike
-                                  * SYS_EXEC, which takes an
-                                  * already-in-memory ELF buffer) and
-                                  * replaces the CALLING process's own
-                                  * address space in place -- same PID,
-                                  * old image freed, not leaked. Unlike
-                                  * SYS_EXECV (60), which spawns a new
-                                  * child process instead of replacing
-                                  * the caller. rdi=path, rsi=argv
-                                  * (NULL-terminated array, or 0),
-                                  * rdx=envp (NULL-terminated array, or
-                                  * 0). Does not return on success. See
-                                  * sys_execve_impl() in
-                                  * kernel/proc/fork_exec.c. */
-#define SYS_MEMINFO        99   /* fill a meminfo_t (kernel/mm/pmm.h)
-                                  * at rdi with real physical-memory +
-                                  * kernel-heap stats -- backs the
-                                  * shell's `free` command, which used
-                                  * to print a hardcoded placeholder.
-                                  * rdi = meminfo_t* (user pointer).
-                                  * Returns 0 on success, -1 on a bad
-                                  * pointer. See sys_meminfo() in
-                                  * kernel/syscall/table.c. */
-#define SYS_GETRANDOM      100  /* fill rsi bytes at rdi with random
-                                  * data -- RDRAND-backed, same safe
-                                  * generator kernel/cap/capability.c
-                                  * already uses for capability tokens
-                                  * (this syscall duplicates that
-                                  * ~20-line rdrand64()/has_rdrand()
-                                  * logic rather than exposing
-                                  * capability.c's internals, since
-                                  * those are deliberately private to
-                                  * the capability system). No
-                                  * userspace process had ANY source
-                                  * of randomness before this --
-                                  * needed for sshd's ephemeral X25519
-                                  * key exchange keys (predictable KEX
-                                  * keys would break session
-                                  * confidentiality entirely) and its
-                                  * SSH_MSG_KEXINIT cookie. rdi = user
-                                  * buffer, rsi = byte count. Returns
-                                  * 0 on success, -1 on a bad pointer.
-                                  * See sys_getrandom() in
-                                  * kernel/syscall/table.c. */
+#define SYS_DEBUG_EXFS_CORRUPT 97 /*
+ * file's first data block,
+ * bypassing the normal write path
+ * (so block_hash is left stale) --
+ * for testing the integrity-hash
+ */
+#define SYS_EXECVE         98   /*
+ * the new image from *path* (unlike
+ * SYS_EXEC, which takes an
+ * already-in-memory ELF buffer) and
+ * replaces the CALLING process's own
+ */
+#define SYS_MEMINFO        99   /*
+ * at rdi with real physical-memory +
+ * kernel-heap stats -- backs the
+ * shell's `free` command, which used
+ * to print a hardcoded placeholder.
+ */
+#define SYS_GETRANDOM      100  /*
+ * data -- RDRAND-backed, same safe
+ * generator kernel/cap/capability.c
+ * already uses for capability tokens
+ * (this syscall duplicates that
+ */
 
 #define SYS_COUNT          101
 
 
 /*
  * syscall_frame_t
- *
  * Field order MUST exactly match the push sequence in entry.asm.
  * entry.asm pushes (last push = lowest address = offset 0):
- *
- *   push user_rsp  -> offset 72
- *   push rcx       -> offset 64  (user RIP)
- *   push r11       -> offset 56  (user RFLAGS)
- *   push rax       -> offset 48  (syscall nr in; return value out)
- *   push rdi       -> offset 40  (arg0)
- *   push rsi       -> offset 32  (arg1)
- *   push rdx       -> offset 24  (arg2)
- *   push r10       -> offset 16  (arg3)
- *   push r8        -> offset  8  (arg4)
- *   push r9        -> offset  0  (arg5)  <-- rsp points here
+ * push user_rsp  -> offset 72
  */
 typedef struct __attribute__((packed)) {
     uint64_t r9;       /* offset  0 */

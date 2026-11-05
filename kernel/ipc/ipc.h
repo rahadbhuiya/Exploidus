@@ -1,17 +1,8 @@
 /*
  * ipc.h — Exploidus Inter-Process Communication
- *
  * Simple synchronous message-passing.
  * Each process has a small fixed-size inbox (IPC_QUEUE_DEPTH messages).
- *
  * Design rules:
- *   - No dynamic allocation (no kmalloc): the queue is embedded in ipc_state_t
- *     which is allocated once per process at proc_create() time.
- *   - Messages are fixed-size (IPC_MSG_PAYLOAD bytes max).
- *   - ipc_send() copies the message into the receiver's inbox and
- *     unblocks it if it was waiting.
- *   - ipc_recv() blocks (yields) until a message arrives.
- *   - Both sides reference processes by PID — no handles.
  */
 
 #pragma once

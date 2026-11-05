@@ -64,19 +64,11 @@ void *kmalloc(uint64_t size)
         return NULL;
 
     /*
-     * Reject sizes that would overflow the ALIGN_UP below (or that
-     * obviously can't ever be satisfied by this heap) BEFORE doing
-     * any arithmetic on them. Without this check, a request near
-     * UINT64_MAX makes `(size + 15) & ~15` wrap around to a tiny
-     * value -- the allocator would then silently hand back a
-     * 16-byte buffer while the caller believes it got the huge size
-     * it asked for. Any write through that pointer at the
-     * *requested* size becomes a heap overflow into whatever
-     * follows. Comparing against heap_size first means this can
-     * never wrap: heap_size is a few MiB, nowhere near UINT64_MAX,
-     * so `size > heap_size` catches the overflow-inducing range
-     * long before size+15 could ever wrap.
-     */
+ * Reject sizes that would overflow the ALIGN_UP below (or that
+ * obviously can't ever be satisfied by this heap) BEFORE doing
+ * any arithmetic on them. Without this check, a request near
+ * UINT64_MAX makes `(size + 15) & ~15` wrap around to a tiny
+ */
     uint64_t heap_size = g_heap_end - g_heap_start;
     if (size > heap_size)
         return NULL;

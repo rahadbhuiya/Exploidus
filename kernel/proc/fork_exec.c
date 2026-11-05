@@ -68,18 +68,9 @@ static void free_user_address_space(uint64_t pml4_phys)
 
 /*
  * fork_child_entry -- the first code a freshly-forked child runs.
- *
  * A process normally only ever enters userspace through
  * jump_to_userspace() (jump_userspace.asm), called directly right
  * after exec()/spawn() load an ELF. A forked child has no such call
- * site: it does not exec anything, it just needs to resume exactly
- * where the parent was, in the middle of the parent's own code. The
- * scheduler reaches this function like any other, by loading
- * context.rip and running it (context_switch.asm) -- so this is a
- * plain, ordinary function, but instead of returning it hands off to
- * sigreturn_restore() (kernel/arch/x86_64/sigreturn.asm) to restore
- * the full register state sys_fork_impl() saved into fork_frame at
- * fork time and iret straight into userspace. Never returns.
  */
 void fork_child_entry(void)
 {
@@ -94,17 +85,11 @@ void fork_child_entry(void)
 int64_t sys_fork_impl(syscall_frame_t *f)
 {
     /*
-     * Capture the callee-saved registers (rbx/rbp/r12-r15) as the
-     * very first thing this function does, before any other C code
-     * has a chance to use them as scratch space. entry.asm's syscall
-     * prologue never touches these, and the C ABI guarantees any C
-     * function called from here restores them before returning -- so
-     * right now they still hold the exact values the parent's
-     * userspace code had at the moment it called fork(). Everything
-     * else needed for the child's resume frame (rip/rflags/user rsp,
-     * plus the argument registers) is already saved in f by
-     * entry.asm.
-     */
+ * Capture the callee-saved registers (rbx/rbp/r12-r15) as the
+ * very first thing this function does, before any other C code
+ * has a chance to use them as scratch space. entry.asm's syscall
+ * prologue never touches these, and the C ABI guarantees any C
+ */
     uint64_t saved_rbx, saved_rbp, saved_r12, saved_r13, saved_r14, saved_r15;
     __asm__ volatile (
         "mov %%rbx, %0\n\t"
@@ -128,17 +113,11 @@ int64_t sys_fork_impl(syscall_frame_t *f)
     }
 
     /*
-     * Build the register state the child resumes userspace with:
-     * identical to the parent's at the moment of this syscall, except
-     * rax = 0 (fork()'s return value in the child). rcx is left as a
-     * plain general-purpose slot here, not the return address -- the
-     * real SYSCALL instruction already destroys the pre-syscall rcx
-     * on the parent's side too, so no fork() implementation can
-     * preserve it; this matches that same, expected limitation.
-     * child->context.rip points at fork_child_entry (above), which
-     * restores this the same way sigreturn() resumes an interrupted
-     * signal handler.
-     */
+ * Build the register state the child resumes userspace with:
+ * identical to the parent's at the moment of this syscall, except
+ * rax = 0 (fork()'s return value in the child). rcx is left as a
+ * plain general-purpose slot here, not the return address -- the
+ */
     child->fork_frame.r15    = saved_r15;
     child->fork_frame.r14    = saved_r14;
     child->fork_frame.r13    = saved_r13;
@@ -167,25 +146,11 @@ int64_t sys_fork_impl(syscall_frame_t *f)
     parent_pml4_phys &= VMM_ADDR_MASK;
 
     /*
-     * BUG FIX: everything below walks page tables and copies pages by
-     * dereferencing raw physical addresses (pmm_alloc() results, the
-     * parent's own table entries) as plain kernel pointers. That only
-     * works while the kernel's own raw PML4 is active, which has a
-     * full 0-4GB identity map. The parent process actually runs on
-     * its own isolated PML4 (see make_isolated_pml4() in elf.c),
-     * which only keeps the low 32MB of physical memory identity
-     * mapped, plus whatever specific pages the process has mapped for
-     * its own segments/stack -- everything else pmm_alloc() can hand
-     * out (which is most of RAM, since low memory fills up fast) is
-     * simply absent from the parent's own page tables and faults the
-     * instant it gets dereferenced here.
-     *
-     * Switch to the kernel's own PML4 for the whole physical-memory-
-     * heavy part of the clone, and switch back to the parent's PML4
-     * before returning, on every exit path (success and OOM alike) --
-     * the parent must keep running on its own page tables once this
-     * syscall returns.
-     */
+ * BUG FIX: everything below walks page tables and copies pages by
+ * dereferencing raw physical addresses (pmm_alloc() results, the
+ * parent's own table entries) as plain kernel pointers. That only
+ * works while the kernel's own raw PML4 is active, which has a
+ */
     uint64_t kpml4_phys = vmm_get_kernel_pml4();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kpml4_phys) : "memory");
 
@@ -285,13 +250,11 @@ int64_t sys_fork_impl(syscall_frame_t *f)
     child->cap_count = parent->cap_count;
 
     /*
-     * context.rip is already fork_child_entry, set above -- only rsp
-     * needs fixing up here, to the child's own fresh kernel stack
-     * (context.rsp is a kernel-stack pointer used by context_switch
-     * to resume this process's C call chain, unrelated to
-     * fork_frame.rsp above, which is the *user*-mode stack pointer
-     * fork_child_entry hands off to iretq).
-     */
+ * context.rip is already fork_child_entry, set above -- only rsp
+ * needs fixing up here, to the child's own fresh kernel stack
+ * (context.rsp is a kernel-stack pointer used by context_switch
+ * to resume this process's C call chain, unrelated to
+ */
     child->context.rsp = child->kernel_stack_top;
 
     child->state = PROC_READY;
@@ -367,21 +330,11 @@ int64_t sys_execve_impl(const char *path, const char **argv,
     uint64_t old_cr3 = g_current_proc->cr3;
 
     /*
-     * elf_load() (kernel/elf/elf.c) writes segment data and the new
-     * stack straight into ZONE_RED physical pages via a raw kernel
-     * pointer cast -- e.g. memset((void*)phys, ...) -- with no
-     * virtual-address translation. That only works with a full
-     * identity-mapped view of physical memory active. The calling
-     * process's own restricted PML4 (make_isolated_pml4() in elf.c)
-     * only identity-maps the low 32MB plus whatever pages it already
-     * has mapped for its own segments/stack, so a ZONE_RED page
-     * anywhere above that would fault the instant elf_load() touches
-     * it. This is the exact same class of bug sys_fork_impl() (above,
-     * this file) already had to work around for its own page-table
-     * walk -- same fix here: do the whole load under the kernel's own
-     * PML4, and switch to the new image's PML4 only at the very last
-     * moment, inside jump_to_userspace().
-     */
+ * elf_load() (kernel/elf/elf.c) writes segment data and the new
+ * stack straight into ZONE_RED physical pages via a raw kernel
+ * pointer cast -- e.g. memset((void*)phys, ...) -- with no
+ * virtual-address translation. That only works with a full
+ */
     uint64_t kpml4_phys = vmm_get_kernel_pml4();
     __asm__ volatile ("mov %0, %%cr3" :: "r"(kpml4_phys) : "memory");
 
@@ -416,14 +369,11 @@ int64_t sys_execve_impl(const char *path, const char **argv,
     kfree(buf);
 
     /*
-     * Point of no return: the new image is fully built and valid.
-     * Free the OLD image's address space now -- this is what makes
-     * this a real execve() rather than spawn()-with-extra-steps: the
-     * process keeps its PID, but its previous memory is actually
-     * released, not leaked. Still running on kpml4 here, so
-     * free_user_address_space()'s raw physical-pointer walk (same
-     * helper sys_fork_impl()'s OOM path uses, above) is safe.
-     */
+ * Point of no return: the new image is fully built and valid.
+ * Free the OLD image's address space now -- this is what makes
+ * this a real execve() rather than spawn()-with-extra-steps: the
+ * process keeps its PID, but its previous memory is actually
+ */
     free_user_address_space(old_cr3);
 
     g_current_proc->cr3            = new_pml4;
@@ -477,27 +427,11 @@ int64_t sys_waitpid_impl(uint32_t pid)
     int code = child->exit_code;
 
     /*
-     * BUG FIX: reaping a zombie used to just mark the slot UNUSED and
-     * drop the pid -- the child's own address space (child->cr3) was
-     * never freed, anywhere. proc_exit() (kernel/proc/process.c)
-     * releases IPC/FPU state and fds, but not the page tables or the
-     * data/stack/text pages under them. Every process that ever ran
-     * and got waitpid()'d on leaked its final image's worth of
-     * physical memory, permanently -- this had nothing to do with
-     * execve() specifically (SYS_EXECVE frees each *intermediate*
-     * image correctly, see sys_execve_impl() above), it's the exit
-     * path itself that was missing this.
-     *
-     * Same physical-identity-map reasoning as everywhere else in this
-     * file: free_user_address_space() dereferences ZONE_RED physical
-     * pages directly, which only works with the kernel's own PML4
-     * active, not the WAITING PARENT's (that's whose cr3 is actually
-     * live here -- sys_waitpid_impl() runs in the caller's context,
-     * not the child's). Switch over, free, switch back -- must
-     * restore the caller's own cr3 before returning, since normal
-     * syscall return goes back to the caller's *user-mode* code,
-     * which isn't mapped in the kernel's PML4.
-     */
+ * BUG FIX: reaping a zombie used to just mark the slot UNUSED and
+ * drop the pid -- the child's own address space (child->cr3) was
+ * never freed, anywhere. proc_exit() (kernel/proc/process.c)
+ * releases IPC/FPU state and fds, but not the page tables or the
+ */
     if (child->cr3) {
         uint64_t caller_cr3 = g_current_proc ? g_current_proc->cr3 : 0;
         uint64_t kpml4_phys = vmm_get_kernel_pml4();

@@ -6,17 +6,6 @@
  * a reference to __stack_chk_guard at the top of every instrumented
  * function (saved onto the stack, above any local buffers) and a
  * call to __stack_chk_fail() right before return if the saved copy
- * no longer matches -- i.e. something on the stack overran into it.
- * Freestanding/no-libc means nothing provides these two symbols
- * automatically; this file does.
- *
- * __stack_chk_guard starts as a fixed, non-zero placeholder (better
- * than 0, which would make a NUL-terminated-string buffer overflow
- * that happens to stop exactly at the canary go undetected) and gets
- * replaced with a real RDRAND-sourced value by stack_protector_init(),
- * called from kernel/main.c as close to the very first line as
- * possible. Anything that runs before that call is still checked,
- * just against the weaker placeholder rather than a random value.
  */
 uintptr_t __stack_chk_guard = 0xBADC0FFEE0DDF00DULL;
 

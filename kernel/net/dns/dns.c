@@ -6,13 +6,9 @@
 
 /*
  * Minimal RFC 1035 DNS resolver.
- *
  * Only handles A-record (IPv4) queries and the simplest response
  * format (no compression pointers in the answer, first A record wins).
  * That covers every real-world QEMU user-networking response for
- * simple hostnames.
- *
- * QEMU user-networking DNS is at 10.0.2.3:53 by default.
  */
 
 #define DNS_SERVER    IP4(10,0,2,3)

@@ -10,15 +10,6 @@
  * storage, ...) implements read_sector/write_sector and registers
  * itself; filesystem code (ExFS) goes through this interface instead
  * of calling a specific driver's functions directly, so it works
- * unmodified regardless of which physical device backs a given
- * volume.
- *
- * driver_data is an opaque pointer the backing driver can use for
- * whatever per-device state it needs (e.g. USB mass storage needs to
- * remember which endpoint pair/device address a given stick is on --
- * ATA doesn't need this, since there's only one drive/controller,
- * but the field exists so the interface doesn't have to change if
- * that ever stops being true).
  */
 typedef struct block_device {
     const char *name;

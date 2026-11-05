@@ -2,17 +2,11 @@
 #include <stdint.h>
 #include <string.h>
 
-/* GDT layout:
+/*
  * 0x00  null
  * 0x08  kernel code (ring 0, 64-bit)
  * 0x10  kernel data (ring 0)
  * 0x18  user DATA   (ring 3)   SS for sysretq = 0x1B
- * 0x20  user CODE   (ring 3)   CS for sysretq = 0x23
- * 0x28  TSS low
- * 0x30  TSS high
- *
- * sysretq: CS = STAR[63:48]+16|3 = 0x10+16|3 = 0x23
- *          SS = STAR[63:48]+ 8|3 = 0x10+ 8|3 = 0x1B
  */
 
 #define GDT_ENTRIES 7

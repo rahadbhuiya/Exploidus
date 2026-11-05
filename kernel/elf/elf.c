@@ -18,31 +18,7 @@
  * ASLR_MASK / ASLR_MIN_BASE: 2MB-aligned random offset for the ELF
  * base, now placed in the 4GB-512GB virtual range instead of the
  * previous 32MB-542MB range within pd0.
- *
  * kernel/boot/start.asm only ever identity-maps 0-4GB with huge pages
- * (pd0-pd3 in its own comment: "Maps 0-4GB identity with 2MB pages");
- * everything from PDPT index 4 upward is part of the kernel's
- * page-table .bss and therefore guaranteed zero (not-present) at
- * boot, and nothing anywhere in this tree ever populates it. That
- * makes the entire 4GB-512GB range (PML4[0], PDPT indices 4-511)
- * genuinely free virtual address space -- no huge-page leaf to
- * collide with (unlike pd1's indices 0-510, which ARE live kernel
- * huge-page mappings map_page() cannot subdivide), no MMIO, nothing
- * make_isolated_pml4() needs to preserve. map_page() already
- * allocates missing PDPT/PD/PT levels on demand for any address, so
- * no change to make_isolated_pml4() is needed to use this space --
- * every PDPT slot in it starts absent and gets built the first time
- * something is mapped into it, exactly like pd0/pd1 already work.
- *
- * ASLR_MIN_BASE = 4GB: starts immediately after the boot-mapped
- * identity range, so the ELF base can never land on a live huge page.
- * ASLR_MASK keeps bits 37:21 of RDRAND's output (17 bits, since only
- * bits 21+ survive 2MB-alignment) -- a random offset anywhere across
- * ~256GB. Added to the 4GB minimum, the highest possible base is
- * ~264GB, safely inside the 512GB PML4[0] boundary (with the stack,
- * near 128TB in PML4 256+, in an entirely different PML4 entry) and
- * nowhere near exhausting it. 17 bits is 512x the previous 8 bits of
- * real entropy (131072 possible load addresses instead of 256).
  */
 #define ASLR_MASK     0x0000003FFFE00000ULL
 #define ASLR_MIN_BASE 0x0000000100000000ULL  /* 4 GB */
@@ -52,9 +28,6 @@
  * PD entry (pd1[511]) that make_isolated_pml4() clears for the
  * stack. USER_STACK_PAGES (64 pages = 256KB) must still fit below
  * USER_STACK_TOP after the offset is subtracted, so the offset is
- * capped well under the ~1.75MB of slack available in that entry.
- * Bits [20:12] give a 4KB-aligned offset in [0, ~2MB), which we then
- * mask down further to stay clear of the stack pages themselves.
  */
 #define STACK_ASLR_MASK 0x00000000001FF000ULL /* up to ~2MB, 4KB-aligned */
 
@@ -270,20 +243,6 @@ static uint64_t vaddr_to_file_offset(const uint8_t *data, uint64_t size,
  * (built with -static-pie: one self-contained executable, no
  * external symbols, so the only relocation type that ever appears
  * is R_X86_64_RELATIVE).
- *
- * dyn_off/dyn_filesz locate the PT_DYNAMIC segment's raw bytes in
- * the file data buffer (found during the PT_LOAD scan in elf_load).
- * Walks its DT_RELA/DT_RELASZ/DT_RELAENT entries to find the actual
- * .rela.dyn table, then for every R_X86_64_RELATIVE entry writes
- * (aslr_base + addend) into the already-mapped page at
- * (aslr_base + r_offset), via vmm_get_phys_into() so it works
- * regardless of which segment or page the target falls in.
- *
- * Without this, any absolute address baked into .data/.got by the
- * compiler (a string-literal pointer in an array, a stored function
- * pointer, etc) is left holding its link-time (base-0) value instead
- * of the correct ASLR-shifted runtime address -- the exact bug
- * fixed.ld previously had to work around by disabling ASLR entirely.
  */
 static bool apply_relocations(uint64_t pml4, const uint8_t *data, uint64_t size,
                                const elf64_hdr_t *h,
@@ -354,23 +313,11 @@ bool elf_load(const uint8_t *data, uint64_t size,
     if (!pml4) { serial_print("[ELF] pml4 alloc failed\n"); return false; }
 
     /*
-     * ASLR: only PIE (ET_DYN) binaries can safely be loaded at an
-     * arbitrary base -- and now that apply_relocations() below fixes
-     * up every R_X86_64_RELATIVE entry, an ET_DYN binary's absolute
-     * addresses (a string-literal pointer stored in an array, etc)
-     * get correctly shifted too, not just its RIP-relative code.
-     *
-     * ET_EXEC binaries have no relocations at all (that is what
-     * ET_EXEC means) and embed absolute addresses assuming they run
-     * at their exact linked address -- always load them there,
-     * aslr_base = 0, regardless of what that linked address happens
-     * to be. (A previous version of this check special-cased a low
-     * linked address as "apply ASLR anyway", which directly
-     * contradicted this and was the actual cause of a real crash --
-     * any ET_EXEC binary linked at a low base, e.g. via a linker
-     * script that starts at 0, would get its absolute-address data
-     * silently corrupted.)
-     */
+ * ASLR: only PIE (ET_DYN) binaries can safely be loaded at an
+ * arbitrary base -- and now that apply_relocations() below fixes
+ * up every R_X86_64_RELATIVE entry, an ET_DYN binary's absolute
+ * addresses (a string-literal pointer stored in an array, etc)
+ */
     uint64_t aslr_base = 0;
     if (h->type == ELF_TYPE_DYN) {
         /* 2MB-aligned random offset + 32MB minimum */
@@ -444,14 +391,11 @@ bool elf_load(const uint8_t *data, uint64_t size,
     }
 
     /*
-     * Stack ASLR — randomise the stack's position within the 2MB
-     * region make_isolated_pml4() clears for it (pd1[511]), instead
-     * of always starting exactly at USER_STACK_TOP. Applied
-     * unconditionally (ET_EXEC and ET_DYN alike): unlike code/data
-     * ASLR, the stack has no absolute-address-in-.data problem, so
-     * there's no relocation hazard here — only RIP-relative/SP-
-     * relative access, which self-corrects under any shift.
-     */
+ * Stack ASLR — randomise the stack's position within the 2MB
+ * region make_isolated_pml4() clears for it (pd1[511]), instead
+ * of always starting exactly at USER_STACK_TOP. Applied
+ * unconditionally (ET_EXEC and ET_DYN alike): unlike code/data
+ */
     uint64_t stack_rand = aslr_rdrand() & STACK_ASLR_MASK;
     uint64_t stack_top  = USER_STACK_TOP - stack_rand;
     uint64_t stack_base = stack_top -
@@ -479,24 +423,11 @@ bool elf_load(const uint8_t *data, uint64_t size,
     *entry_out = h->entry + aslr_base;
 
     /*
-     * Build System V ABI initial stack layout:
-     *
-     *   [stack_top - ...]  strings (argv[0], argv[1], ..., envp strings)
-     *   ...
-     *   NULL               end of envp pointers
-     *   envp[n-1] ptr
-     *   ...
-     *   envp[0] ptr
-     *   NULL               end of argv pointers
-     *   argv[argc-1] ptr
-     *   ...
-     *   argv[0] ptr
-     *   argc               <-- rsp points here on entry
-     *
-     * We write into the physical pages that were just mapped.
-     * The stack is identity-mapped phys==virt during setup so
-     * we can write directly via the physical address.
-     */
+ * Build System V ABI initial stack layout:
+ * [stack_top - ...]  strings (argv[0], argv[1], ..., envp strings)
+ * ...
+ * NULL               end of envp pointers
+ */
     {
         /* Collect argv strings */
         const char *default_argv0 = "exploidus";
@@ -523,14 +454,11 @@ bool elf_load(const uint8_t *data, uint64_t size,
         }
 
         /*
-         * Layout on stack (growing down from stack_top):
-         *   [strings area]  str_bytes bytes
-         *   NULL (envp end)
-         *   envc envp ptrs  (8 bytes each)
-         *   NULL (argv end)
-         *   argc argv ptrs  (8 bytes each)
-         *   argc            (8 bytes)
-         */
+ * Layout on stack (growing down from stack_top):
+ * [strings area]  str_bytes bytes
+ * NULL (envp end)
+ * envc envp ptrs  (8 bytes each)
+ */
         uint64_t ptr_area  = (uint64_t)(1 + argc + 1 + envc + 1) * 8;
         uint64_t total     = str_bytes + ptr_area;
         /* Align down to 16 bytes */

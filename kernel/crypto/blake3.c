@@ -110,15 +110,9 @@ void blake3_hash(const uint8_t *input, uint64_t input_len, uint8_t *output)
 
 /*
  * Incremental BLAKE3.
- *
  * The original (and any correct BLAKE3 implementation) must compress
  * the LAST block with CHUNK_END|ROOT flags, but a streaming caller
  * doesn't know which block is last until it stops feeding data. So
- * this implementation always holds back the most recently completed
- * 64-byte block ("pending") uncompressed: a block is only compressed
- * once we *know* more data follows it (i.e. once a new block starts
- * filling up), or once blake3_final() is called and we know for
- * certain it was the last one.
  */
 void blake3_init(blake3_ctx_t *ctx)
 {

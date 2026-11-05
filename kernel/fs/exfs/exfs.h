@@ -12,56 +12,17 @@
 #define EXFS_DIRECT_BLOCKS   12
 #define EXFS_MAX_INODES      4096
 
-/* Pointers per indirect block: EXFS_BLOCK_SIZE / sizeof(uint64_t).
- * Single indirect reaches EXFS_INDIRECT_PTRS more blocks; double
- * indirect reaches EXFS_INDIRECT_PTRS^2 more on top of that. At 4096
- * byte blocks that's 512 and 262144 respectively -- max file size via
- * direct+indirect+double_indirect is (12 + 512 + 512*512) * 4096 =
- * ~1.03 GiB. triple_indirect exists in the on-disk inode but is not
- * wired up yet (no volume in this project is anywhere near large
- * enough for it to matter today; left as a documented gap, not
- * silently broken). */
+/* Indirect block pointers */
 #define EXFS_INDIRECT_PTRS   (EXFS_BLOCK_SIZE / sizeof(uint64_t))
 
-/* Upper bound on logical block index a directory (or file) can reach
- * through direct + single-indirect + double-indirect addressing —
- * see EXFS_INDIRECT_PTRS above. Directories used to be hard-capped at
- * EXFS_DIRECT_BLOCKS (12) blocks (~180 entries); every directory-
- * block-scanning function now walks up to this bound via
- * exfs_resolve_block(), the same helper writes already use, so
- * directories grow exactly like files do. In practice a scan always
- * terminates at the first not-yet-allocated block (a directory's
- * blocks are allocated contiguously, never sparse), so this bound is
- * a safety cap against a runaway loop, not something scans actually
- * reach. */
+/* Maximum directory logical blocks */
 #define EXFS_MAX_DIR_BLOCKS  (EXFS_DIRECT_BLOCKS + EXFS_INDIRECT_PTRS \
                              + EXFS_INDIRECT_PTRS * EXFS_INDIRECT_PTRS)
 
-/* Write-ahead metadata journal (crash consistency for directory
- * entries, inodes, and indirect/double-indirect pointer blocks).
- * Single-slot, single-transaction-at-a-time -- matches the fact that
- * nothing in this kernel takes a filesystem-wide lock around a
- * multi-block ExFS operation yet, so there is only ever one logical
- * transaction in flight. File *data* blocks are deliberately NOT
- * journaled (ordered-mode, like ext3's default): data is written to
- * its final location first, then the metadata that points to it is
- * journaled and committed. Worst case on a crash mid-write is a
- * dangling allocated-but-unreferenced data block (a leak, recoverable
- * by a future fsck), never a corrupted directory tree or a inode
- * pointing at half-written metadata. Block-bitmap updates are also
- * applied immediately, non-transactionally, for the same reason --
- * worst case is a leaked block, not corruption. */
+/* Metadata journal (ordered mode) */
 #define EXFS_JOURNAL_MAGIC      0x45584a4c /* "EXJL" */
 #define EXFS_JOURNAL_MAX_BLOCKS 16
-/* Crash point 4: not inside exfs_journal_commit() itself (see above)
- * -- fires in exfs_op_unlink()/exfs_op_rmdir(), right after the
- * dirent-removal + inode-zeroing transaction has fully committed but
- * before the (now provably unreferenced) blocks are freed. Verifies
- * the crash-safety reordering described in exfs_op_unlink(): on
- * reboot the file must be gone (dirent+inode already committed
- * deleted) with its blocks merely leaked (bitmap still says used,
- * nothing references them) -- never a dangling live reference into
- * blocks that could get reallocated to something else. */
+/* Crash test point 4 */
 
 /* Provenance operation codes */
 #define PROV_OP_CREATE  0x01
@@ -87,45 +48,14 @@ typedef struct __attribute__((packed)) {
     uint64_t provenance_size;        /* size in blocks */
     uint8_t  fs_uuid[16];
 
-    /* Metadata journal region: journal_block is the header block;
-     * journal_block+1 .. journal_block+EXFS_JOURNAL_MAX_BLOCKS hold
-     * staged block data for the (single) in-flight transaction. See
-     * EXFS_JOURNAL_MAGIC above for the crash-consistency scheme.
-     * Carved out of what used to be reserved[4000] rather than
-     * appended, same reasoning/safety as owner_uid in exfs_inode_t
-     * below: the on-disk stride is EXFS_BLOCK_SIZE for the
-     * superblock (always block 0, always read/written whole), so
-     * this is safe to add here. journal_size == 0 means "volume
-     * formatted before journaling existed" -- exfs_mount/format
-     * treat that as "journaling disabled for this volume" rather
-     * than an error, so pre-existing formatted volumes keep working
-     * exactly as before (just without crash-atomicity), matching
-     * this codebase's established backward-compatibility pattern. */
+    /* Journal location and size */
     uint64_t journal_block;
     uint64_t journal_size;
 
-    /* Number of blocks the block bitmap occupies, starting at
-     * block_bitmap_block. bitmap_size == 0 means "volume formatted
-     * before multi-block bitmaps existed" -- treated as 1 (the old
-     * fixed size, which is exactly right for any such volume: it was
-     * never possible to format more than BITS_PER_BLK == 32768
-     * blocks with only one bitmap block, so a legacy volume's real
-     * block count already fits in that one block). Above that block
-     * count, a single bitmap block can't represent every block, so
-     * more are needed -- see exfs_format()'s bitmap_size computation.
-     * Carved from reserved[3984] the same way journal_block/
-     * journal_size were. */
+    /* Block bitmap blocks */
     uint64_t bitmap_size;
 
-    uint8_t  reserved[3976];         /* pad to EXFS_BLOCK_SIZE exactly:
-                                       * 4+4+8*9+16+8+8+8+3976 = 4096. (Was
-                                       * 4008, making the struct 4104 bytes —
-                                       * 8 bytes larger than EXFS_BLOCK_SIZE,
-                                       * which made exfs_mount's memcpy read
-                                       * 8 bytes past its 4096-byte stack
-                                       * buffer on every boot. journal_block/
-                                       * journal_size/bitmap_size above took
-                                       * 24 of those spare bytes.) */
+    uint8_t  reserved[3976];         /* Padding to EXFS_BLOCK_SIZE */
 } exfs_superblock_t;
 
 /*
@@ -144,16 +74,7 @@ typedef struct __attribute__((packed)) {
     uint64_t prov_head;              /* offset of first provenance record */
     uint32_t prov_count;
     uint8_t  block_hash[8];          /* first 8 bytes of BLAKE3 of last write */
-    /* Owning user ID -- see process_t.uid in kernel/proc/process.h for
-     * the full explanation of what this does and doesn't mean yet
-     * (no real login/auth exists). Carved out of what used to be
-     * reserved[16] rather than appended, so this is the ONE field
-     * that changes the on-disk struct layout -- safe because the
-     * on-disk stride is EXFS_INODE_SIZE (256, a fixed macro), not
-     * sizeof(exfs_inode_t), so pre-existing formatted volumes just
-     * read this as 0 (UID_ROOT) for every existing file, which is a
-     * safe default: "owned by root", not "owned by nobody, bypass
-     * permission checks". */
+    /* Owner UID */
     uint32_t owner_uid;
     /* Owning group ID -- see process_t.gid in kernel/proc/process.h.
      * Same carve-out reasoning as owner_uid just above: carved from

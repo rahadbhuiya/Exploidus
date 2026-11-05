@@ -8,10 +8,7 @@
  * fork — create an exact copy of the calling process.
  * Returns the child PID in the parent, 0 in the child.
  * Returns -1 on failure.
- *
  * f is the calling syscall's frame: needed to capture the exact
- * register state the child should resume userspace with (see
- * fork_child_entry() in fork_exec.c).
  */
 int64_t sys_fork_impl(syscall_frame_t *f);
 
@@ -29,17 +26,6 @@ int64_t sys_exec_impl(const uint8_t *elf_data, uint64_t elf_size);
  * (through the VFS, not an already-in-memory buffer) and replace the
  * CALLING process's address space in place. Same PID, old address
  * space freed rather than leaked, signal handlers reset to default —
- * this is what makes it "full execve" rather than spawn()-with-a-
- * different-name.
- *
- * path : kernel-owned, NUL-terminated (caller must have already
- *        copied it out of user memory and validated it)
- * argv : kernel-owned, NULL-terminated array of kernel-owned
- *        NUL-terminated strings, or NULL for none
- * envp : same shape as argv, or NULL for none
- *
- * Returns -1 / -2 on failure (process image is unchanged). Never
- * actually returns on success — jumps to the new entry point.
  */
 int64_t sys_execve_impl(const char *path, const char **argv,
                          const char **envp);

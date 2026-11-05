@@ -136,17 +136,12 @@ static vfs_node_t *vfs_lookup_impl(const char *path, bool follow_last, int depth
 
         vfs_node_t *next = node->ops->lookup(node, component);
 
-        /* `node` was only needed to find `next` — it's never the
-         * persistent mount root (best_root) once we're inside this
-         * loop, and nothing else holds a reference to it, so it must
-         * be freed here or it leaks forever. This was previously
-         * unconditional: EVERY intermediate path component leaked a
-         * fresh vfs_node_t + exfs_node_data_t pair on every lookup
-         * (e.g. resolving "/var/rahu/installed.json" leaked 2 nodes
-         * every single time), eventually exhausting the kernel heap
-         * after enough commands/lookups in a session — after which
-         * kzalloc() starts failing and lookups for perfectly valid,
-         * existing files start returning NULL ("not found"). */
+        /*
+ * persistent mount root (best_root) once we're inside this
+ * loop, and nothing else holds a reference to it, so it must
+ * be freed here or it leaks forever. This was previously
+ * unconditional: EVERY intermediate path component leaked a
+ */
         if (node != best_root) {
             kfree(node->fs_data);
             kfree(node);
@@ -232,20 +227,11 @@ int vfs_open(const char *path, uint32_t flags)
     }
 
     /*
-     * Permission enforcement: three-tier (owner / group / other),
-     * now that process_t has both a real uid and gid (see
-     * kernel/proc/process.h) to compare against. UID_ROOT always
-     * bypasses (root convention). Otherwise: a uid match against the
-     * file's owner_uid checks the owner bits; failing that, a gid
-     * match against the file's group_gid checks the group bits;
-     * failing that, the "other" bits apply. This used to be a
-     * two-tier model (owner / other) with a comment noting there was
-     * "no group concept (no gid anywhere)" -- process_t.gid and
-     * exfs_inode_t.group_gid close that gap. Group membership here
-     * is still minimal: one gid per process (no supplementary
-     * groups), set via sys_setgid() (see its comment for the honest
-     * limitations -- not a real login/group-membership system).
-     */
+ * Permission enforcement: three-tier (owner / group / other),
+ * now that process_t has both a real uid and gid (see
+ * kernel/proc/process.h) to compare against. UID_ROOT always
+ * bypasses (root convention). Otherwise: a uid match against the
+ */
     {
         uint32_t caller_uid = g_current_proc ? g_current_proc->uid : UID_ROOT;
         uint32_t caller_gid = g_current_proc ? g_current_proc->gid : GID_ROOT;
@@ -340,23 +326,9 @@ int vfs_close(int fd)
 
 /*
  * vfs_close_all_for_pid — release every fd still owned by `pid`.
- *
  * g_fds[] is a single global table shared by the whole system (not
  * per-process), and historically nothing ever reclaimed a slot unless
  * the owning process explicitly called close()/vfs_close() itself
- * before exiting. A process that opened a file and then crashed, was
- * killed, or simply forgot to close it would permanently leak that
- * slot for the lifetime of the system — with only VFS_MAX_FDS (64)
- * slots total, a handful of such leaks across repeated spawns is
- * enough to exhaust the table, after which vfs_open() starts failing
- * for completely unrelated files/processes (observed symptom: spawn
- * reporting a perfectly valid, existing binary as "not found", because
- * vfs_open() inside sys_spawn returned -1 due to a full table, not
- * because the directory entry was actually missing).
- *
- * Called from proc_exit() so PID 0 (no process / boot-time context)
- * is never swept, since g_next_pid starts at 1 and 0 is never a real
- * process's id.
  */
 void vfs_close_all_for_pid(uint32_t pid)
 {
@@ -433,25 +405,11 @@ int vfs_create(const char *path, uint8_t type)
     if (strlen(name) > VFS_NAME_MAX) return -1;
 
     /*
-     * Reject "." and ".." as a creatable name. Without this, `mkdir
-     * /some/dir/..` would succeed and create a REAL directory entry
-     * literally named ".." (pointing at a fresh, empty inode -- not
-     * the actual parent). That's dangerous specifically because
-     * vfs_lookup() treats ".." as nothing special today -- it's just
-     * another component name to search a directory for, and since
-     * ExFS never creates a real ".." dirent on its own, any raw path
-     * containing ".." currently just fails lookup harmlessly (there's
-     * nothing to find). An attacker-planted ".." dirent would flip
-     * that from "safely fails" to "silently resolves into a
-     * directory the attacker controls" for any code that ever passes
-     * an unnormalized path straight to vfs_lookup()/vfs_open()
-     * instead of going through something like the shell's own
-     * string-based path normalizer (_abs() in exploish_cmds.c, which
-     * resolves ".." before it ever reaches the VFS layer and is
-     * correctly bounded at root -- but nothing *forces* every caller
-     * to go through that). Standard Unix filesystems refuse this
-     * exact thing for the same reason.
-     */
+ * Reject "." and ".." as a creatable name. Without this, `mkdir
+ * /some/dir/..` would succeed and create a REAL directory entry
+ * literally named ".." (pointing at a fresh, empty inode -- not
+ * the actual parent). That's dangerous specifically because
+ */
     if ((name[0] == '.' && name[1] == '\0') ||
         (name[0] == '.' && name[1] == '.' && name[2] == '\0')) {
         return -1;
@@ -895,14 +853,6 @@ int vfs_stat(const char *path, vfs_stat_t *st)
  * (see vfs_close — this was needed to fix a kernel-heap leak where
  * every lookup/open permanently leaked its node). vfs_dup()/vfs_dup2()
  * copy the fd entry, including the raw `node` pointer, so the
- * duplicate fd ends up ALIASING the same node as the original. If
- * EITHER fd is closed, the node is freed — and the other fd is left
- * pointing at freed memory (use-after-free) the next time it's used.
- *
- * As of this fix, dup()/dup2() are not called anywhere in this
- * codebase's userspace code, so this is currently a dormant risk, not
- * an active bug. If dup/dup2 usage is added later, this needs proper
- * reference counting on vfs_node_t before it's safe.
  */
 int vfs_dup(int fd)
 {

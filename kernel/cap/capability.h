@@ -31,14 +31,9 @@ typedef enum {
 
 /*
  * cap_token_t — 128-bit capability token.
- *
  * upper layout:
- *   [63:48] resource class (cap_resource_t)
- *   [47:16] resource ID
- *   [15:0]  rights bitmask
- *
- * lower:
- *   BLAKE3(upper || owner_pid || kernel_secret)[0:7]
+ * [63:48] resource class (cap_resource_t)
+ * [47:16] resource ID
  */
 typedef struct {
     uint64_t upper;

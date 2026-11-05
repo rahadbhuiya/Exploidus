@@ -3,18 +3,9 @@
 
 /*
  * kernel/drivers/rtc.h — CMOS Real-Time-Clock reader.
- *
  * Reads the battery-backed CMOS RTC (ports 0x70/0x71) for real
  * calendar date/time. This is the classic, well-documented technique
  * (same one virtually every hobby OS tutorial uses) — a single
- * on-demand read, no ongoing interrupt/periodic-update complexity.
- * Handles the BCD-vs-binary register format and the "update in
- * progress" race (retries if the RTC is mid-tick while read).
- *
- * Didn't exist before this — Exploidus previously had no wall-clock
- * time source at all, only uptime() (ticks since boot). Needed for
- * any ported language's time()/os.date() to return real dates
- * instead of just "seconds since this OS booted".
  */
 
 typedef struct {

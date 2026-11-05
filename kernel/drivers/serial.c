@@ -62,6 +62,23 @@ void serial_printhex(uint64_t val)
     serial_print(buf);
 }
 
+void serial_printdec(uint64_t val)
+{
+    if (val == 0) {
+        serial_putc('0');
+        return;
+    }
+    char buf[21];
+    int i = 0;
+    while (val > 0) {
+        buf[i++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+    for (int j = i - 1; j >= 0; j--) {
+        serial_putc(buf[j]);
+    }
+}
+
 bool serial_read_byte(char *out)
 {
     /* Line Status Register bit 0 = data ready */

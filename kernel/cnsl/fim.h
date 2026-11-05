@@ -4,14 +4,9 @@
 
 /*
  * cnsl/fim.h — File Integrity Monitoring
- *
  * Watches critical system paths for unauthorized changes.
  * Hooks into VFS write/create — no polling needed.
- *
  * Severity levels:
- *   FIM_CRITICAL — auth files, SSH keys, sudo  (immediate block)
- *   FIM_HIGH     — cron, init binaries
- *   FIM_MEDIUM   — config files
  */
 
 #define FIM_SEV_MEDIUM   0

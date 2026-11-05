@@ -63,14 +63,6 @@ static void pci_write(uint8_t bus, uint8_t dev, uint8_t fn,
  * (unlike e1000's pci_find_e1000) -- UHCI is a standardized PCI
  * class (0x0C = Serial Bus Controller, 0x03 = USB, prog-if 0x00 =
  * UHCI), implemented by many different vendors, so matching on
- * class/subclass/prog-if is the correct way to find "any UHCI
- * controller" rather than one specific chip.
- *
- * NOTE: only checks function 0 of each device, like e1000's scan --
- * a multi-function PCI device with UHCI on a non-zero function
- * wouldn't be found. Acceptable for now (QEMU's piix3-usb-uhci is a
- * single-function device); worth revisiting if real hardware with a
- * multi-function southbridge needs to be supported later.
  */
 static bool pci_find_uhci(uint8_t *bus_out, uint8_t *dev_out)
 {
@@ -127,16 +119,6 @@ static uint16_t g_iobase = 0;
  * 1024 frames = ~1 second cycle). Must be 4KB-aligned physical
  * memory per the UHCI spec (FRBASEADD's low 12 bits are hardwired
  * to 0). Static + aligned, matching e1000.c's pattern of using
- * statically-allocated kernel arrays directly as DMA buffers (this
- * kernel identity-maps its own image, so a kernel virtual address
- * doubles as its physical address here — same assumption e1000's
- * g_tx_ring/g_tx_bufs already rely on).
- *
- * Every entry is left Terminate (bit0=1) for now, i.e. an empty
- * schedule -- no Queue Head is linked in yet, since QH/TD
- * construction is deliberately deferred to the next step (see
- * uhci.h). The frame list still needs to exist and be valid before
- * starting the controller (RS bit), even with nothing scheduled.
  */
 static uint32_t g_frame_list[1024] __attribute__((aligned(4096)));
 
@@ -145,11 +127,6 @@ static uint32_t g_frame_list[1024] __attribute__((aligned(4096)));
  * ata_init()'s IDENTIFY wait and this driver's port-reset delay both
  * run pre-sti, before any interrupt-driven tick counter would be
  * incrementing, so there's no calibrated clock available to use yet.
- * Deliberately generous (errs toward *longer* than the USB-spec
- * minimum) since USB reset timing requirements are minimums, not
- * exact windows -- waiting longer than required is harmless, waiting
- * less risks an unreliable reset on real hardware (QEMU is usually
- * lenient about this, but real UHCI silicon may not be).
  */
 static void busy_wait_ms(uint32_t ms)
 {
@@ -173,20 +150,11 @@ static inline void portsc_write(int port, uint16_t v)
     outw(g_iobase + (port == 0 ? UHCI_PORTSC1 : UHCI_PORTSC2), v);
 }
 
-/* =====================================================================
+/*
  * Transfer layer: Transfer Descriptors (TD) and Queue Heads (QH).
- *
  * CONFIDENCE NOTE: the register/reset/port code above is
  * high-confidence (simple, single-purpose bits, consistent across
  * every source). The TD control/status bit layout below is NOT at
- * that same confidence level -- it's built from best recollection of
- * the Linux uhci-hcd driver's TD_CTRL_* constants, without a way to
- * verify against a datasheet or real hardware in this environment.
- * If a transfer doesn't behave as expected, uhci_control_transfer()
- * dumps every TD's raw ctrl_status DWORD to serial specifically so
- * the actual bit pattern can be inspected/cross-checked by hand
- * instead of trusting these #defines blindly.
- * =====================================================================
  */
 
 typedef struct __attribute__((packed, aligned(16))) {
@@ -278,10 +246,6 @@ static void dump_td(const char *label, const uhci_td_t *td)
  * stage + STATUS. The DATA stage is split into ceil(data_len /
  * max_packet) packets, each its own TD, chained together with
  * alternating data toggle starting at DATA1 (USB rule: SETUP is
- * always DATA0, the first DATA-stage packet is always DATA1,
- * alternating after that; STATUS is always DATA1 regardless of how
- * many DATA packets preceded it -- that's a fixed rule, not a
- * continuation of the alternation).
  */
 static bool uhci_control_transfer(uint8_t device_addr,
                                    const uint8_t setup[8],
@@ -394,17 +358,7 @@ static void hexdump(const uint8_t *buf, uint16_t len)
  * Interrupt IN transfer -- a single bare IN-token TD, no SETUP/STATUS
  * (those are control-transfer-only concepts). Used for HID reports
  * (mouse/tablet/keyboard position & button state).
- *
  * IMPORTANT: a timeout here does NOT necessarily mean failure. Per
- * spec, a NAK response does not clear the TD's Active bit or consume
- * the error-retry counter -- the HC just keeps retrying the same TD
- * on its own every frame until either real data arrives or a genuine
- * error occurs. So "device has nothing new to report yet" and
- * "transfer timed out waiting" look identical from here: Active is
- * still 1 when our poll bound runs out. That's expected/normal for
- * an interrupt endpoint with no new input, not a driver bug -- the
- * return value distinguishes it (false + *had_error_out=false) from
- * a real error (false + *had_error_out=true).
  */
 static bool uhci_interrupt_in(uint8_t device_addr, uint8_t endpoint,
                                bool *toggle, uint8_t *buf, uint16_t len,
@@ -472,9 +426,6 @@ typedef struct {
  * the first interface's class/subclass/protocol and any interrupt-IN
  * / bulk-IN / bulk-OUT endpoints it declares. Deliberately simple:
  * only looks at the FIRST interface found (no multi-interface
- * composite device support, no alternate-setting handling) -- fine
- * for the single-function devices (a HID tablet, a mass-storage
- * stick) this driver targets so far.
  */
 static void parse_config_descriptor(const uint8_t *buf, uint16_t total_len,
                                      usb_config_info_t *info)
@@ -530,14 +481,6 @@ static void parse_config_descriptor(const uint8_t *buf, uint16_t total_len,
  * and supports IN or OUT, and multi-packet transfers (chained TDs
  * with alternating toggle, same splitting logic as the control
  * transfer's DATA stage). No SETUP/STATUS phases -- those are
- * control-transfer-only concepts; a bulk transfer is just the data
- * packets themselves.
- *
- * Bulk endpoints don't get the "NAK doesn't mean error" treatment
- * interrupt endpoints do in the same forgiving way -- a bulk OUT to
- * a mass-storage device is expected to be accepted promptly, so a
- * timeout here is treated as a real failure, not a normal "nothing
- * to report yet" (there's no periodic-polling concept for bulk).
  */
 static bool uhci_bulk_transfer(uint8_t device_addr, uint8_t endpoint,
                                 bool *toggle, uint8_t *buf, uint16_t len,
@@ -605,20 +548,8 @@ static bool uhci_bulk_transfer(uint8_t device_addr, uint8_t endpoint,
 /*
  * USB Mass Storage: Bulk-Only Transport (BOT), the near-universal
  * transport for USB flash drives. Every command is:
- *   1. bulk-OUT a 31-byte Command Block Wrapper (CBW): fixed
- *      signature, a tag we choose, expected response length/
- *      direction, and a SCSI Command Descriptor Block (CDB) of up to
- *      16 bytes.
- *   2. bulk-IN or bulk-OUT the actual data, if the command has a
- *      data phase (direction/length came from the CBW).
- *   3. bulk-IN a 13-byte Command Status Wrapper (CSW): matching
- *      signature/tag, and a status byte (0 = success).
- *
- * SCSI INQUIRY (CDB opcode 0x12) is the standard first command to
- * send to any SCSI-family device -- it doesn't touch media at all,
- * just asks the device to identify itself (vendor/product strings,
- * device type), making it the natural analogue of HID's
- * GET_DESCRIPTOR for proving the bulk/BOT layer works end-to-end.
+ * 1. bulk-OUT a 31-byte Command Block Wrapper (CBW): fixed
+ * signature, a tag we choose, expected response length/
  */
 #define CBW_SIGNATURE 0x43425355u /* "USBC" little-endian */
 #define CSW_SIGNATURE 0x53425355u /* "USBS" little-endian */
@@ -636,11 +567,6 @@ typedef struct {
  * (IN or OUT, direction taken from data_in), CSW in. Handles the
  * bookkeeping every SCSI command needs; callers just supply a CDB
  * and, if there's a data phase, a buffer.
- *
- * Returns true only if the whole exchange succeeded AND the device
- * reported CSW status 0 (command succeeded) -- "the transport worked
- * but the drive rejected the command" is deliberately still false
- * here, since callers only care about "did I get valid data back".
  */
 static bool uhci_scsi_command(const usb_msc_ep_t *ep,
                                const uint8_t *cdb, uint8_t cdb_len,
@@ -685,15 +611,12 @@ static bool uhci_scsi_command(const usb_msc_ep_t *ep,
 
     uint16_t data_actual = 0;
     if (data_len > 0) {
-        /* Data phase direction picks the endpoint: IN data comes back
-         * on the bulk-IN endpoint, OUT data (a write) goes out on the
-         * bulk-OUT endpoint. This was a real bug -- the data phase
-         * used ep->bulk_in unconditionally, which happened to be
-         * correct for READ/INQUIRY (always data_in=true) but sent
-         * WRITE(10)'s data to the wrong endpoint (the device's IN
-         * endpoint instead of its OUT endpoint), which the device
-         * correctly refused -- every TD in the chain NAKed forever
-         * and the transfer timed out. */
+        /*
+ * on the bulk-IN endpoint, OUT data (a write) goes out on the
+ * bulk-OUT endpoint. This was a real bug -- the data phase
+ * used ep->bulk_in unconditionally, which happened to be
+ * correct for READ/INQUIRY (always data_in=true) but sent
+ */
         bool ok = data_in
             ? uhci_bulk_transfer(ep->device_addr, ep->bulk_in, ep->toggle_in,
                                   data, data_len, ep->bulk_in_mp, true,
@@ -840,10 +763,6 @@ static bool uhci_scsi_read_capacity(const usb_msc_ep_t *ep,
  * blocks starting at lba into buf (must be >= transfer_blocks *
  * block_size bytes). Capped by UHCI_MAX_DATA_TDS (8 TDs) at the
  * endpoint's max packet size -- e.g. one 512-byte sector at a 64-byte
- * bulk max packet is exactly 8 packets, right at the limit. Reading
- * more than that in one call isn't supported yet (would need
- * multiple back-to-back uhci_bulk_transfer calls within one SCSI
- * command's data phase).
  */
 static bool uhci_scsi_read10(const usb_msc_ep_t *ep, uint32_t lba,
                               uint16_t transfer_blocks, uint32_t block_size,
@@ -889,12 +808,8 @@ static bool uhci_scsi_read10(const usb_msc_ep_t *ep, uint32_t lba,
 /*
  * SCSI WRITE (10) (CDB opcode 0x2A) -- mirror of READ(10), data phase
  * is OUT instead of IN. Same TD-chain size limit applies.
- *
  * CAUTION: this actually writes to the device's media. Fine for a
  * throwaway QEMU test image; would be genuinely destructive pointed
- * at a real drive with real data on it. There is no write-protect
- * check or confirmation here -- callers are responsible for only
- * calling this when they mean it.
  */
 static bool uhci_scsi_write10(const usb_msc_ep_t *ep, uint32_t lba,
                                uint16_t transfer_blocks, uint32_t block_size,
@@ -979,21 +894,9 @@ static block_device_t g_usb_blockdev = {
 
 /*
  * Full enumeration sequence for one device found on a root port:
- *   1. GET_DESCRIPTOR(Device, 8 bytes) at address 0 -- learn
- *      bMaxPacketSize0 (needed to safely split a larger transfer
- *      into correctly-sized packets).
- *   2. SET_ADDRESS(1) at address 0 -- the device adopts address 1
- *      once the STATUS stage of *this* request completes. Per spec,
- *      wait >= 2ms afterward (Set Address Recovery Time) before
- *      sending anything else to it.
- *   3. GET_DESCRIPTOR(Device, 18 bytes) at the new address 1, now
- *      split into properly-sized packets -- the full descriptor.
- *
- * Only ever assigns address 1. Fine for one device; a real
- * multi-device enumerator would track and hand out the next free
- * address (2, 3, ...) per device instead -- not needed yet since
- * uhci_reset_port()'s caller only probes one port's device at a
- * time regardless (see the LIMITATION note in uhci_init()).
+ * 1. GET_DESCRIPTOR(Device, 8 bytes) at address 0 -- learn
+ * bMaxPacketSize0 (needed to safely split a larger transfer
+ * into correctly-sized packets).
  */
 static void uhci_enumerate_device(void)
 {
@@ -1262,14 +1165,12 @@ static void uhci_enumerate_device(void)
             }
         }
 
-        /* Register with the block-device layer -- persist the
-         * endpoint/toggle state globally (see the g_msc_* comment
-         * above) since usb_msc_bd_read/write will be called later,
-         * independent of this function's stack frame. Deliberately
-         * does NOT call blockdev_set_root() -- the ATA drive is
-         * already the working root filesystem; this just makes the
-         * USB stick available (as "usb0") for something like a
-         * future `mount` command to use. */
+        /*
+ * endpoint/toggle state globally (see the g_msc_* comment
+ * above) since usb_msc_bd_read/write will be called later,
+ * independent of this function's stack frame. Deliberately
+ * does NOT call blockdev_set_root() -- the ATA drive is
+ */
         g_msc_ep = ep;
         g_msc_toggle_in = toggle_in;
         g_msc_toggle_out = toggle_out;
@@ -1314,13 +1215,11 @@ static bool uhci_reset_port(int port)
     serial_print(": device present, resetting...\n");
 
     /*
-     * Assert reset. Read-modify-write, but deliberately mask out the
-     * write-1-to-clear change bits (CSC, PEDC) from the value we
-     * read back before writing it -- otherwise a stale change bit
-     * from before we started looking would get spuriously cleared
-     * as a side effect of setting Reset, which isn't what "reset the
-     * port" should imply.
-     */
+ * Assert reset. Read-modify-write, but deliberately mask out the
+ * write-1-to-clear change bits (CSC, PEDC) from the value we
+ * read back before writing it -- otherwise a stale change bit
+ * from before we started looking would get spuriously cleared
+ */
     uint16_t v = portsc_read(port) & ~(uint16_t)(PORTSC_CSC | PORTSC_PEDC);
     portsc_write(port, v | PORTSC_RESET);
 
@@ -1462,15 +1361,12 @@ bool uhci_init(void)
 
     serial_print("[UHCI] controller running\n");
 
-    /* UHCI defines exactly 2 root ports.
-     *
-     * LIMITATION: uhci_enumerate_device() always assigns address 1 (the
-     * USB default/unaddressed state). That's correct as long as at
-     * most one device is unaddressed on the bus at a time -- fine
-     * for this single-device test, but real multi-device enumeration
-     * needs to reset+probe+SET_ADDRESS one port fully before moving
-     * to the next, or two simultaneously-connected devices would
-     * both answer address-0 requests at once. Not handled yet. */
+    /*
+ * LIMITATION: uhci_enumerate_device() always assigns address 1 (the
+ * USB default/unaddressed state). That's correct as long as at
+ * most one device is unaddressed on the bus at a time -- fine
+ * for this single-device test, but real multi-device enumeration
+ */
     bool any_device = false;
     if (uhci_reset_port(0)) { any_device = true; uhci_enumerate_device(); }
     if (uhci_reset_port(1)) { any_device = true; uhci_enumerate_device(); }

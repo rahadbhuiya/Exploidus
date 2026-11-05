@@ -12,16 +12,7 @@ void blake3_hash(const uint8_t *input, uint64_t input_len, uint8_t *output);
  * Incremental BLAKE3 API — feed data in as many calls as needed (e.g.
  * while streaming a network download to disk), without ever needing
  * to hold or re-read the whole input at once.
- *
- *   blake3_ctx_t ctx;
- *   blake3_init(&ctx);
- *   blake3_update(&ctx, chunk1, chunk1_len);
- *   blake3_update(&ctx, chunk2, chunk2_len);
- *   ...
- *   blake3_final(&ctx, digest_out);   // digest_out must hold 32 bytes
- *
- * Same single-chunk limitation as blake3_hash (see blake3.c) — this is
- * a streaming API for *delivery*, not a multi-chunk/tree implementation.
+ * blake3_ctx_t ctx;
  */
 typedef struct {
     uint32_t chaining[8];

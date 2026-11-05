@@ -1,47 +1,8 @@
 /*
  * x25519.c -- Curve25519 / X25519 scalar multiplication.
- *
  * This is a faithful, essentially line-for-line port of
  * curve25519-donna-c64.c:
- *
- *   Copyright 2008, Google Inc. All rights reserved.
- *   Code released into the public domain.
- *   curve25519-donna: Curve25519 elliptic curve, public key function
- *   http://code.google.com/p/curve25519-donna/
- *   Adam Langley <agl@imperialviolet.org>
- *   Derived from public domain C code by Daniel J. Bernstein <djb@cr.yp.to>
- *   http://cr.yp.to/ecdh.html
- *
- * Public domain, no license restrictions -- chosen deliberately over
- * writing new field-arithmetic/scalar-multiplication code for this
- * kernel from scratch: this implementation is long-standing, widely
- * deployed (this exact "donna" lineage underlies parts of BoringSSL
- * and other production TLS/SSH stacks), and constant-time by
- * construction (fixed number of `fmonty` calls per scalar bit,
- * data-independent `swap_conditional` instead of branching on key
- * bits) -- exactly the property that's hardest to get right by hand
- * and hardest to verify by eye, which is the whole reason to port
- * a reviewed implementation instead of writing new elliptic-curve
- * math for this kernel.
- *
- * Changes from the original, and only these:
- *   - typedefs adjusted to this kernel's stdint.h usage
- *   - `static` internal helpers, `curve25519_donna()` API kept as an
- *     internal name; x25519_scalarmult() (x25519.h) is the public
- *     entry point, doing exactly what curve25519_donna() did
- *   - added X25519_BASEPOINT (u = 9, RFC 7748) as an exported constant
- *   - comments trimmed/reflowed; no arithmetic changed
- *
- * Verified against both official RFC 7748 Section 5.2 X25519 test
- * vectors byte-for-byte before this file was written into the kernel
- * tree -- see the project README for the verification transcript.
- * NOT yet verified for correct behavior when actually cross-compiled
- * with x86_64-elf-gcc and run inside Exploidus (this development
- * environment has no cross-toolchain); the __int128 (TI-mode) usage
- * below is a standard GCC extension available on any x86_64 GCC
- * target, freestanding or not, so it should compile identically, but
- * that is a should, not a confirmed fact -- treat this file as
- * math-verified, not yet integration-verified.
+ * Copyright 2008, Google Inc. All rights reserved.
  */
 
 #include <stdint.h>
@@ -113,11 +74,9 @@ fscalar_product(felem output, const felem in, const limb scalar) {
     output[0] += (a >> 51) * 19;
 }
 
-/* Multiply two numbers: output = in2 * in
- *
+/*
  * output must be distinct to both inputs. The inputs are reduced
  * coefficient form, the output is not.
- *
  * Assumes that in[i] < 2**55 and likewise for in2.
  * On return, output[i] < 2**52
  */
@@ -277,14 +236,11 @@ fcontract(u8 *output, const felem input) {
     store_limb(output+24, (t[3] >> 39) | (t[4] << 12));
 }
 
-/* Input: Q, Q', Q-Q'
+/*
  * Output: 2Q, Q+Q'
- *
  * x2 z3: long form
  * x3 z3: long form
  * x z: short form, destroyed
- * xprime zprime: short form, destroyed
- * qmqp: short form, preserved
  */
 static void
 fmonty(limb *x2, limb *z2,             /* output 2Q */

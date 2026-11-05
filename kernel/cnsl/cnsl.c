@@ -94,15 +94,9 @@ static uint8_t count_kind(ip_buf_t *buf, uint8_t kind, uint32_t window_sec)
 
 /*
  * count_window_stats — used by persistent_recon.
- *
  * Returns total event count in window and fills:
- *   unique_kinds_mask  — bitmask of seen event kinds
- *   unique_groups_mask — bitmask of seen source groups
- *
- * Source groups (3 groups needed to fire rule):
- *   bit 0 — NETWORK   (SSH_FAIL, SSH_SUCCESS)
- *   bit 1 — WEB       (WEB_SCAN, WEB_EXPLOIT, WEB_AUTH_FAIL)
- *   bit 2 — DB/FW/SYS (DB_AUTH_FAIL, FW_HONEYPOT_PORT, SUDO_FAIL, SU_FAIL)
+ * unique_kinds_mask  — bitmask of seen event kinds
+ * unique_groups_mask — bitmask of seen source groups
  */
 static uint8_t count_window_stats(ip_buf_t *buf, uint32_t window_sec,
                                   uint16_t *unique_kinds_mask,
@@ -250,15 +244,9 @@ static bool rule_web_auth_flood(ip_buf_t *buf, uint32_t ip)
 
 /*
  * Rule 5: Persistent multi-vector reconnaissance (ported from upstream v1.1.0)
- *
  * Fires when a single IP methodically probes the server across multiple
  * attack types and service categories over a 30-minute window:
- *   - total events  >= 20
- *   - unique kinds  >= 4   (not just hammering one service)
- *   - source groups >= 3   (network + web + db/fw/sys)
- *
- * Severity: MEDIUM (not immediate block on its own, but raises alert).
- * The attacker may be slow and spread out to evade threshold-based rules.
+ * - total events  >= 20
  */
 static bool rule_persistent_recon(ip_buf_t *buf, uint32_t ip)
 {

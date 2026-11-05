@@ -1,30 +1,8 @@
 /*
  * chacha20.c -- ChaCha20 stream cipher, RFC 8439 Section 2.3/2.4
  * layout (32-bit block counter, 96-bit nonce).
- *
  * The quarter-round / double-round core (QUARTERROUND macro, the
  * constant "expand 32-byte k", the add/rotate/xor sequence) is
- * D. J. Bernstein's original public-domain ChaCha construction, in
- * the same form used by chacha-merged.c (version 20080118) --
- * OpenBSD/OpenSSH's chacha.c is this exact same round function, just
- * wrapped around Bernstein's original 64-bit-nonce/64-bit-counter
- * state layout instead of RFC 8439's 96-bit-nonce/32-bit-counter one.
- * That's the one part of this file that's "hard to get right by
- * hand" (the specific rotate amounts and operation order are exactly
- * what all the published test vectors are sensitive to), so it's
- * reused verbatim rather than re-derived.
- *
- * The state setup (chacha20_block() below) is written directly from
- * RFC 8439 Section 2.3's own layout description -- words 0-3 the
- * "expand 32-byte k" constant, 4-11 the key, 12 the counter, 13-15
- * the nonce -- since that layout (not Bernstein's original) is what
- * SSH's chacha20-poly1305@openssh.com and the RFC's own test vectors
- * use. This part is simple enough (just byte layout, no bit tricks)
- * that writing it directly from the RFC's explicit state diagram
- * carries little risk, and it's verified byte-for-byte against six
- * separate RFC 8439 block-function test vectors plus its own
- * encryption test vectors before being written into the kernel tree
- * -- see the project README for the verification transcript.
  */
 
 #include <stdint.h>

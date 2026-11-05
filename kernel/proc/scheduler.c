@@ -176,15 +176,11 @@ void sched_tick(void)
     g_uptime_ticks++;
 
     /*
-     * Per-process CPU time accounting — this field (ticks_used) was
-     * already declared on process_t and exposed to userspace via
-     * getprocs()/the 'ps' shell command's TICKS column, but nothing
-     * anywhere in the kernel ever incremented it, so 'ps' always
-     * showed 0 for every process no matter how much CPU it had
-     * actually used. Simple sampling: whichever process is current
-     * when each 100Hz timer tick fires gets credited one tick — the
-     * standard, lightweight way OS-level CPU-time accounting works.
-     */
+ * Per-process CPU time accounting — this field (ticks_used) was
+ * already declared on process_t and exposed to userspace via
+ * getprocs()/the 'ps' shell command's TICKS column, but nothing
+ * anywhere in the kernel ever incremented it, so 'ps' always
+ */
     if (g_current_proc) g_current_proc->ticks_used++;
 
     unblock_sleepers();
@@ -215,26 +211,11 @@ void sched_yield(void)
     if (!next) {
         if (requeue_prev) {
             /*
-             * We are the only ready process. This used to just
-             * resume immediately with no HLT at all -- meaning a
-             * process that calls yield() in a loop whenever it has
-             * nothing to do (exactly what the compositor's main loop
-             * does) never actually gives the CPU a chance to go
-             * idle: sti;return here, straight back into the caller's
-             * for(;;), straight back into yield() again, forever, at
-             * full CPU speed. That is a genuine busy-loop wearing a
-             * cooperative-yield costume.
-             *
-             * This matters a lot more under KVM than TCG: a vCPU
-             * thread that never executes HLT looks "fully busy" to
-             * the host scheduler, which can starve the host of the
-             * quiet gaps it would otherwise use to promptly deliver
-             * timer/keyboard/mouse IRQs -- producing exactly the
-             * input-lag symptoms this was reported as. Halt for one
-             * interrupt (next timer tick at worst, 10ms at 100Hz;
-             * sooner if keyboard/mouse IRQs fire first) before
-             * resuming, instead of spinning at full speed.
-             */
+ * We are the only ready process. This used to just
+ * resume immediately with no HLT at all -- meaning a
+ * process that calls yield() in a loop whenever it has
+ * nothing to do (exactly what the compositor's main loop
+ */
             __asm__ volatile ("sti; hlt; cli" ::: "memory");
             make_current(prev);
             prev->state = PROC_RUNNING;
@@ -263,15 +244,11 @@ void sched_yield(void)
         return;
 
     /*
-     * Save/restore FPU-SSE state (FXSAVE/FXRSTOR) around the switch —
-     * same reasoning as the FS_BASE restore just above: done here in
-     * C, not in context_switch.asm, so the compiler resolves the
-     * fpu_state pointer's offset instead of it being hand-computed.
-     * Must happen before the FS_BASE/TLS restore is irrelevant here,
-     * but does need prev's save to happen while prev's FPU registers
-     * are still live (i.e. now, before anything below touches SSE —
-     * nothing here does).
-     */
+ * Save/restore FPU-SSE state (FXSAVE/FXRSTOR) around the switch —
+ * same reasoning as the FS_BASE restore just above: done here in
+ * C, not in context_switch.asm, so the compiler resolves the
+ * fpu_state pointer's offset instead of it being hand-computed.
+ */
     if (prev && prev->fpu_state) {
         __asm__ volatile ("fxsave (%0)" :: "r"(prev->fpu_state) : "memory");
     }
@@ -280,14 +257,11 @@ void sched_yield(void)
     }
 
     /*
-     * Restore TLS base (FS_BASE MSR) for `next` before switching to it.
-     * Done here in C (compiler resolves the real struct offset) rather
-     * than in context_switch.asm, which hardcodes byte offsets for the
-     * fixed-layout prefix of process_t — fs_base was appended after
-     * that prefix specifically so nothing there needs to change.
-     * Safe to set before the actual switch: kernel code here doesn't
-     * use %fs itself, so changing it early doesn't affect `prev`.
-     */
+ * Restore TLS base (FS_BASE MSR) for `next` before switching to it.
+ * Done here in C (compiler resolves the real struct offset) rather
+ * than in context_switch.asm, which hardcodes byte offsets for the
+ * fixed-layout prefix of process_t — fs_base was appended after
+ */
     {
         uint32_t lo = (uint32_t)next->fs_base;
         uint32_t hi = (uint32_t)(next->fs_base >> 32);

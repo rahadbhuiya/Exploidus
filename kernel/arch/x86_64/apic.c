@@ -1,5 +1,6 @@
 #include "apic.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 #define MSR_APIC_BASE     0x1B
 #define APIC_ENABLE       (1ULL << 11)
@@ -34,11 +35,19 @@ static inline uint32_t apic_read(uint32_t reg)
     return apic[reg / 4];
 }
 
-void apic_init(void)
+bool apic_is_enabled(void)
+{
+    return apic != 0;
+}
+
+void apic_init(uint64_t lapic_phys_addr)
 {
     uint64_t base = rdmsr(MSR_APIC_BASE);
 
     base |= APIC_ENABLE;
+    if (lapic_phys_addr) {
+        base = (base & ~APIC_MASK) | (lapic_phys_addr & APIC_MASK);
+    }
 
     wrmsr(MSR_APIC_BASE, base);
 
@@ -49,8 +58,8 @@ void apic_init(void)
 
     /* enable APIC */
     uint32_t svr = apic_read(APIC_SVR);
-    svr |= (1 << 8);   // enable
-    svr |= 0xFF;       // spurious vector
+    svr |= (1 << 8);   // enable APIC software
+    svr |= 0xFF;       // spurious vector 0xFF
     apic_write(APIC_SVR, svr);
 }
 
