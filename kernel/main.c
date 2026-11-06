@@ -4,6 +4,7 @@
 #include "arch/x86_64/apic.h"
 #include "arch/x86_64/acpi.h"
 #include "arch/x86_64/ioapic.h"
+#include "arch/x86_64/smp.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
@@ -272,6 +273,9 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[IOAP] Initializing I/O APIC...\n");
     ioapic_init(acpi_get_ioapic_addr(0));
+
+    kprint("[SMP] Initializing symmetric multiprocessing...\n");
+    smp_init();
 
     uint64_t mod_start = 0, mod_size = 0;
     parse_modules(mb_info_phys, &mod_start, &mod_size);

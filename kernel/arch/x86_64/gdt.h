@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 void gdt_init(void);
+void gdt_flush_ap(void);
 
 /* FIX: scheduler needs this */
 void tss_set_rsp0(uint64_t rsp0);

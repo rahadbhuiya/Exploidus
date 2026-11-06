@@ -144,3 +144,8 @@ void tss_set_rsp0(uint64_t rsp0)
     g_tss.rsp0           = rsp0;
     g_syscall_kernel_rsp = rsp0;
 }
+
+void gdt_flush_ap(void)
+{
+    gdt_flush((uint64_t)(uintptr_t)&g_gdt_ptr);
+}

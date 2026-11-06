@@ -57,7 +57,7 @@ KERNEL_C_SRCS := \
     kernel/main.c kernel/string.c \
     kernel/arch/x86_64/gdt.c kernel/arch/x86_64/idt.c \
     kernel/arch/x86_64/irq.c kernel/arch/x86_64/apic.c \
-    kernel/arch/x86_64/acpi.c kernel/arch/x86_64/ioapic.c \
+    kernel/arch/x86_64/acpi.c kernel/arch/x86_64/ioapic.c kernel/arch/x86_64/smp.c \
     kernel/arch/x86_64/fpu.c \
     kernel/arch/x86_64/stack_protector.c \
     kernel/mm/pmm.c kernel/mm/vmm.c kernel/mm/kmalloc.c \
@@ -86,6 +86,7 @@ KERNEL_C_SRCS := \
 
 KERNEL_ASM_SRCS := \
     kernel/boot/start.asm \
+    kernel/arch/x86_64/trampoline.asm \
     kernel/arch/x86_64/isr.asm \
     kernel/arch/x86_64/gdt_flush.asm \
     kernel/arch/x86_64/sigreturn.asm \

@@ -60,7 +60,7 @@ The target system architecture is structured as follows:
 - [x] **1.3 Local APIC & I/O APIC Drivers (Retire Legacy PIC)**
   - Path: `kernel/arch/x86_64/apic.c`, `kernel/arch/x86_64/ioapic.c`
   - Objective: Handle multi-core hardware interrupts and high-resolution timer events.
-- [ ] **1.4 Symmetric Multiprocessing (SMP / Multi-Core)**
+- [x] **1.4 Symmetric Multiprocessing (SMP / Multi-Core)**
   - Path: `kernel/arch/x86_64/smp.c`
   - Objective: Wake secondary CPU cores (Application Processors) via INIT-SIPI-SIPI sequence and integrate with intent scheduler.
 

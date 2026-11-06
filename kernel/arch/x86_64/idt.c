@@ -250,6 +250,11 @@ void interrupt_handler(interrupt_frame_t *frame)
     deliver_pending_signal(frame);
 }
 
+void idt_load(void)
+{
+    __asm__ volatile ("lidt %0" : : "m"(g_idt_ptr));
+}
+
 void idt_init(void)
 {
     memset(g_idt, 0, sizeof(g_idt));

@@ -23,6 +23,7 @@ typedef struct __attribute__((packed)) {
 } interrupt_frame_t;
 
 void idt_init(void);
+void idt_load(void);
 
 /*
  * sigreturn_restore(frame) -- kernel/arch/x86_64/sigreturn.asm.

@@ -68,3 +68,42 @@ void apic_eoi(void)
     if (apic)
         apic_write(APIC_EOI, 0);
 }
+
+uint8_t apic_get_id(void)
+{
+    if (!apic) return 0;
+    return (uint8_t)((apic_read(0x20) >> 24) & 0xFF);
+}
+
+void apic_send_ipi(uint8_t dest_apic_id, uint32_t dword_low)
+{
+    if (!apic) return;
+    /* Wait for delivery status to clear (bit 12) */
+    while (apic_read(0x300) & (1 << 12)) {
+        __asm__ volatile ("pause");
+    }
+    /* Write ICR high (bits 24-31 = destination APIC ID) */
+    apic_write(0x310, (uint32_t)dest_apic_id << 24);
+    /* Write ICR low to dispatch IPI */
+    apic_write(0x300, dword_low);
+}
+
+void apic_init_ap(void)
+{
+    uint64_t base = rdmsr(MSR_APIC_BASE);
+    base |= APIC_ENABLE;
+    wrmsr(MSR_APIC_BASE, base);
+
+    if (!apic) {
+        apic = (volatile uint32_t *)(base & APIC_MASK);
+    }
+
+    /* Software enable APIC and set spurious vector to 0xFF */
+    uint32_t svr = apic_read(APIC_SVR);
+    svr |= (1 << 8);
+    svr |= 0xFF;
+    apic_write(APIC_SVR, svr);
+
+    /* Clear Task Priority Register (TPR) */
+    apic_write(0x80, 0);
+}
