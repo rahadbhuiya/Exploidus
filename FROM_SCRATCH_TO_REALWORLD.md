@@ -50,7 +50,7 @@ The target system architecture is structured as follows:
 ### Phase 1: Modern Boot & Hardware Initialization (Boot & Base HW)
 *Target: Support both modern UEFI and legacy Multiboot2 boot paths across bare-metal hardware.*
 
-- [ ] **1.1 UEFI Bootloader Support (GRUB-EFI / Limine / EFI Stub)**
+- [x] **1.1 UEFI Bootloader Support (GRUB-EFI / Limine / EFI Stub)**
   - Path: `kernel/boot/efi_main.c` or GRUB EFI configuration
   - Objective: Pass linear framebuffer base address and resolution (1920x1080x32bpp) from UEFI Graphics Output Protocol (GOP) into the kernel.
   - Verification: Bootable directly from modern PC and laptop UEFI boot menus without legacy CSM.

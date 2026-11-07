@@ -394,13 +394,14 @@ build/exploidus.iso: build/exploidus.elf build/disk.img
 	@cp build/disk.img iso/boot/disk.img
 	@echo 'insmod efi_gop'                        >  iso/boot/grub/grub.cfg
 	@echo 'insmod efi_uga'                        >> iso/boot/grub/grub.cfg
+	@echo 'insmod all_video'                      >> iso/boot/grub/grub.cfg
 	@echo 'insmod vbe'                            >> iso/boot/grub/grub.cfg
 	@echo 'insmod vga'                            >> iso/boot/grub/grub.cfg
 	@echo 'insmod font'                           >> iso/boot/grub/grub.cfg
-	@echo 'set gfxmode=1024x768x32,800x600x32,auto' >> iso/boot/grub/grub.cfg
+	@echo 'set gfxmode=1920x1080x32,1366x768x32,1024x768x32,800x600x32,auto' >> iso/boot/grub/grub.cfg
 	@echo 'set gfxpayload=keep'                   >> iso/boot/grub/grub.cfg
 	@echo 'set timeout=2'                         >> iso/boot/grub/grub.cfg
-	@echo 'menuentry "Exploidus (Live Ramdisk)" {' >> iso/boot/grub/grub.cfg
+	@echo 'menuentry "Exploidus (Live Ramdisk - UEFI / BIOS)" {' >> iso/boot/grub/grub.cfg
 	@echo '    multiboot2 /boot/exploidus.elf'    >> iso/boot/grub/grub.cfg
 	@echo '    module2 /boot/disk.img disk'       >> iso/boot/grub/grub.cfg
 	@echo '    boot'                              >> iso/boot/grub/grub.cfg

@@ -43,6 +43,7 @@ typedef struct {
     uint32_t entry_size;
     uint32_t entry_version;
 } __attribute__((packed)) mb2_tag_mmap_t;
+
 /*  FRAMEBUFFER TAG  */
 #define MB2_TAG_FB  8
 
@@ -57,6 +58,26 @@ typedef struct {
     uint8_t  fb_type;
     uint16_t reserved;
 } __attribute__((packed)) mb2_tag_fb_t;
+
+/*  EFI / UEFI SYSTEM TAGS  */
+#define MB2_TAG_EFI32           11
+#define MB2_TAG_EFI64           12
+#define MB2_TAG_EFI32_IH        15
+#define MB2_TAG_EFI64_IH        16
+#define MB2_TAG_EFI_MMAP        17
+#define MB2_TAG_LOAD_BASE_ADDR  21
+
+typedef struct {
+    uint32_t type;
+    uint32_t size;
+    uint64_t pointer;
+} __attribute__((packed)) mb2_tag_efi64_t;
+
+typedef struct {
+    uint32_t type;
+    uint32_t size;
+    uint32_t pointer;
+} __attribute__((packed)) mb2_tag_efi32_t;
 
 /*  MODULE TAG  */
 #define MB2_TAG_MODULE  3

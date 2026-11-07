@@ -29,14 +29,20 @@ header_start:
     dd MULTIBOOT2_ARCH_X86
     dd HEADER_LENGTH
     dd HEADER_CHECKSUM
-    ; Framebuffer tag (type 5)
+    ; Framebuffer tag (type 5) — requests linear framebuffer from UEFI GOP or VBE
     align 8
     dw 5        ; type
     dw 0        ; flags (optional)
     dd 20       ; size
-    dd 800      ; width
-    dd 600      ; height
+    dd 1024     ; preferred width
+    dd 768      ; preferred height
     dd 32       ; depth (bpp)
+    ; Console flags tag (type 4) — support fallback to text if graphical unavailable
+    align 8
+    dw 4        ; type
+    dw 0        ; flags
+    dd 12       ; size
+    dd 0        ; console flags
     ; End tag
     align 8
     dw 0

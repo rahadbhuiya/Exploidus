@@ -45,7 +45,43 @@ void stack_protector_init(void);
 
 extern process_t *g_current_proc;
 
-/*  Multiboot2 memory map parser  */
+/*  Multiboot2 memory map & firmware parser  */
+
+static uint64_t g_efi_system_table = 0;
+static bool g_booted_uefi = false;
+
+static void parse_efi(uint64_t mb_info_phys)
+{
+    if (!mb_info_phys) return;
+    mb2_info_t *info = (mb2_info_t *)(uintptr_t)mb_info_phys;
+    uint8_t *ptr = (uint8_t *)(info + 1);
+    uint8_t *end = (uint8_t *)info + info->total_size;
+    while (ptr < end) {
+        mb2_tag_t *tag = (mb2_tag_t *)ptr;
+        if (tag->type == 0) break;
+        if (tag->type == MB2_TAG_EFI64) {
+            mb2_tag_efi64_t *efi = (mb2_tag_efi64_t *)tag;
+            g_efi_system_table = efi->pointer;
+            g_booted_uefi = true;
+            serial_print("[UEFI] Booted via 64-bit UEFI Firmware (System Table: 0x");
+            serial_printhex(g_efi_system_table);
+            serial_print(")\n");
+            break;
+        } else if (tag->type == MB2_TAG_EFI32) {
+            mb2_tag_efi32_t *efi = (mb2_tag_efi32_t *)tag;
+            g_efi_system_table = (uint64_t)efi->pointer;
+            g_booted_uefi = true;
+            serial_print("[UEFI] Booted via 32-bit UEFI Firmware (System Table: 0x");
+            serial_printhex(g_efi_system_table);
+            serial_print(")\n");
+            break;
+        }
+        ptr += MB2_ALIGN(tag->size);
+    }
+    if (!g_booted_uefi) {
+        serial_print("[BOOT] Booted via Multiboot2 (BIOS / CSM Mode)\n");
+    }
+}
 
 static void parse_framebuffer(uint64_t mb_info_phys)
 {
@@ -60,9 +96,14 @@ static void parse_framebuffer(uint64_t mb_info_phys)
             mb2_tag_fb_t *fb = (mb2_tag_fb_t *)tag;
             if (fb->bpp == 32 && fb->fb_type == 1) {
                 fb_init(fb->addr, fb->width, fb->height, fb->pitch, fb->bpp);
-                fb_back_init();
-                serial_print("[FB] init addr=");
+                serial_print("[GOP ] Linear Framebuffer initialized: ");
+                serial_printhex((uint64_t)fb->width);
+                serial_print("x");
+                serial_printhex((uint64_t)fb->height);
+                serial_print("x32 at 0x");
                 serial_printhex(fb->addr);
+                serial_print(" pitch=");
+                serial_printhex((uint64_t)fb->pitch);
                 serial_print("\n");
             }
             break;
@@ -239,6 +280,7 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     serial_print("  EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
     serial_print("==============================================\n");
 
+    parse_efi(mb_info_phys);
     parse_framebuffer(mb_info_phys);
     font_init();
     fb_console_init();
@@ -297,6 +339,9 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[HEAP] Initializing 4 MiB kernel heap...\n");
     kmalloc_init((uint64_t)(uintptr_t)g_kernel_heap, HEAP_SIZE);
+    if (g_fb.active) {
+        fb_back_init();
+    }
 
     kprint("[AUD ] Starting audit ring buffer...\n");
     audit_init();
@@ -353,12 +398,6 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     driver_register("uhci");
     uhci_init();
     driver_mark_initialized("uhci");
-    /* Mirrors ata_init()'s convention: "no controller/device present"
-     * isn't a driver failure, so this is unconditional -- the driver
-     * itself is fine, there's just nothing plugged in. uhci_init()'s
-     * own serial logging already distinguishes "no controller found"
-     * from an actual init failure (HCRESET stuck, controller halted
-     * after start, etc) for anyone reading the boot log. */
 
     kprint("[IPC ] Initializing inter-process communication...\n");
     ipc_init();
