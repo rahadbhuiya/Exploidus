@@ -1,4 +1,5 @@
 #include "kmalloc.h"
+#include "slab.h"
 #include "../sync/sync.h"
 #include <string.h>
 #ifdef DEBUG_HEAP
@@ -38,6 +39,8 @@ void kmalloc_init(uint64_t heap_start, uint64_t heap_size)
     g_heap_head->size  = heap_size - HEADER_SIZE;
     g_heap_head->free  = 1;
     g_heap_head->next  = NULL;
+
+    slab_init();
 }
 
 /*  VALIDATION  */
@@ -76,6 +79,12 @@ void *kmalloc(uint64_t size)
     size = ALIGN_UP(size, 16);
     if (size < MIN_ALLOC)
         size = MIN_ALLOC;
+
+    /* Fast path: Small object slab allocation (32B - 2048B) */
+    if (size <= 2048) {
+        void *slab_p = slab_alloc(size);
+        if (slab_p) return slab_p;
+    }
 
     void *ret = NULL;
     uint64_t irq_flags = spin_lock_irqsave(&g_heap_lock);
@@ -140,6 +149,12 @@ void kfree(void *ptr)
 {
     if (!ptr)
         return;
+
+    /* Fast path: Slab object check and free */
+    if (is_slab_ptr(ptr)) {
+        slab_free(ptr);
+        return;
+    }
 
     if (!in_heap(ptr))
         return;

@@ -152,7 +152,8 @@
  * (this syscall duplicates that
  */
 
-#define SYS_COUNT          101
+#define SYS_PIPE           101
+#define SYS_COUNT          102
 
 
 /*
@@ -212,6 +213,7 @@ int64_t sys_debug_exfs_corrupt(syscall_frame_t *f);
 int64_t sys_debug_exfs_crash(syscall_frame_t *f);
 int64_t sys_dup(syscall_frame_t *f);
 int64_t sys_dup2(syscall_frame_t *f);
+int64_t sys_pipe(syscall_frame_t *f);
 int64_t sys_exec(syscall_frame_t *f);
 int64_t sys_execv(syscall_frame_t *f);
 int64_t sys_execve(syscall_frame_t *f);

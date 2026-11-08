@@ -35,3 +35,7 @@ void     vmm_switch(uint64_t pml4_phys);
 
 uint64_t vmm_get_kernel_pml4(void);
 uint64_t vmm_make_user_pml4(void);
+
+/* Demand paging & page fault resolution */
+struct interrupt_frame;
+bool     vmm_handle_page_fault(void *frame_ptr, uint64_t cr2);

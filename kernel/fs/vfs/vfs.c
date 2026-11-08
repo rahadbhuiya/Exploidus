@@ -282,6 +282,7 @@ int vfs_open(const char *path, uint32_t flags)
             g_fds[i].offset = 0;
             g_fds[i].active = true;
             g_fds[i].owner_pid = g_current_proc ? g_current_proc->pid : 0;
+            node->refcount = 1;
 
             return i;
         }
@@ -303,17 +304,19 @@ int vfs_close(int fd)
 
     vfs_node_t *node = g_fds[fd].node;
 
-    if (node && node->ops && node->ops->close)
-        node->ops->close(node);
+    if (node) {
+        if (node->refcount > 0)
+            node->refcount--;
 
-    /* This fd exclusively owns `node` (dup()/dup2() exist as syscalls
-     * but are never actually called anywhere in this codebase, so no
-     * other fd can be aliasing the same node) — free it now, unless
-     * it's a mount root (parent==NULL), which is a permanent singleton
-     * that must never be freed. */
-    if (node && node->parent != NULL) {
-        kfree(node->fs_data);
-        kfree(node);
+        if (node->refcount == 0) {
+            if (node->ops && node->ops->close)
+                node->ops->close(node);
+
+            if (node->parent != NULL) {
+                kfree(node->fs_data);
+                kfree(node);
+            }
+        }
     }
 
     g_fds[fd].active = false;
@@ -854,12 +857,29 @@ int vfs_stat(const char *path, vfs_stat_t *st)
  * every lookup/open permanently leaked its node). vfs_dup()/vfs_dup2()
  * copy the fd entry, including the raw `node` pointer, so the
  */
+int vfs_bind_node_to_fd(vfs_node_t *node)
+{
+    if (!node) return -1;
+    for (int i = 3; i < VFS_MAX_FDS; i++) {
+        if (!g_fds[i].active) {
+            g_fds[i].node = node;
+            g_fds[i].offset = 0;
+            g_fds[i].active = true;
+            g_fds[i].owner_pid = g_current_proc ? g_current_proc->pid : 0;
+            if (node->refcount == 0) node->refcount = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
 int vfs_dup(int fd)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !g_fds[fd].active) return -1;
     for (int i = 3; i < VFS_MAX_FDS; i++) {
         if (!g_fds[i].active) {
-            g_fds[i] = g_fds[fd];   /* copy node + offset */
+            g_fds[i] = g_fds[fd];
+            if (g_fds[i].node) g_fds[i].node->refcount++;
             return i;
         }
     }
@@ -873,5 +893,6 @@ int vfs_dup2(int oldfd, int newfd)
     if (newfd == oldfd) return newfd;
     if (g_fds[newfd].active) vfs_close(newfd);
     g_fds[newfd] = g_fds[oldfd];
+    if (g_fds[newfd].node) g_fds[newfd].node->refcount++;
     return newfd;
 }

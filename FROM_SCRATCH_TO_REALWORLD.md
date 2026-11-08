@@ -69,10 +69,10 @@ The target system architecture is structured as follows:
 ### Phase 2: Memory Management & Kernel Core Expansion (VMM & Core)
 *Target: Replace static allocation limits with scalable virtual memory management.*
 
-- [ ] **2.1 Demand Paging & Page Fault Handler**
+- [x] **2.1 Demand Paging & Page Fault Handler**
   - Path: `kernel/mm/vmm.c`, `kernel/arch/x86_64/idt.c` (ISR 14)
   - Objective: Allocate physical frames on-demand upon page fault instead of eager contiguous mapping.
-- [ ] **2.2 Slab / SLUB Allocator**
+- [x] **2.2 Slab / SLUB Allocator**
   - Path: `kernel/mm/slab.c`
   - Objective: Fixed-size cache allocation pools (32B, 64B, 128B, up to 4KB) to eliminate heap fragmentation.
 - [ ] **2.3 File-Backed and Anonymous mmap()**
@@ -81,7 +81,7 @@ The target system architecture is structured as follows:
 - [ ] **2.4 Threading Support (Kernel Thread Contexts)**
   - Path: `kernel/proc/thread.c`, `kernel/proc/scheduler.c`
   - Objective: Support multiple threads sharing a single address space (CR3) with distinct user stacks.
-- [ ] **2.5 Anonymous Pipes & Stream Redirection (pipe, dup2)**
+- [x] **2.5 Anonymous Pipes & Stream Redirection (pipe, dup2)**
   - Path: `kernel/fs/pipe.c`, `kernel/syscall/table.c`
   - Objective: Shell pipeline support for command chaining (`cmd1 | cmd2 > out.txt`).
 - [ ] **2.6 Complete Signal Delivery & Handling (sigaction, sigreturn)**

@@ -3,6 +3,7 @@
 #include "drivers/serial.h"
 #include "../../proc/process.h"
 #include "../../proc/scheduler.h"
+#include "../../mm/vmm.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -106,6 +107,15 @@ void exception_handler(interrupt_frame_t *frame)
     /* RPL (bottom 2 bits of CS) == 3 means the fault happened while
      * running userspace code, not kernel code. */
     int user_fault = (frame->cs & 0x3) == 0x3;
+
+    /* Demand paging & dynamic stack/mmap allocation (Phase 2.1) */
+    if (vec == 14 && user_fault) {
+        uint64_t cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        if (vmm_handle_page_fault(frame, cr2)) {
+            return; /* Successfully resolved, retry faulting instruction */
+        }
+    }
 
     serial_print("\n[EXPLOIDUS] Exception: ");
     if (vec < 32)

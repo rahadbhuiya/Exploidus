@@ -71,6 +71,9 @@ struct vfs_node {
     /* Owning group ID (see process_t.gid / exfs_inode_t.group_gid).
      * Default GID_ROOT, same reasoning as owner_uid above. */
     uint32_t        group_gid;
+
+    /* Reference counter for dup/dup2/pipes */
+    uint32_t        refcount;
 };
 
 void        vfs_init(void);
@@ -78,6 +81,7 @@ vfs_node_t *vfs_lookup(const char *path);
 int         vfs_open(const char *path, uint32_t flags);
 int         vfs_close(int fd);
 void        vfs_close_all_for_pid(uint32_t pid);
+int         vfs_bind_node_to_fd(vfs_node_t *node);
 int64_t     vfs_read(int fd, void *buf, uint64_t len);
 int64_t     vfs_write(int fd, const void *buf, uint64_t len);
 int         vfs_mount(const char *mountpoint, vfs_node_t *root);

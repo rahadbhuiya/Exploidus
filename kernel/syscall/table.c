@@ -487,6 +487,7 @@ static const syscall_fn_t g_syscall_table[SYS_COUNT] = {
     [SYS_EXECVE]       = sys_execve,
     [SYS_MEMINFO]      = sys_meminfo,
     [SYS_GETRANDOM]    = sys_getrandom,
+    [SYS_PIPE]         = sys_pipe,
     /* GUI Phase 1 */
     [SYS_IPC_SEND]     = sys_ipc_send,
     [SYS_IPC_RECV]     = sys_ipc_recv,

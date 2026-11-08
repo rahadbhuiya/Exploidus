@@ -1,6 +1,7 @@
 #include "table.h"
 #include "../fs/vfs/vfs.h"
 #include "../fs/exfs/exfs.h"
+#include "../fs/pipe.h"
 #include "../drivers/blockdev.h"
 #include "../drivers/serial.h"
 #include "../proc/process.h"
@@ -85,6 +86,18 @@ int64_t sys_dup(syscall_frame_t *f)
 
 int64_t sys_dup2(syscall_frame_t *f)
 { return (int64_t)vfs_dup2((int)(int64_t)f->rdi,(int)(int64_t)f->rsi); }
+
+int64_t sys_pipe(syscall_frame_t *f)
+{
+    if (!uptr_ok(f->rdi, sizeof(int) * 2)) return -1;
+    int *user_fds = (int *)(uintptr_t)f->rdi;
+    int kernel_fds[2];
+    if (pipe_create(kernel_fds) < 0) return -1;
+    user_fds[0] = kernel_fds[0];
+    user_fds[1] = kernel_fds[1];
+    return 0;
+}
+
 
 
 

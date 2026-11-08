@@ -965,3 +965,8 @@ static inline int debug_exfs_corrupt(const char *path)
 {
     return (int)syscall1(SYS_DEBUG_EXFS_CORRUPT, (uint64_t)(uintptr_t)path);
 }
+#define SYS_PIPE 101
+static inline int pipe(int fds[2])
+{
+    return (int)syscall1(SYS_PIPE, (uint64_t)(uintptr_t)fds);
+}

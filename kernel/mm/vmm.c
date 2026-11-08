@@ -1,6 +1,8 @@
 #include "vmm.h"
 #include "pmm.h"
 #include "../drivers/serial.h"
+#include "../arch/x86_64/idt.h"
+#include "../proc/process.h"
 #include <string.h>
 
 static uint64_t kernel_pml4 = 0;
@@ -202,4 +204,68 @@ uint64_t vmm_get_phys(uint64_t virt)
 void vmm_switch(uint64_t pml4)
 {
     write_cr3(pml4);
+}
+
+/*
+ * vmm_handle_page_fault — Demand paging and dynamic memory fault resolver
+ */
+bool vmm_handle_page_fault(void *frame_ptr, uint64_t cr2)
+{
+    interrupt_frame_t *frame = (interrupt_frame_t *)frame_ptr;
+    if (!frame) return false;
+
+    /* Only handle userspace non-present page faults */
+    bool user_mode = (frame->cs & 3) == 3;
+    bool page_present = (frame->error_code & 1) != 0;
+
+    if (!user_mode || page_present) {
+        return false;
+    }
+
+    if (!g_current_proc || !g_current_proc->cr3) {
+        return false;
+    }
+
+    uint64_t page_addr = cr2 & ~0xFFFULL;
+
+    /*
+     * Check 1: User stack demand allocation.
+     * Default user stack top is typically 0x00007FFFFFFFE000ULL.
+     * Allow up to 8 MiB of dynamic stack growth.
+     */
+    uint64_t stack_top = g_current_proc->user_stack_top;
+    if (stack_top == 0) stack_top = 0x00007FFFFFFFE000ULL;
+    uint64_t stack_limit = (stack_top > 0x800000ULL) ? (stack_top - 0x800000ULL) : 0;
+
+    bool is_stack_access = (cr2 <= stack_top && cr2 >= stack_limit && cr2 >= (frame->rsp - 256));
+
+    /*
+     * Check 2: Dynamic anonymous mmap/heap space.
+     */
+    bool is_mmap_access = (g_current_proc->mmap_top != 0 &&
+                           cr2 >= 0x400000000000ULL &&
+                           cr2 <= g_current_proc->mmap_top);
+
+    if (is_stack_access || is_mmap_access) {
+        uint64_t phys = pmm_alloc(ZONE_GREEN);
+        if (!phys) {
+            serial_print("[VMM] OOM on demand page fault at CR2=");
+            serial_printhex(cr2);
+            serial_print("\n");
+            return false;
+        }
+
+        memset(phys_to_virt(phys), 0, 4096);
+
+        if (!vmm_map_into(g_current_proc->cr3, phys, page_addr,
+                          VMM_PRESENT | VMM_WRITE | VMM_USER)) {
+            pmm_free(phys);
+            return false;
+        }
+
+        __asm__ volatile ("invlpg (%0)" :: "r"(page_addr) : "memory");
+        return true;
+    }
+
+    return false;
 }
