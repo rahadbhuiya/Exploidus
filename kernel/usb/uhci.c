@@ -2,6 +2,7 @@
 #include "msc.h"
 #include "../drivers/serial.h"
 #include "../drivers/blockdev.h"
+#include "../drivers/pci.h"
 #include <string.h>
 
 /*  Port I/O helpers (same pattern as e1000.c / ata.c)  */
@@ -29,63 +30,6 @@ static inline uint16_t inw(uint16_t port)
 static inline void outb(uint16_t port, uint8_t val)
 {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port) : "memory");
-}
-
-/*  PCI config access (same pattern as e1000.c)  */
-
-#define PCI_CFG_ADDR  0xCF8
-#define PCI_CFG_DATA  0xCFC
-
-static uint32_t pci_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg)
-{
-    uint32_t addr = 0x80000000u
-                  | ((uint32_t)bus << 16)
-                  | ((uint32_t)dev << 11)
-                  | ((uint32_t)fn  <<  8)
-                  | (reg & 0xFC);
-    outl(PCI_CFG_ADDR, addr);
-    return inl(PCI_CFG_DATA);
-}
-
-static void pci_write(uint8_t bus, uint8_t dev, uint8_t fn,
-                       uint8_t reg, uint32_t val)
-{
-    uint32_t addr = 0x80000000u
-                  | ((uint32_t)bus << 16)
-                  | ((uint32_t)dev << 11)
-                  | ((uint32_t)fn  <<  8)
-                  | (reg & 0xFC);
-    outl(PCI_CFG_ADDR, addr);
-    outl(PCI_CFG_DATA, val);
-}
-
-/*
- * Find a UHCI controller by class code rather than vendor/device ID
- * (unlike e1000's pci_find_e1000) -- UHCI is a standardized PCI
- * class (0x0C = Serial Bus Controller, 0x03 = USB, prog-if 0x00 =
- * UHCI), implemented by many different vendors, so matching on
- */
-static bool pci_find_uhci(uint8_t *bus_out, uint8_t *dev_out)
-{
-    for (uint16_t bus = 0; bus < 256; bus++) {
-        for (uint8_t dev = 0; dev < 32; dev++) {
-            uint32_t id = pci_read((uint8_t)bus, dev, 0, 0x00);
-            uint16_t vendor = (uint16_t)(id & 0xFFFF);
-            if (vendor == 0xFFFF) continue; /* no device here */
-
-            uint32_t class_reg = pci_read((uint8_t)bus, dev, 0, 0x08);
-            uint8_t class_code = (uint8_t)((class_reg >> 24) & 0xFF);
-            uint8_t subclass   = (uint8_t)((class_reg >> 16) & 0xFF);
-            uint8_t prog_if    = (uint8_t)((class_reg >>  8) & 0xFF);
-
-            if (class_code == 0x0C && subclass == 0x03 && prog_if == 0x00) {
-                *bus_out = (uint8_t)bus;
-                *dev_out = dev;
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 /*  UHCI I/O register offsets (from IOBASE, all little-endian)  */
@@ -823,42 +767,32 @@ static bool uhci_reset_port(int port)
 
 bool uhci_init(void)
 {
-    uint8_t bus, dev;
-    if (!pci_find_uhci(&bus, &dev)) {
+    pci_device_t *pdev = pci_find_class(0x0C, 0x03, 0x00);
+    if (!pdev) {
         serial_print("[UHCI] No UHCI controller found\n");
         return false;
     }
 
     serial_print("[UHCI] Found controller at PCI ");
-    serial_printhex(bus);
+    serial_printhex((uint64_t)pdev->bus);
     serial_print(":");
-    serial_printhex(dev);
+    serial_printhex((uint64_t)pdev->slot);
     serial_print("\n");
 
-    /*
-     * Legacy UHCI exposes its registers as I/O space via BAR4
-     * (offset 0x20 in the PCI config header, the 5th BAR). Bit 0 of
-     * a BAR is set for I/O-space BARs (vs. bit 0 clear for memory
-     * BARs) -- masking it off along with bits 1-2 (reserved) leaves
-     * the actual base port address.
-     */
-    uint32_t bar4 = pci_read(bus, dev, 0, 0x20);
-    if (!(bar4 & 0x1)) {
+    /* Legacy UHCI exposes registers as I/O space via BAR4 (offset 0x20) */
+    if (!pdev->bar_is_io[4]) {
         serial_print("[UHCI] BAR4 is not I/O space, unsupported layout\n");
         return false;
     }
-    g_iobase = (uint16_t)(bar4 & ~0x3u);
+    g_iobase = (uint16_t)pdev->bar_address[4];
 
     serial_print("[UHCI] IO base=");
     serial_printhex(g_iobase);
     serial_print("\n");
 
-    /* Enable I/O space access (bit0) and bus mastering (bit2) in the
-     * PCI command register -- the controller can't be talked to via
-     * I/O ports, or DMA the frame list, without these. */
-    uint32_t pci_cmd = pci_read(bus, dev, 0, 0x04);
-    pci_cmd |= (1 << 0) | (1 << 2);
-    pci_write(bus, dev, 0, 0x04, pci_cmd);
+    /* Enable I/O space access and bus mastering */
+    pci_enable_bus_mastering(pdev);
+    pci_enable_io_space(pdev);
 
     /* Make sure we're starting from Stop before resetting. */
     cmd_write(0);

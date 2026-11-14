@@ -1,59 +1,9 @@
 #include "e1000.h"
 #include "../net.h"
 #include "../../drivers/serial.h"
+#include "../../drivers/pci.h"
 #include "../../mm/kmalloc.h"
 #include <string.h>
-
-
-/*  PCI helpers */
-
-
-#define PCI_CFG_ADDR  0xCF8
-#define PCI_CFG_DATA  0xCFC
-
-static inline void outl(uint16_t port, uint32_t val)
-{
-    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port) : "memory");
-}
-static inline uint32_t inl(uint16_t port)
-{
-    uint32_t v;
-    __asm__ volatile ("inl %1, %0" : "=a"(v) : "Nd"(port) : "memory");
-    return v;
-}
-static inline void outb(uint16_t port, uint8_t val)
-{
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port) : "memory");
-}
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t v;
-    __asm__ volatile ("inb %1, %0" : "=a"(v) : "Nd"(port) : "memory");
-    return v;
-}
-
-static uint32_t pci_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg)
-{
-    uint32_t addr = 0x80000000u
-                  | ((uint32_t)bus << 16)
-                  | ((uint32_t)dev << 11)
-                  | ((uint32_t)fn  <<  8)
-                  | (reg & 0xFC);
-    outl(PCI_CFG_ADDR, addr);
-    return inl(PCI_CFG_DATA);
-}
-
-static void pci_write(uint8_t bus, uint8_t dev, uint8_t fn,
-                      uint8_t reg, uint32_t val)
-{
-    uint32_t addr = 0x80000000u
-                  | ((uint32_t)bus << 16)
-                  | ((uint32_t)dev << 11)
-                  | ((uint32_t)fn  <<  8)
-                  | (reg & 0xFC);
-    outl(PCI_CFG_ADDR, addr);
-    outl(PCI_CFG_DATA, val);
-}
 
 
 /*  e1000 MMIO register offsets    */
@@ -182,27 +132,6 @@ static void e1000_read_mac(void)
 }
 
 
-/*  PCI device scan — find e1000 (vendor 0x8086, device 0x100E)         */
-
-
-static bool pci_find_e1000(uint8_t *bus_out, uint8_t *dev_out)
-{
-    for (uint16_t bus = 0; bus < 256; bus++) {
-        for (uint8_t dev = 0; dev < 32; dev++) {
-            uint32_t id = pci_read((uint8_t)bus, dev, 0, 0);
-            uint16_t vendor = (uint16_t)(id & 0xFFFF);
-            uint16_t device = (uint16_t)(id >> 16);
-            if (vendor == 0x8086 && device == 0x100E) {
-                *bus_out = (uint8_t)bus;
-                *dev_out = dev;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-
 /*  Transmit */
 
 
@@ -290,24 +219,23 @@ void e1000_poll(void)
 
 bool e1000_init(void)
 {
-    uint8_t bus, dev;
-    if (!pci_find_e1000(&bus, &dev)) {
+    pci_device_t *pdev = pci_find_device(0x8086, 0x100E);
+    if (!pdev) {
         serial_print("[e1000] Not found on PCI bus\n");
         return false;
     }
     serial_print("[e1000] Found at PCI ");
-    serial_printhex((uint64_t)bus);
+    serial_printhex((uint64_t)pdev->bus);
     serial_print(":");
-    serial_printhex((uint64_t)dev);
+    serial_printhex((uint64_t)pdev->slot);
     serial_print("\n");
 
-    /* Enable bus mastering */
-    uint32_t cmd = pci_read(bus, dev, 0, 0x04);
-    cmd |= 0x4;
-    pci_write(bus, dev, 0, 0x04, cmd);
+    /* Enable bus mastering & memory mapping */
+    pci_enable_bus_mastering(pdev);
+    pci_enable_memory_space(pdev);
 
     /* Read BAR0 — MMIO base address */
-    uint32_t bar0 = pci_read(bus, dev, 0, 0x10) & ~0xFu;
+    uint32_t bar0 = (uint32_t)pdev->bar_address[0];
     g_mmio = (volatile uint32_t *)(uintptr_t)bar0;
 
     serial_print("[e1000] MMIO base=");

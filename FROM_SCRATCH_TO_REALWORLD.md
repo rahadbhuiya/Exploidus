@@ -93,7 +93,7 @@ The target system architecture is structured as follows:
 ### Phase 3: Real-World Storage & Input Drivers
 *Target: Direct driver support for modern SATA SSD, NVMe, and USB 3.0 controllers.*
 
-- [ ] **3.1 PCI / PCIe Bus Enumeration Scanner**
+- [x] **3.1 PCI / PCIe Bus Enumeration Scanner**
   - Path: `kernel/drivers/pci.c`, `kernel/drivers/pci.h`
   - Objective: Scan PCI configuration space (Busses 0-255), discover vendor/device IDs, and parse Base Address Registers (BARs).
 - [ ] **3.2 AHCI / SATA Controller Driver (SSD / HDD)**

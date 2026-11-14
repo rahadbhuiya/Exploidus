@@ -24,6 +24,7 @@ extern void syscall_init_msr(void);
 #include "drivers/fb_console.h"
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
+#include "drivers/pci.h"
 #include "drivers/ata.h"
 #include "drivers/blockdev.h"
 #include "drivers/ramdisk.h"
@@ -386,6 +387,11 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
 
     kprint("[VFS ] Initializing virtual filesystem layer...\n");
     vfs_init();
+
+    kprint("[PCI ] Discovering PCI/PCIe bus topology...\n");
+    pci_init();
+    driver_register("pci");
+    driver_mark_initialized("pci");
 
     kprint("[NET ] Initializing TCP/IP network stack...\n");
     net_init();

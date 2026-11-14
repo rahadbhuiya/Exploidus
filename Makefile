@@ -66,6 +66,7 @@ KERNEL_C_SRCS := \
     kernel/proc/process.c kernel/proc/scheduler.c \
     kernel/proc/fork_exec.c kernel/syscall/table.c kernel/syscall/sys_file.c kernel/syscall/sys_net.c kernel/syscall/sys_proc.c \
     kernel/drivers/vga.c kernel/drivers/serial.c \
+    kernel/drivers/pci.c \
     kernel/drivers/keyboard.c kernel/drivers/fb.c kernel/drivers/font.c kernel/drivers/mouse.c kernel/drivers/fb_console.c kernel/drivers/ata.c kernel/drivers/driver.c kernel/drivers/rtc.c kernel/drivers/blockdev.c kernel/drivers/ramdisk.c \
     kernel/fs/vfs/vfs.c kernel/fs/exfs/exfs.c kernel/fs/pipe.c \
     kernel/elf/elf.c \
