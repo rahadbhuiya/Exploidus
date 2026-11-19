@@ -25,6 +25,7 @@ extern void syscall_init_msr(void);
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
 #include "drivers/pci.h"
+#include "drivers/ahci.h"
 #include "drivers/ata.h"
 #include "drivers/blockdev.h"
 #include "drivers/ramdisk.h"
@@ -393,6 +394,14 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     driver_register("pci");
     driver_mark_initialized("pci");
 
+    kprint("[AHCI] Probing SATA/AHCI storage controller...\n");
+    ahci_init();
+    if (ahci_is_present()) {
+        driver_register("ahci");
+        driver_mark_initialized("ahci");
+        blockdev_register(ahci_get_blockdev());
+    }
+
     kprint("[NET ] Initializing TCP/IP network stack...\n");
     net_init();
     driver_register("e1000");
@@ -424,6 +433,9 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     if (ramdisk_is_available()) {
         kprint("[ExFS] Live Ramdisk detected — using ram0 as root device\n");
         root_dev = ramdisk_get_blockdev();
+    } else if (ahci_is_present()) {
+        kprint("[ExFS] AHCI SATA disk detected — using ahci0 as root device\n");
+        root_dev = ahci_get_blockdev();
     } else {
         root_dev = ata_get_blockdev();
     }

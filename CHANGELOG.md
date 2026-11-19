@@ -1,5 +1,15 @@
 # Exploidus — Technical Changelog & Engineering Notes
 
+## Phase 3.2: AHCI / SATA Controller Driver (SSD / HDD)
+
+Direct driver support for SATA SSD and HDD controllers via AHCI 1.0 (Advanced Host Controller Interface):
+
+- **PCI Discovery & ABAR**: Scans PCI bus for Mass Storage SATA controllers (`0x01` / `0x06`), parses ABAR from BAR5, and enables bus mastering and memory space access.
+- **Port Probing & Configuration**: Probes implemented SATA ports (`PI` bitmask), checks device presence via SATA status register (`SStatus.DET`), and detects native SATA drives (`SATA_SIG_ATA`).
+- **DMA Command Engine**: Configures Command List and Received FIS buffers with 1KB/256B physical alignments using PMM physical page allocator.
+- **DMA Read/Write Operations**: Implements 48-bit LBA DMA sector read (`READ DMA EXT` 0x25) and write (`WRITE DMA EXT` 0x35) commands using physical region descriptor tables (PRDT).
+- **ExFS & Block Device Integration**: Registers `"ahci0"` with the unified `blockdev_t` subsystem, allowing the kernel to mount native ExFS root partitions directly from SATA SSDs.
+
 ## Recent Stability Fixes
 
 A round of fixes to the GUI/compositor path and kernel core:

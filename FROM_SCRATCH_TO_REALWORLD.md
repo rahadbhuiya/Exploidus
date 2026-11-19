@@ -96,7 +96,7 @@ The target system architecture is structured as follows:
 - [x] **3.1 PCI / PCIe Bus Enumeration Scanner**
   - Path: `kernel/drivers/pci.c`, `kernel/drivers/pci.h`
   - Objective: Scan PCI configuration space (Busses 0-255), discover vendor/device IDs, and parse Base Address Registers (BARs).
-- [ ] **3.2 AHCI / SATA Controller Driver (SSD / HDD)**
+- [x] **3.2 AHCI / SATA Controller Driver (SSD / HDD)**
   - Path: `kernel/drivers/ahci.c`, `kernel/drivers/ahci.h`
   - Objective: Issue DMA read/write commands to SATA SSDs and mount native ExFS partitions directly.
 - [ ] **3.3 xHCI (USB 3.0) Host Controller Driver**
