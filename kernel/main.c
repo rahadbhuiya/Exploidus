@@ -293,7 +293,7 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     vga_set_color(10, 0);
 
     kprint("EXPLOIDUS v0.1.0 -- Reactive Capability Kernel\n");
-    kprint("Copyright (c) Exploidus Project. MIT License.\n\n");
+    kprint("Copyright (c) Exploidus Project. GNU AGPLv3 / Commercial.\n\n");
 
     if (mb_magic != MULTIBOOT2_MAGIC) {
         kprint("PANIC: not loaded by a Multiboot2 bootloader.\n");

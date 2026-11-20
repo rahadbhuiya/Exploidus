@@ -1,5 +1,7 @@
 # Exploidus — Reactive Capability Kernel
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
 A custom x86-64 operating system kernel built from scratch.
 
 ## About
@@ -256,7 +258,17 @@ GitHub: [@rahadbhuiya](https://github.com/rahadbhuiya)
 
 ---
 
-## License
+## License & Commercial Inquiries
 
-MIT
+`Exploidus` is dual-licensed under open-source and commercial terms:
+
+### 1. Open Source (GNU AGPLv3)
+For open-source projects, academic research, and non-commercial operating system education, this software is licensed under the **GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)**.
+Under this license, any operating system distribution, firmware image, cloud hypervisor appliance, or embedded device incorporating or linking `Exploidus` must make its complete source code available under compatible copyleft terms when distributed or deployed over a network. See [LICENSE](LICENSE) for the full text.
+
+### 2. Proprietary Commercial License
+For hardware vendors, embedded device OEMs, aerospace/defense contractors, and proprietary appliance manufacturers who wish to embed `Exploidus` within proprietary closed-source commercial hardware or appliances without AGPLv3 copyleft obligations:
+- Commercial licenses are available without copyleft requirements.
+- Includes custom driver development (PCIe, NVMe, AHCI, NICs), board support package (BSP) bringup, and mission SLA support.
+- For commercial licensing terms, custom deployments, and volume licensing, contact: **`rahadbhuiya2021@gmail.com`**.
 

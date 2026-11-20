@@ -999,7 +999,7 @@ static void __attribute__((unused)) draw_desktop(uint32_t w, uint32_t h)
            "Exploidus v0.1.0  --  exploish",
            rgb(80,255,80), bg);
     fb_str(tx, ty+16,
-           "Copyright (c) Exploidus Project. MIT License.",
+           "Copyright (c) Exploidus Project. GNU AGPLv3 / Commercial.",
            rgb(70,70,120), bg);
     fb_rect(wx+1, ty+30, ww-2, 1, rgb(30,20,60));
     fb_str(tx, ty+38,  "star@exploidus:~$ uname -a",

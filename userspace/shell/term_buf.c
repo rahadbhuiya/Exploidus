@@ -52,7 +52,7 @@ void term_init(term_buf_t *t, int wx, int wy, int ww, int wh, int content_y)
 
     /* welcome lines */
     term_println(t, "Exploidus v0.1.0  --  exploish", TC_GREEN);
-    term_println(t, "Copyright (c) Exploidus Project. MIT License.", TC_DIM);
+    term_println(t, "Copyright (c) Exploidus Project. GNU AGPLv3 / Commercial.", TC_DIM);
     term_println(t, "", TC_FG);
     term_println(t, "Type 'help' for commands.", TC_GRAY);
     term_println(t, "", TC_FG);
