@@ -3,7 +3,7 @@
 #include <stdbool.h>
 
 #define BLOCKDEV_SECTOR_SIZE 512
-#define BLOCKDEV_MAX_DEVICES 4
+#define BLOCKDEV_MAX_DEVICES 8
 
 /*
  * Generic block-device interface. Any storage backend (ATA, USB mass

@@ -26,6 +26,7 @@ extern void syscall_init_msr(void);
 #include "drivers/serial.h"
 #include "drivers/pci.h"
 #include "drivers/ahci.h"
+#include "drivers/nvme.h"
 #include "drivers/ata.h"
 #include "drivers/blockdev.h"
 #include "drivers/ramdisk.h"
@@ -400,6 +401,14 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
         driver_register("ahci");
         driver_mark_initialized("ahci");
         blockdev_register(ahci_get_blockdev());
+    }
+
+    kprint("[NVME] Probing PCIe NVMe storage controller...\n");
+    nvme_init();
+    if (nvme_is_present()) {
+        driver_register("nvme");
+        driver_mark_initialized("nvme");
+        blockdev_register(nvme_get_blockdev());
     }
 
     kprint("[NET ] Initializing TCP/IP network stack...\n");

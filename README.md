@@ -1,6 +1,7 @@
 # Exploidus — Reactive Capability Kernel
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/rahadbhuiya/badge.svg)](https://hub.xerj.org/contributors/rahadbhuiya)
 
 A custom x86-64 operating system kernel built from scratch.
 

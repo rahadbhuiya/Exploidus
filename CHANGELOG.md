@@ -1,5 +1,16 @@
 # Exploidus — Technical Changelog & Engineering Notes
 
+## Phase 3.3: High-Performance PCIe NVMe Storage Controller Driver
+
+Direct driver support for modern Non-Volatile Memory Express (NVMe 1.4) solid-state storage over PCIe:
+
+- **PCI Discovery & BAR0**: Scans PCI bus for Mass Storage NVMe controllers (`0x01` / `0x08`), parses 64-bit BAR0 MMIO space, and enables PCIe bus mastering and memory space access.
+- **Controller Reset & Capabilities**: Reads `CAP` register for maximum queue entries, doorbell stride (`4 << DSTRD`), and version. Enforces clean controller reset via `CC.EN = 0` and waits for `CSTS.RDY = 0`.
+- **Admin Queues & Initialization**: Allocates 4KB-aligned Admin Submission Queue (ASQ) and Admin Completion Queue (ACQ) via PMM (`ZONE_GREEN`), sets `AQA` queue attributes (64 entries), and enables controller with 4KB page size, 64-byte SQE, and 16-byte CQE.
+- **I/O Queue Pair Creation**: Creates I/O Completion Queue (CQID 1) and I/O Submission Queue (SQID 1) via NVMe Admin commands `0x05` and `0x01`.
+- **Identify Namespace**: Issues Admin Identify Namespace command (`0x06`) to query namespace 1 geometry, sector size (512B / 4096B), and capacity.
+- **Synchronous DMA I/O & Blockdev**: Implements NVMe Read (`0x02`) and Write (`0x01`) commands with Physical Region Pages (PRP) and rings respective SQ/CQ doorbells. Registers `"nvme0"` with the unified `blockdev_t` interface for high-throughput ExFS filesystem mounting.
+
 ## Phase 3.2: AHCI / SATA Controller Driver (SSD / HDD)
 
 Direct driver support for SATA SSD and HDD controllers via AHCI 1.0 (Advanced Host Controller Interface):

@@ -99,7 +99,10 @@ The target system architecture is structured as follows:
 - [x] **3.2 AHCI / SATA Controller Driver (SSD / HDD)**
   - Path: `kernel/drivers/ahci.c`, `kernel/drivers/ahci.h`
   - Objective: Issue DMA read/write commands to SATA SSDs and mount native ExFS partitions directly.
-- [ ] **3.3 xHCI (USB 3.0) Host Controller Driver**
+- [x] **3.3 PCIe NVMe Solid-State Storage Controller Driver**
+  - Path: `kernel/drivers/nvme.c`, `kernel/drivers/nvme.h`
+  - Objective: High-performance NVMe 1.4 controller driver with Admin/IO Submission & Completion Queues, PRP DMA transfers, and `blockdev_t` integration (`nvme0`).
+- [ ] **3.4 xHCI (USB 3.0) Host Controller Driver**
   - Path: `kernel/usb/xhci.c`
   - Objective: Detect and drive modern USB keyboards, mice, and USB mass storage flash drives.
 - [ ] **3.4 VESA / GOP Linear Framebuffer Console Driver**
