@@ -78,6 +78,7 @@ KERNEL_C_SRCS := \
     kernel/net/drivers/e1000.c \
     kernel/usb/uhci.c \
     kernel/usb/msc.c \
+    kernel/usb/xhci.c \
     kernel/cnsl/cnsl.c \
     kernel/cnsl/fim.c \
     kernel/ipc/ipc.c \

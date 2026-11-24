@@ -102,12 +102,12 @@ The target system architecture is structured as follows:
 - [x] **3.3 PCIe NVMe Solid-State Storage Controller Driver**
   - Path: `kernel/drivers/nvme.c`, `kernel/drivers/nvme.h`
   - Objective: High-performance NVMe 1.4 controller driver with Admin/IO Submission & Completion Queues, PRP DMA transfers, and `blockdev_t` integration (`nvme0`).
-- [ ] **3.4 xHCI (USB 3.0) Host Controller Driver**
-  - Path: `kernel/usb/xhci.c`
-  - Objective: Detect and drive modern USB keyboards, mice, and USB mass storage flash drives.
-- [ ] **3.4 VESA / GOP Linear Framebuffer Console Driver**
-  - Path: `kernel/drivers/gop.c`, `kernel/drivers/fb.c`
-  - Objective: Render high-resolution (1080p) 32-bpp graphics directly to display hardware.
+- [x] **3.4 xHCI (USB 3.0) Host Controller Driver**
+  - Path: `kernel/usb/xhci.c`, `kernel/usb/xhci.h`
+  - Objective: High-speed Extensible Host Controller Interface (xHCI 1.0/1.1) driver supporting modern USB 3.0 SuperSpeed / USB 2.0 root ports, DCBAA context allocations, Command Ring doorbells, and input/storage peripherals.
+- [x] **3.5 VESA / GOP Linear Framebuffer Console Driver**
+  - Path: `kernel/drivers/fb.c`, `kernel/drivers/fb_console.c`
+  - Objective: Render high-resolution (1080p) 32-bpp graphics directly to display hardware with alpha blending, custom font glyphs, and double-buffering.
 
 ---
 

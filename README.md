@@ -31,9 +31,9 @@ To the best of the author's knowledge, Exploidus is among the earliest publicly 
   and USB mass-storage both register as named block devices (`ata0`,
   `usb0`); filesystem code goes through this interface instead of
   calling a specific driver directly
-- USB stack: UHCI host controller driver (kernel/usb/uhci.c) — PCI
-  detection, control/interrupt/bulk transfers, full device
-  enumeration, HID reports, and USB Mass Storage (Bulk-Only
+- USB stack: UHCI & xHCI USB 3.0 host controller drivers (kernel/usb/uhci.c, kernel/usb/xhci.c) — PCI
+  detection, SuperSpeed (5 Gbps) and HighSpeed device enumeration, DCBAA context management,
+  control/bulk transfers, HID reports, and USB Mass Storage (Bulk-Only
   Transport + SCSI READ/WRITE) with a `mount` shell command to attach
   a USB stick's ExFS volume into the VFS
 - TCP/IP network stack (e1000, ARP, IP fragment reassembly, TCP, UDP, ICMP)

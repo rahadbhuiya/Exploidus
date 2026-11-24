@@ -1,5 +1,16 @@
 # Exploidus — Technical Changelog & Engineering Notes
 
+## Phase 3.4: xHCI (USB 3.0) Extensible Host Controller Driver
+
+Direct driver support for modern USB 3.0 SuperSpeed and USB 2.0 HighSpeed controllers via xHCI (Extensible Host Controller Interface 1.0/1.1):
+
+- **PCI Discovery & BAR0**: Scans PCI bus for Serial Bus USB controllers with programming interface `0x30` (`0x0C` / `0x03` / `0x30`), maps 64-bit BAR0 MMIO space, and enables PCIe bus mastering and memory space access.
+- **Capability & Operational Registers**: Parses `CAPLENGTH`, `HCIVERSION`, `HCSPARAMS1` (MaxSlots, MaxPorts), and `HCCPARAMS1` (64-bit addressing, context size). Offsets operational registers to `g_op_base = MMIO + CAPLENGTH`.
+- **Controller Reset & Ready Sequencing**: Verifies `USBSTS.CNR` (Controller Not Ready) clearance, halts running execution engines via `USBCMD.RS = 0`, and issues host controller reset (`USBCMD.HCRST = 1`) with timeout safety.
+- **DCBAA & Command Ring**: Allocates physical memory for the Device Context Base Address Array (DCBAA) and a 256-entry Command Ring with a cyclic Link TRB. Configures `CONFIG.MaxSlotsEn` and programs `CRCR` with active cycle bit.
+- **Port Power & Probing**: Powers all root hub ports (`PORTSC.PP = 1`) while safely masking write-1-to-clear change bits (bits 17-23). Probes port connection status (`PORTSC.CCS`) and decodes protocol speeds (FullSpeed, LowSpeed, HighSpeed, SuperSpeed 5Gbps).
+- **Kernel Boot & Root Device Fallback**: Wires `xhci_init()` into the driver lifecycle (`main.c`) alongside UHCI, and integrates NVMe (`nvme0`) into the root filesystem fallback chain before SATA and legacy ATA.
+
 ## Phase 3.3: High-Performance PCIe NVMe Storage Controller Driver
 
 Direct driver support for modern Non-Volatile Memory Express (NVMe 1.4) solid-state storage over PCIe:

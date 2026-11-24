@@ -40,6 +40,7 @@ extern void syscall_init_msr(void);
 #include "ipc/ipc.h"
 #include "shm/shm.h"
 #include "usb/uhci.h"
+#include "usb/xhci.h"
 
 /* kernel/arch/x86_64/stack_protector.c */
 void stack_protector_init(void);
@@ -423,6 +424,13 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     uhci_init();
     driver_mark_initialized("uhci");
 
+    kprint("[xHCI] Probing for USB 3.0 xHCI controller...\n");
+    xhci_init();
+    if (xhci_is_present()) {
+        driver_register("xhci");
+        driver_mark_initialized("xhci");
+    }
+
     kprint("[IPC ] Initializing inter-process communication...\n");
     ipc_init();
 
@@ -442,6 +450,9 @@ void kernel_main(uint64_t mb_magic, uint64_t mb_info_phys)
     if (ramdisk_is_available()) {
         kprint("[ExFS] Live Ramdisk detected — using ram0 as root device\n");
         root_dev = ramdisk_get_blockdev();
+    } else if (nvme_is_present()) {
+        kprint("[ExFS] PCIe NVMe storage detected — using nvme0 as root device\n");
+        root_dev = nvme_get_blockdev();
     } else if (ahci_is_present()) {
         kprint("[ExFS] AHCI SATA disk detected — using ahci0 as root device\n");
         root_dev = ahci_get_blockdev();
