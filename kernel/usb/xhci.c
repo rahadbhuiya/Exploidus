@@ -12,14 +12,14 @@ static uint32_t          g_max_ports     = 0;
 static uint32_t          g_connected_devs= 0;
 
 /* Device Context Base Address Array (DCBAA) */
-static uint64_t         *g_dcbaa         = NULL;
+static uint64_t         *g_dcbaa __attribute__((unused)) = NULL;
 static uint64_t          g_dcbaa_phys    = 0;
 
 /* Command Ring */
 static xhci_trb_t       *g_cmd_ring      = NULL;
 static uint64_t          g_cmd_ring_phys = 0;
-static uint32_t          g_cmd_ring_tail = 0;
-static uint8_t           g_cmd_cycle_state = 1;
+static uint32_t          g_cmd_ring_tail __attribute__((unused)) = 0;
+static uint8_t           g_cmd_cycle_state __attribute__((unused)) = 1;
 
 static inline uint32_t xhci_read32(volatile uint8_t *base, uint32_t offset)
 {
@@ -31,7 +31,7 @@ static inline void xhci_write32(volatile uint8_t *base, uint32_t offset, uint32_
     *(volatile uint32_t *)(base + offset) = val;
 }
 
-static inline uint64_t xhci_read64(volatile uint8_t *base, uint32_t offset)
+static inline uint64_t __attribute__((unused)) xhci_read64(volatile uint8_t *base, uint32_t offset)
 {
     return *(volatile uint64_t *)(base + offset);
 }
@@ -168,7 +168,7 @@ void xhci_init(void)
     xhci_write32(g_op_base, XHCI_OP_CONFIG, g_max_slots);
 
     /* Step 5: Allocate Device Context Base Address Array (DCBAA) */
-    g_dcbaa_phys = pmm_alloc();
+    g_dcbaa_phys = pmm_alloc(ZONE_GREEN);
     if (!g_dcbaa_phys) {
         serial_print("[xHCI] Error: Out of physical memory for DCBAA.\n");
         return;
@@ -178,7 +178,7 @@ void xhci_init(void)
     xhci_write64(g_op_base, XHCI_OP_DCBAAP, g_dcbaa_phys);
 
     /* Step 6: Allocate Command Ring */
-    g_cmd_ring_phys = pmm_alloc();
+    g_cmd_ring_phys = pmm_alloc(ZONE_GREEN);
     if (!g_cmd_ring_phys) {
         serial_print("[xHCI] Error: Out of physical memory for Command Ring.\n");
         return;
