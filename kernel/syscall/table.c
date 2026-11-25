@@ -91,6 +91,7 @@ static int  g_cooked_read_pos  = 0;  /* how much of the ready line has been cons
 
 static void cooked_echo_putc(char c)
 {
+    serial_putc(c);
     if (fb_console_enabled()) fb_console_putc(c);
     else vga_putc(c);
 }

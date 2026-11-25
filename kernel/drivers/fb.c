@@ -4,6 +4,7 @@
  */
 
 #include "fb.h"
+#include "fb_console.h"
 #include "../drivers/serial.h"
 #include "../mm/pmm.h"   
 #include "../mm/kmalloc.h" 
@@ -57,7 +58,8 @@ void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color)
     if (g_back_buf) {
         uint32_t offset = y * (g_fb.pitch / 4) + x;
         ((uint32_t *)g_back_buf)[offset] = color;
-    } else {
+    }
+    if (!g_back_buf || fb_console_enabled()) {
         uint32_t *pixel = (uint32_t *)(uintptr_t)
                           (g_fb.addr + y * g_fb.pitch + x * (g_fb.bpp / 8));
         *pixel = color;
@@ -140,12 +142,18 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
     if (x >= g_fb.width || y >= g_fb.height) return;
     if (x + w > g_fb.width)  w = g_fb.width  - x;
     if (y + h > g_fb.height) h = g_fb.height - y;
+    int c_en = fb_console_enabled();
     for (uint32_t row = y; row < y + h; row++) {
-        uint32_t *dst = (uint32_t *)(g_back_buf
-                        ? (g_back_buf + row * g_fb.pitch + x * 4)
-                        : (uint8_t *)(uintptr_t)(g_fb.addr + row * g_fb.pitch + x * 4));
-        for (uint32_t col = 0; col < w; col++)
-            dst[col] = color;
+        if (g_back_buf) {
+            uint32_t *dst = (uint32_t *)(g_back_buf + row * g_fb.pitch + x * 4);
+            for (uint32_t col = 0; col < w; col++)
+                dst[col] = color;
+        }
+        if (!g_back_buf || c_en) {
+            uint32_t *dst = (uint32_t *)(uintptr_t)(g_fb.addr + row * g_fb.pitch + x * 4);
+            for (uint32_t col = 0; col < w; col++)
+                dst[col] = color;
+        }
     }
 }
 
@@ -468,10 +476,13 @@ int fb_back_init(void)
     uint64_t size = (uint64_t)g_fb.pitch * g_fb.height;
     g_back_buf = (uint8_t *)kmalloc(size);
     if (!g_back_buf) return -1;
-    
-    for (uint64_t i = 0; i < size / 4; i++)
-        g_back_buf[i] = 0;
+    __builtin_memcpy(g_back_buf, (const void *)(uintptr_t)g_fb.addr, size);
     return 0;
+}
+
+uint8_t *fb_get_back_buf(void)
+{
+    return g_back_buf;
 }
 
 void fb_flip(void)

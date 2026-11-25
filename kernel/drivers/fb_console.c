@@ -37,9 +37,13 @@ static void scroll_up(void)
 {
     uint32_t rows = fb_rows();
     uint8_t *fb = (uint8_t *)(uintptr_t)g_fb.addr;
+    uint8_t *bb = fb_get_back_buf();
     uint32_t row_bytes = g_fb.pitch * FONT_H;
-    for (uint32_t r = 0; r < rows - 1; r++)
+    for (uint32_t r = 0; r < rows - 1; r++) {
         memcpy(fb + r * row_bytes, fb + (r+1) * row_bytes, row_bytes);
+        if (bb)
+            memcpy(bb + r * row_bytes, bb + (r+1) * row_bytes, row_bytes);
+    }
     /* Clear last row */
     fb_fill_rect(0, (rows - 1) * FONT_H, g_fb.width, FONT_H, BG);
 }

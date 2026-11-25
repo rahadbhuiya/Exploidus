@@ -117,6 +117,7 @@ void     fb_draw_line(int x0, int y0, int x1, int y1, uint32_t color);
 
 /* double buffer */
 int      fb_back_init(void);          /* boot time call */
+uint8_t *fb_get_back_buf(void);       /* pointer to back buffer if any */
 void     fb_flip(void);               /* back→front copy             */
 void     fb_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h);
                                        /* back→front copy, one rect only */
