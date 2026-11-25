@@ -204,7 +204,7 @@ static void parse_memory_map(uint64_t mb_info_phys, uint64_t reserved_limit,
 
 /*  Kernel heap   */
 
-#define HEAP_SIZE (4 * 1024 * 1024)
+#define HEAP_SIZE (16 * 1024 * 1024)
 static uint8_t g_kernel_heap[HEAP_SIZE] __attribute__((aligned(4096)));
 
 
