@@ -27,19 +27,19 @@
 #define SHADOW_BLUR      6      /* window drop shadow radius           */
 #define CORNER_R         8      /* window corner radius                */
 
-/*  desktop palette (matches fb.h COL_* defines)  */
-#define COL_DESKTOP      0x0B0F17
-#define COL_SURFACE      0x161F2E
-#define COL_ELEVATED     0x1E293B
-#define COL_BORDER       0x334155
-#define COL_TEXT_PRI     0xE2E8F0
-#define COL_TEXT_SEC     0x94A3B8
-#define COL_ACCENT_PUR   0xA78BFA
-#define COL_ACCENT_BLU   0x38BDF8
-#define COL_ACCENT_GRN   0x34D399
-#define COL_BTN_CLOSE    0xF43F5E
-#define COL_BTN_MIN      0xF59E0B
-#define COL_BTN_MAX      0x10B981
+/*  desktop palette (Cybersecurity dark cyan & neon green theme)  */
+#define COL_DESKTOP      0x0A0F14
+#define COL_SURFACE      0x121B24
+#define COL_ELEVATED     0x1A2634
+#define COL_BORDER       0x22384D
+#define COL_TEXT_PRI     0xE0F7FA
+#define COL_TEXT_SEC     0x78909C
+#define COL_ACCENT_PUR   0x00E5FF
+#define COL_ACCENT_BLU   0x00E5FF
+#define COL_ACCENT_GRN   0x00FF66
+#define COL_BTN_CLOSE    0xFF3366
+#define COL_BTN_MIN      0xFFB300
+#define COL_BTN_MAX      0x00FF66
 
 /*  helpers  */
 static void _puts(const char *s) { write(1, s, strlen(s)); }
@@ -219,12 +219,12 @@ static void draw_wallpaper(void)
 static void draw_menubar(void)
 {
     int mh = 24;
-    /* Real frosted glass: blend a dark slate tint over background */
-    draw_blend_rect(0, 0, (int)g_screen_w, mh, 0x0F172A, 220);
+    /* Frosted glass menu bar */
+    draw_blend_rect(0, 0, (int)g_screen_w, mh, 0x0A0F14, 230);
 
     /* Left: Brand badge */
-    draw_str(12, 5, "Exploidus", COL_ACCENT_BLU, 0x0F172A);
-    draw_str(92, 5, "Reactive OS", COL_TEXT_SEC, 0x0F172A);
+    draw_str(12, 5, "[EXPLOIDUS]", COL_ACCENT_BLU, 0x0A0F14);
+    draw_str(106, 5, "Alien v2.0", COL_TEXT_SEC, 0x0A0F14);
 
     /* Focused window title in center */
     if (g_focused >= 0 && g_windows[g_focused].valid) {
@@ -232,11 +232,31 @@ static void draw_menubar(void)
         int tw = _strlen(t) * 8;   /* 8px per char (bitmap font) */
         int tx = ((int)g_screen_w - tw) / 2;
         if (tx < 200) tx = 200;
-        draw_str(tx, 5, t, COL_TEXT_PRI, 0x0F172A);
+        draw_str(tx, 5, t, COL_TEXT_PRI, 0x0A0F14);
     }
 
-    /* Right: Status pill */
-    draw_str((int)g_screen_w - 170, 5, "Live RAM * CNSL", COL_ACCENT_GRN, 0x0F172A);
+    /* Right: Real-time System Metrics */
+    meminfo_t mi;
+    uint32_t ram_used = 0;
+    if (meminfo(&mi) == 0 && mi.total_kb > 0) {
+        ram_used = (uint32_t)(mi.used_kb / 1024);
+    }
+    char status_buf[64];
+    int p = 0;
+    status_buf[p++] = 'R'; status_buf[p++] = 'A'; status_buf[p++] = 'M'; status_buf[p++] = ':'; status_buf[p++] = ' ';
+    if (ram_used == 0) { status_buf[p++] = '0'; }
+    else {
+        char nbuf[10]; int ni = 0; uint32_t v = ram_used;
+        while (v) { nbuf[ni++] = '0' + (v % 10); v /= 10; }
+        while (ni--) status_buf[p++] = nbuf[ni];
+    }
+    status_buf[p++] = 'M'; status_buf[p++] = ' ';
+    status_buf[p++] = '*'; status_buf[p++] = ' ';
+    status_buf[p++] = 'C'; status_buf[p++] = 'N'; status_buf[p++] = 'S'; status_buf[p++] = 'L'; status_buf[p++] = ' ';
+    status_buf[p++] = 'O'; status_buf[p++] = 'K'; status_buf[p] = 0;
+
+    int sw = p * 8;
+    draw_str((int)g_screen_w - sw - 16, 5, status_buf, COL_ACCENT_GRN, 0x0A0F14);
 
     /* Bottom border */
     draw_rect(0, mh - 1, (int)g_screen_w, 1, COL_BORDER);
@@ -251,22 +271,23 @@ typedef struct {
     const char *path;
 } dock_item_t;
 
-#define DOCK_ITEMS 4
+#define DOCK_ITEMS 5
 static const dock_item_t g_dock_items[DOCK_ITEMS] = {
     { "T", COL_ACCENT_BLU, "/bin/terminal" },
-    { "S", COL_ACCENT_PUR, "/bin/gui_demo" },
+    { "F", COL_ACCENT_BLU, "/bin/exfiles" },
+    { "E", COL_ACCENT_GRN, "/bin/exeditor" },
+    { "S", COL_BTN_MIN,    "/bin/gui_demo" },
     { "R", COL_ACCENT_GRN, "/bin/rahu" },
-    { "E", COL_ACCENT_BLU, "/bin/exploish" },
 };
 
 /* dock geometry — computed once, used for hit testing */
 static int g_dock_dx = 0, g_dock_dy = 0;
-static int g_dock_dw = 200, g_dock_spacing = 0;
+static int g_dock_dw = 310, g_dock_spacing = 0;
 
 static void draw_dock(void)
 {
     int dy = (int)g_screen_h - DOCK_H;
-    int dw = 250;
+    int dw = 310;
     int dx = ((int)g_screen_w - dw) / 2;
     int spacing = dw / (DOCK_ITEMS + 1);
 
@@ -274,10 +295,9 @@ static void draw_dock(void)
     g_dock_dx = dx; g_dock_dy = dy;
     g_dock_dw = dw; g_dock_spacing = spacing;
 
-    /* Dock background -- real frosted glass, blended against whatever
-     * is actually behind it (wallpaper, or a window if one extends
-     * that far down), not just a flat solid color. */
-    draw_blend_rect(dx, dy + 6, dw, DOCK_H - 8, 0x1F2937, 215);
+    /* Dock background -- frosted glass with cyan border notch */
+    draw_blend_rect(dx, dy + 6, dw, DOCK_H - 8, 0x121B24, 225);
+    draw_rect(dx, dy + 6, dw, 1, COL_BORDER);
 
     for (int i = 0; i < DOCK_ITEMS; i++) {
         int ix = dx + spacing * (i + 1) - DOCK_ICON_SZ / 2;

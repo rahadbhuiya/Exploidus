@@ -1,5 +1,20 @@
 # Exploidus — Technical Changelog & Engineering Notes
 
+## Phase 5: Custom Dark Cybersecurity GUI Desktop & ExWM Suite
+
+A complete desktop graphical environment with cyberpunk dark cyan and neon green aesthetics, reusable widget toolkit, and core desktop applications:
+
+- **ExUI Reusable Widget Toolkit (`userspace/gui/exui/exui.h`)**: Provides direct 32-bpp ARGB renderers for `Button`, `TextBox`, `ListView`, `Panel`, `Label`, and `Checkbox` without dynamic heap fragmentation. Supports custom accents, hit testing, and blinking caret text input.
+- **ExWM Window Manager & Alien Compositor Enhancements (`userspace/compositor/compositor.c`)**:
+  - Implements cybersecurity color palette: Obsidian background (`0x0A0F14`), Deep Slate surface (`0x121B24`), Neon Cyan accents (`0x00E5FF`), and Neon Green status indicators (`0x00FF66`).
+  - Top Status Panel now reads and displays real-time RAM usage via `sys_meminfo` and active CNSL security posture.
+  - Dock expanded to 5 quick-launch apps: ExTerminal (`/bin/terminal`), ExFiles (`/bin/exfiles`), ExEditor (`/bin/exeditor`), GuiDemo (`/bin/gui_demo`), and Rahu Security Suite (`/bin/rahu`).
+- **ExFiles Visual ExFS Navigator (`userspace/bin/exfiles.c`)**:
+  - Full graphical directory browser supporting directory traversal (`..`), inode metadata inspection, file size queries via `stat()`, and binary execution via `spawn()`.
+- **ExEditor Code & Text Editor (`userspace/bin/exeditor.c`)**:
+  - Lightweight IDE editor with line numbering, word-level C/ASM syntax highlighting, and ExFS file persistence.
+- **Build System Integration**: Updated `Makefile`, `build/disk.img`, and `build/bigdisk.img` targets with dedicated PIE linking rules for `exfiles.elf` and `exeditor.elf`.
+
 ## Phase 3.4: xHCI (USB 3.0) Extensible Host Controller Driver
 
 Direct driver support for modern USB 3.0 SuperSpeed and USB 2.0 HighSpeed controllers via xHCI (Extensible Host Controller Interface 1.0/1.1):

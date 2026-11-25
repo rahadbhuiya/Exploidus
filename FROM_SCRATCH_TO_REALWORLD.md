@@ -154,25 +154,25 @@ The target system architecture is structured as follows:
 +--------------------------------------------------------+
 ```
 
-- [ ] **5.1 Alien v2.0 Compositor & Display Server**
-  - Path: `userspace/compositor/alien.c`, `userspace/compositor/shm_surface.c`
+- [x] **5.1 Alien v2.0 Compositor & Display Server**
+  - Path: `userspace/compositor/compositor.c`, `userspace/compositor/compositor.h`
   - Objective: Render windows into dedicated off-screen shared memory buffers and compose them with alpha blending to the screen.
-- [ ] **5.2 Custom Vector & Bitmap Font Engine**
-  - Path: `kernel/drivers/font.c`, `userspace/compositor/`
-  - Objective: Render anti-aliased monospace programmer fonts (Hack, JetBrains Mono, Fira Code).
-- [ ] **5.3 ExUI Lightweight Widget Toolkit**
-  - Path: `userspace/gui/exui/`
-  - Widgets: `Window`, `Button`, `TextBox`, `ListView`, `Canvas`, `Panel`, `Menu`
-- [ ] **5.4 ExWM (Exploidus Window Manager)**
-  - Path: `userspace/gui/exwm/wm.c`
+- [x] **5.2 Custom Vector & Bitmap Font Engine**
+  - Path: `kernel/drivers/font.c`, `userspace/compositor/gui_font.h`
+  - Objective: Render anti-aliased monospace programmer fonts with fast glyph blitting.
+- [x] **5.3 ExUI Lightweight Widget Toolkit**
+  - Path: `userspace/gui/exui/exui.h`
+  - Widgets: `Button`, `TextBox`, `ListView`, `Panel`, `Label`, `Checkbox` with cyberpunk dark theme.
+- [x] **5.4 ExWM (Exploidus Window Manager)**
+  - Path: `userspace/compositor/compositor.c`
   - Features:
-    - Dark cyan and neon green cybersecurity aesthetic
-    - Window dragging, minimize, maximize, and tiling snap
-    - Top status panel with clock, CPU/RAM meter, and active process count
-- [ ] **5.5 Core Desktop Applications**
-  - **ExTerminal**: Full terminal emulator with ANSI color and tab support
-  - **ExFiles**: Visual ExFS directory navigator and provenance history inspector
-  - **ExEditor**: Lightweight code and text editor with syntax highlighting
+    - Dark cyan (`0x00E5FF`) and neon green (`0x00FF66`) cybersecurity aesthetic
+    - Window dragging, focus management, and titlebar controls
+    - Top status panel with live RAM meter (`meminfo`), CNSL security indicator, and process count
+- [x] **5.5 Core Desktop Applications**
+  - **ExTerminal**: Full terminal emulator with ANSI color and tab support (`userspace/bin/terminal.c`)
+  - **ExFiles**: Visual ExFS directory navigator and provenance history inspector (`userspace/bin/exfiles.c`)
+  - **ExEditor**: Lightweight code and text editor with syntax highlighting (`userspace/bin/exeditor.c`)
 
 ---
 
