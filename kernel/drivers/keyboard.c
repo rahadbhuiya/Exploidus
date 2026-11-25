@@ -176,8 +176,15 @@ void keyboard_init(void)
 
 bool keyboard_read(char *out)
 {
-    if (g_ring_tail == g_ring_head) return false;
-    *out = (char)g_ring[g_ring_tail];
-    g_ring_tail = (g_ring_tail + 1) & (KB_RING_SIZE - 1);
-    return true;
+    if (g_ring_tail != g_ring_head) {
+        *out = (char)g_ring[g_ring_tail];
+        g_ring_tail = (g_ring_tail + 1) & (KB_RING_SIZE - 1);
+        return true;
+    }
+    extern bool serial_read_byte(char *out);
+    if (serial_read_byte(out)) {
+        if (*out == '\r') *out = '\n';
+        return true;
+    }
+    return false;
 }

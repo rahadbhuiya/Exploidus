@@ -546,7 +546,7 @@ qemu-gui: build/exploidus.iso build/disk.img
 	    -drive file=build/disk.img,format=raw,if=ide,index=0 \
 	    -m 256M \
 	    -device piix3-usb-uhci -device usb-tablet \
-	    -vga virtio \
+	    -vga std \
 	    -serial stdio \
 	    -accel kvm -accel tcg,thread=multi \
 	    -cpu qemu64,+rdrand \
